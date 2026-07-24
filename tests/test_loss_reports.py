@@ -26,5 +26,5 @@ def test_export_reports_unwritable_spss_dictionary_features(tmp_path) -> None:
     connection = sqlite3.connect(tmp_path / "dataset.sqlite")
     assert connection.execute("select set_name, member_ordinal, variable_name from multiple_response_set_catalog").fetchall() == [("set1", 1, None)]
     assert {event["code"] for event in result["loss_report"]} == {
-        "multiple-response-sets-not-exported", "variable-alignment-not-exported"
+        "multiple-response-sets-not-exported", "variable-alignment-not-exported", "unobservable-source-dictionary-features"
     }

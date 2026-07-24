@@ -146,7 +146,7 @@ def _import_loss_report(meta: Any) -> tuple[dict[str, str], ...]:
 
 
 def _export_loss_report(dataset: dict[str, Any], variables: list[dict[str, Any]]) -> tuple[dict[str, str], ...]:
-    events = []
+    events = [{"code": "unobservable-source-dictionary-features", "detail": "Variable sets and custom file/variable attributes are not observable through the reader and therefore cannot be restored by export."}]
     if dataset["multiple_response_sets"] != "{}":
         events.append({"code": "multiple-response-sets-not-exported", "detail": "The SAV writer has no multiple-response-set output capability."})
     if any(item.get("alignment") not in (None, "unknown") for item in variables):
