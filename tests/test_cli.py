@@ -18,7 +18,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     inspected = json.loads(capsys.readouterr().out)
     assert inspected["source_format"] == "SAV"
     assert inspected["source_sha256"]
-    assert inspected["loss_report"] == []
+    assert inspected["loss_report"][0]["code"] == "unobservable-source-dictionary-features"
     assert imported["case_count"] == 1
 
     assert openstatspec.cli.main(["validate", "--database-url", database, "--dataset-id", "fixture"]) == 0

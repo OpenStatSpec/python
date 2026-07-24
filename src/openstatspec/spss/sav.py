@@ -139,9 +139,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 def _import_loss_report(meta: Any) -> tuple[dict[str, str], ...]:
+    events = [{"code": "unobservable-source-dictionary-features", "detail": "The reader does not expose SPSS variable sets or custom file/variable attributes, so their presence cannot be established or preserved."}]
     if getattr(meta, "mr_sets", {}) or {}:
-        return ({"code": "multiple-response-sets-not-exportable", "detail": "Multiple-response sets are catalogued but pyreadstat cannot write them back to SAV."},)
-    return LossReport().events
+        events.append({"code": "multiple-response-sets-not-exportable", "detail": "Multiple-response sets are catalogued but pyreadstat cannot write them back to SAV."})
+    return tuple(events)
 
 
 def _export_loss_report(dataset: dict[str, Any], variables: list[dict[str, Any]]) -> tuple[dict[str, str], ...]:
