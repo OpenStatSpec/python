@@ -37,6 +37,8 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     ]
     assert connection.execute("select source_encoding, documents from dataset_catalog").fetchone() == ("UTF-8", json.dumps(["Fixture note"]))
     assert connection.execute("select source_sha256 from dataset_catalog").fetchone() == (hashlib.sha256(source.read_bytes()).hexdigest(),)
+    created_at, modified_at, imported_at = connection.execute("select source_created_at, source_modified_at, imported_at from dataset_catalog").fetchone()
+    assert created_at and modified_at and imported_at
 
     openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
     frame, meta = pyreadstat.read_sav(exported, user_missing=True)

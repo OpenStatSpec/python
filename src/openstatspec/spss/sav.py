@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,9 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         variables=variables, file_label=getattr(meta, "file_label", "") or "",
         source_encoding=getattr(meta, "file_encoding", None),
         source_sha256=_sha256(source_path),
+        source_created_at=_iso_datetime(getattr(meta, "creation_time", None)),
+        source_modified_at=_iso_datetime(getattr(meta, "modification_time", None)),
+        imported_at=datetime.now(UTC).isoformat(),
         documents=json.dumps(list(getattr(meta, "notes", []) or [])),
         multiple_response_sets=json.dumps(dict(getattr(meta, "mr_sets", {}) or {}), default=str),
     )
@@ -116,6 +120,10 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
 
 
 
+
+
+def _iso_datetime(value: Any) -> str | None:
+    return value.isoformat() if value is not None else None
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
