@@ -86,8 +86,8 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
 
 def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str | Path) -> dict[str, Any]:
     destination_path = Path(destination)
-    if destination_path.suffix.lower() != ".sav":
-        raise UnsupportedOperationError("This initial profile exports SAV only; ZSAV output is not yet supported.")
+    if destination_path.suffix.lower() not in {".sav", ".zsav"}:
+        raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
     import pandas as pd
     frame = pd.DataFrame(
@@ -108,6 +108,7 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
     }
     pyreadstat.write_sav(
         frame, destination_path, file_label=dataset["file_label"], column_labels=labels,
+        compress=destination_path.suffix.lower() == ".zsav",
         variable_format=formats, variable_measure=measures,
         variable_display_width=displays, variable_value_labels=value_labels,
         missing_ranges=missing_ranges, note=json.loads(dataset["documents"]),

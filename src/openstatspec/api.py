@@ -12,7 +12,7 @@ from .sql import declared_profiles, validate_dataset
 def capabilities() -> Mapping[str, Any]:
     return CapabilityDeclaration(
         specification="OpenStatSpec strict wide-table SPSS profile (initial)",
-        formats={"SAV": {"import": True, "export": True}, "ZSAV": {"import": True, "export": False}},
+        formats={"SAV": {"import": True, "export": True}, "ZSAV": {"import": True, "export": True}},
         database_profiles=declared_profiles(),
     ).as_dict()
 
