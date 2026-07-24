@@ -10,6 +10,20 @@ from .spss import export_dataset, import_dataset, inspect_source
 from .sql import declared_profiles, validate_dataset
 
 
+
+def capability_matrix() -> Mapping[str, Any]:
+    return {
+        "spss": {
+            "values": "supported", "variable_labels": "supported",
+            "value_labels": "supported", "formats": "supported",
+            "measurement_level": "supported", "user_missing_rules": "supported",
+            "documents": "supported", "multiple_response_sets": "lossy",
+            "variable_alignment": "lossy", "variable_sets": "unobservable",
+            "custom_attributes": "unobservable", "variable_role": "unobservable",
+        },
+        "sql_profiles": declared_profiles(),
+    }
+
 def capabilities() -> Mapping[str, Any]:
     return CapabilityDeclaration(
         specification="OpenStatSpec strict wide-table SPSS profile (initial)",

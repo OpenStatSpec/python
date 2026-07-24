@@ -4,12 +4,13 @@ import json
 import argparse
 from collections.abc import Sequence
 
-from .api import export_sav, import_sav, inspect, validate
+from .api import capability_matrix, export_sav, import_sav, inspect, validate
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="openstatspec")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("capabilities", help="show supported and lossy feature matrix")
     importer = commands.add_parser("import", help="import one SAV/ZSAV file")
     importer.add_argument("source")
     importer.add_argument("--database-url", required=True)
@@ -24,7 +25,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     exporter.add_argument("--dataset-id", required=True)
     exporter.add_argument("--output", required=True)
     args = parser.parse_args(argv)
-    if args.command == "import":
+    if args.command == "capabilities":
+        result = capability_matrix()
+    elif args.command == "import":
         result = import_sav(args.source, database_url=args.database_url, dataset_id=args.dataset_id)
     elif args.command == "export":
         result = export_sav(database_url=args.database_url, dataset_id=args.dataset_id, destination=args.output)
