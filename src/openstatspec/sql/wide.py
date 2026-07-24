@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import delete, BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select
-from .profiles import preflight, profile_for_url
+from .profiles import preflight, validate_connection_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -101,7 +101,7 @@ def create_wide_dataset(
     imported_at: str = "",
     multiple_response_sets: str = "{}",
 ) -> dict[str, Any]:
-    profile = profile_for_url(database_url)
+    profile = validate_connection_url(database_url)
     preflight(profile, len(variables))
     engine = create_engine(database_url)
     metadata = MetaData()
@@ -163,7 +163,7 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
 
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
-    profile = profile_for_url(database_url)
+    profile = validate_connection_url(database_url)
     preflight(profile, len(variables))
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")

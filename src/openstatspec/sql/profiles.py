@@ -48,6 +48,16 @@ def profile_for_url(database_url: str) -> SqlProfile:
     )
 
 
+
+def validate_connection_url(database_url: str) -> SqlProfile:
+    profile = profile_for_url(database_url)
+    scheme = urlparse(database_url).scheme.lower()
+    if profile is POSTGRESQL and scheme != "postgresql+psycopg":
+        raise UnsupportedOperationError("PostgreSQL requires an explicit postgresql+psycopg URL.")
+    if profile is MYSQL and scheme not in {"mysql+pymysql", "mariadb+mariadbconnector"}:
+        raise UnsupportedOperationError("MySQL/MariaDB requires an explicit mysql+pymysql or mariadb+mariadbconnector URL.")
+    return profile
+
 def preflight(profile: SqlProfile, variable_count: int) -> None:
     if variable_count > profile.max_physical_variables:
         raise UnsupportedOperationError(
