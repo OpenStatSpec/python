@@ -21,6 +21,7 @@ def catalog(metadata: MetaData) -> tuple[Table, Table]:
         Column("case_count", BigInteger, nullable=False),
         Column("file_label", Text, nullable=False, default=""),
         Column("documents", Text, nullable=False, default="[]"),
+        Column("multiple_response_sets", Text, nullable=False, default="{}"),
     )
     variables = Table(
         "variable_catalog", metadata,
@@ -61,6 +62,7 @@ def create_wide_dataset(
     *, database_url: str, dataset_id: str, source_name: str, source_format: str,
     rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
     source_encoding: str | None = None, documents: str = "[]",
+    multiple_response_sets: str = "{}",
 ) -> dict[str, Any]:
     profile = profile_for_url(database_url)
     preflight(profile, len(variables))
@@ -83,6 +85,7 @@ def create_wide_dataset(
             dataset_id=dataset_id, data_table=data_table.name, source_format=source_format,
             source_name=source_name, source_encoding=source_encoding, case_count=len(materialized),
             file_label=file_label, documents=documents,
+            multiple_response_sets=multiple_response_sets,
         ))
         connection.execute(insert(variable_catalog), [dict(dataset_id=dataset_id, **item) for item in variables])
         if materialized:

@@ -73,8 +73,9 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         variables=variables, file_label=getattr(meta, "file_label", "") or "",
         source_encoding=getattr(meta, "file_encoding", None),
         documents=json.dumps(list(getattr(meta, "notes", []) or [])),
+        multiple_response_sets=json.dumps(dict(getattr(meta, "mr_sets", {}) or {}), default=str),
     )
-    return {**result, "loss_report": LossReport().events}
+    return {**result, "loss_report": _import_loss_report(meta)}
 
 
 def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str | Path) -> dict[str, Any]:
@@ -107,9 +108,25 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
     )
     return {
         "dataset_id": dataset_id, "destination": str(destination_path),
-        "loss_report": LossReport().events,
+        "loss_report": _export_loss_report(dataset, variables),
     }
 
+
+
+
+def _import_loss_report(meta: Any) -> tuple[dict[str, str], ...]:
+    if getattr(meta, "mr_sets", {}) or {}:
+        return ({"code": "multiple-response-sets-not-exportable", "detail": "Multiple-response sets are catalogued but pyreadstat cannot write them back to SAV."},)
+    return LossReport().events
+
+
+def _export_loss_report(dataset: dict[str, Any], variables: list[dict[str, Any]]) -> tuple[dict[str, str], ...]:
+    events = []
+    if dataset["multiple_response_sets"] != "{}":
+        events.append({"code": "multiple-response-sets-not-exported", "detail": "The SAV writer has no multiple-response-set output capability."})
+    if any(item.get("alignment") not in (None, "unknown") for item in variables):
+        events.append({"code": "variable-alignment-not-exported", "detail": "The SAV writer has no variable-alignment output capability."})
+    return tuple(events)
 
 def _require_source(source_path: Path) -> None:
     if source_path.suffix.lower() not in {".sav", ".zsav"}:
