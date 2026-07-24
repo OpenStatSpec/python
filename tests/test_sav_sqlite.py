@@ -87,3 +87,21 @@ def test_import_rejects_physical_table_name_collision_without_partial_catalog(tm
 
     connection = sqlite3.connect(database_path)
     assert connection.execute("select dataset_id from dataset_catalog").fetchall() == [("wave-1",)]
+
+
+def test_long_utf8_strings_and_date_format_remain_source_semantic(tmp_path) -> None:
+    source = tmp_path / "semantic.sav"
+    database_path = tmp_path / "dataset.sqlite"
+    database = f"sqlite:///{database_path}"
+    exported = tmp_path / "semantic-roundtrip.sav"
+    long_text = "Õ" * 300
+    pyreadstat.write_sav(
+        pd.DataFrame({"comment": [long_text], "interview_date": [23123.0]}), source,
+        variable_format={"comment": "A320", "interview_date": "DATE11"},
+    )
+    openstatspec.import_sav(source, database_url=database, dataset_id="semantic")
+    connection = sqlite3.connect(database_path)
+    assert connection.execute("select comment, interview_date from data_semantic").fetchone() == (long_text, 23123.0)
+    assert connection.execute("select storage_kind, format from variable_catalog where source_name = 'interview_date'").fetchone() == ("numeric", "DATE11")
+    openstatspec.export_sav(database_url=database, dataset_id="semantic", destination=exported)
+    assert compare_sav_semantics(source, exported) == {"equivalent": True, "differences": []}
