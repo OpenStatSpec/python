@@ -1,6 +1,7 @@
 import hashlib
 import pytest
 import json
+from conformance import compare_sav_semantics
 import sqlite3
 
 import openstatspec
@@ -56,6 +57,7 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert compressed_frame["name"].tolist() == ["Ada", ""]
     assert meta.missing_ranges == {"age": [{"lo": 34.0, "hi": 34.0}]}
     assert meta.notes == ["Fixture note"]
+    assert compare_sav_semantics(source, exported) == {"equivalent": True, "differences": []}
 
 
 
