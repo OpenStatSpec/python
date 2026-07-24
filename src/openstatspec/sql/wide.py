@@ -16,8 +16,10 @@ def catalog(metadata: MetaData) -> tuple[Table, Table]:
         Column("data_table", String(255), nullable=False, unique=True),
         Column("source_format", String(16), nullable=False),
         Column("source_name", Text, nullable=False),
+        Column("source_encoding", String(128)),
         Column("case_count", BigInteger, nullable=False),
         Column("file_label", Text, nullable=False, default=""),
+        Column("documents", Text, nullable=False, default="[]"),
     )
     variables = Table(
         "variable_catalog", metadata,
@@ -30,6 +32,7 @@ def catalog(metadata: MetaData) -> tuple[Table, Table]:
         Column("label", Text, nullable=False, default=""),
         Column("format", String(64)),
         Column("measure", String(32)),
+        Column("alignment", String(32)),
         Column("display_width", Integer),
         Column("value_labels", Text, nullable=False, default="{}"),
         Column("missing_ranges", Text, nullable=False, default="[]"),
@@ -56,6 +59,7 @@ def data_table_name(dataset_id: str) -> str:
 def create_wide_dataset(
     *, database_url: str, dataset_id: str, source_name: str, source_format: str,
     rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
+    source_encoding: str | None = None, documents: str = "[]",
 ) -> dict[str, Any]:
     engine = create_engine(database_url)
     metadata = MetaData()
@@ -74,7 +78,8 @@ def create_wide_dataset(
         materialized = [{"__case_ordinal": ordinal, **row} for ordinal, row in enumerate(rows, start=1)]
         connection.execute(insert(datasets).values(
             dataset_id=dataset_id, data_table=data_table.name, source_format=source_format,
-            source_name=source_name, case_count=len(materialized), file_label=file_label,
+            source_name=source_name, source_encoding=source_encoding, case_count=len(materialized),
+            file_label=file_label, documents=documents,
         ))
         connection.execute(insert(variable_catalog), [dict(dataset_id=dataset_id, **item) for item in variables])
         if materialized:

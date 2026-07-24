@@ -16,6 +16,7 @@ def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
     labels = dict(getattr(meta, "column_names_to_labels", {}) or {})
     formats = dict(getattr(meta, "original_variable_types", {}) or {})
     measures = dict(getattr(meta, "variable_measure", {}) or {})
+    alignments = dict(getattr(meta, "variable_alignment", {}) or {})
     displays = dict(getattr(meta, "variable_display_width", {}) or {})
     value_labels = dict(getattr(meta, "variable_value_labels", {}) or {})
     missing_ranges = dict(getattr(meta, "missing_ranges", {}) or {})
@@ -28,7 +29,8 @@ def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
             "physical_name": physical_name(source_name, used), "storage_kind": kind,
             "string_width": widths.get(source_name) if kind == "string" else None,
             "label": labels.get(source_name, "") or "", "format": formats.get(source_name),
-            "measure": measures.get(source_name), "display_width": displays.get(source_name),
+            "measure": measures.get(source_name), "alignment": alignments.get(source_name),
+            "display_width": displays.get(source_name),
             "value_labels": json.dumps(value_labels.get(source_name, {}), sort_keys=True),
             "missing_ranges": json.dumps(missing_ranges.get(source_name, []), default=str),
         })
@@ -69,6 +71,8 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         database_url=database_url, dataset_id=dataset_id, source_name=source_path.name,
         source_format=source_path.suffix[1:].upper(), rows=_rows(frame, variables),
         variables=variables, file_label=getattr(meta, "file_label", "") or "",
+        source_encoding=getattr(meta, "file_encoding", None),
+        documents=json.dumps(list(getattr(meta, "notes", []) or [])),
     )
     return {**result, "loss_report": LossReport().events}
 
@@ -87,6 +91,10 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
     formats = {item["source_name"]: item["format"] for item in variables if item["format"]}
     measures = {item["source_name"]: item["measure"] for item in variables if item["measure"]}
     displays = {item["source_name"]: item["display_width"] for item in variables if item["display_width"]}
+    missing_ranges = {
+        item["source_name"]: json.loads(item["missing_ranges"])
+        for item in variables if item["missing_ranges"] != "[]"
+    }
     value_labels = {
         item["source_name"]: {(float(key) if item["storage_kind"] == "numeric" else key): value for key, value in json.loads(item["value_labels"]).items()}
         for item in variables if item["value_labels"] != "{}"
@@ -95,10 +103,11 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
         frame, destination_path, file_label=dataset["file_label"], column_labels=labels,
         variable_format=formats, variable_measure=measures,
         variable_display_width=displays, variable_value_labels=value_labels,
+        missing_ranges=missing_ranges, note=json.loads(dataset["documents"]),
     )
     return {
         "dataset_id": dataset_id, "destination": str(destination_path),
-        "loss_report": ({"code": "missing-ranges-not-exported", "detail": "The initial writer does not preserve user-missing ranges."},),
+        "loss_report": LossReport().events,
     }
 
 
