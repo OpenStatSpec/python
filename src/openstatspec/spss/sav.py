@@ -1,5 +1,6 @@
 """Initial unencrypted SAV/ZSAV adapter using pyreadstat."""
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -72,6 +73,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         source_format=source_path.suffix[1:].upper(), rows=_rows(frame, variables),
         variables=variables, file_label=getattr(meta, "file_label", "") or "",
         source_encoding=getattr(meta, "file_encoding", None),
+        source_sha256=_sha256(source_path),
         documents=json.dumps(list(getattr(meta, "notes", []) or [])),
         multiple_response_sets=json.dumps(dict(getattr(meta, "mr_sets", {}) or {}), default=str),
     )
@@ -113,6 +115,14 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
 
 
 
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 def _import_loss_report(meta: Any) -> tuple[dict[str, str], ...]:
     if getattr(meta, "mr_sets", {}) or {}:

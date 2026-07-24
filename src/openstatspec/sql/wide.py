@@ -17,6 +17,7 @@ def catalog(metadata: MetaData) -> tuple[Table, Table]:
         Column("data_table", String(255), nullable=False, unique=True),
         Column("source_format", String(16), nullable=False),
         Column("source_name", Text, nullable=False),
+        Column("source_sha256", String(64), nullable=False),
         Column("source_encoding", String(128)),
         Column("case_count", BigInteger, nullable=False),
         Column("file_label", Text, nullable=False, default=""),
@@ -62,6 +63,7 @@ def create_wide_dataset(
     *, database_url: str, dataset_id: str, source_name: str, source_format: str,
     rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
     source_encoding: str | None = None, documents: str = "[]",
+    source_sha256: str = "",
     multiple_response_sets: str = "{}",
 ) -> dict[str, Any]:
     profile = profile_for_url(database_url)
@@ -84,6 +86,7 @@ def create_wide_dataset(
         connection.execute(insert(datasets).values(
             dataset_id=dataset_id, data_table=data_table.name, source_format=source_format,
             source_name=source_name, source_encoding=source_encoding, case_count=len(materialized),
+            source_sha256=source_sha256,
             file_label=file_label, documents=documents,
             multiple_response_sets=multiple_response_sets,
         ))

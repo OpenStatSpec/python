@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 
@@ -35,6 +36,7 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
         (1, 34.0, "Ada"), (2, None, "")
     ]
     assert connection.execute("select source_encoding, documents from dataset_catalog").fetchone() == ("UTF-8", json.dumps(["Fixture note"]))
+    assert connection.execute("select source_sha256 from dataset_catalog").fetchone() == (hashlib.sha256(source.read_bytes()).hexdigest(),)
 
     openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
     frame, meta = pyreadstat.read_sav(exported, user_missing=True)
