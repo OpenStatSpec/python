@@ -1,5 +1,6 @@
 """SQLite reference SQL profile for the strict OpenStatSpec wide-table contract."""
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -46,6 +47,35 @@ def catalog(metadata: MetaData) -> tuple[Table, Table]:
     return datasets, variables
 
 
+
+def multiple_response_set_catalog(metadata: MetaData) -> Table:
+    return Table(
+        "multiple_response_set_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("set_name", String(255), primary_key=True),
+        Column("member_ordinal", Integer, primary_key=True),
+        Column("kind", String(16)), Column("label", Text),
+        Column("counted_value", Text), Column("variable_name", String(255)),
+        Column("definition", Text, nullable=False),
+    )
+
+def multiple_response_set_rows(dataset_id: str, definitions: str) -> list[dict[str, Any]]:
+    sets = json.loads(definitions)
+    rows = []
+    for set_name, definition in sets.items():
+        members = definition.get("variable_list", definition.get("variables", []))
+        if isinstance(members, str):
+            members = members.split()
+        for ordinal, variable_name in enumerate(members or [None], start=1):
+            rows.append({
+                "dataset_id": dataset_id, "set_name": set_name, "member_ordinal": ordinal,
+                "kind": definition.get("set_type", definition.get("type")),
+                "label": definition.get("label"),
+                "counted_value": str(definition.get("counted_value", definition.get("countedvalue", ""))),
+                "variable_name": variable_name, "definition": json.dumps(definition, default=str, sort_keys=True),
+            })
+    return rows
+
 def physical_name(source_name: str, used: set[str]) -> str:
     stem = _IDENTIFIER.sub("_", source_name).strip("_").lower() or "variable"
     stem = stem[:54]
@@ -76,6 +106,7 @@ def create_wide_dataset(
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog = catalog(metadata)
+    multiple_response_catalog = multiple_response_set_catalog(metadata)
     data_table = Table(
         data_table_name(dataset_id), metadata,
         Column("__case_ordinal", BigInteger, primary_key=True, nullable=False),
@@ -83,7 +114,7 @@ def create_wide_dataset(
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog])
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.dataset_id == dataset_id)).first():
             raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
         data_table.create(connection)
@@ -98,6 +129,9 @@ def create_wide_dataset(
             multiple_response_sets=multiple_response_sets,
         ))
         connection.execute(insert(variable_catalog), [dict(dataset_id=dataset_id, **item) for item in variables])
+        mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
+        if mrset_rows:
+            connection.execute(insert(multiple_response_catalog), mrset_rows)
         if materialized:
             connection.execute(insert(data_table), materialized)
     return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized)}

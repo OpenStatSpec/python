@@ -32,7 +32,7 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
 
     connection = sqlite3.connect(database_path)
     table_names = [row[0] for row in connection.execute("select name from sqlite_master where type = \"table\" order by name")]
-    assert table_names == ["data_tiny", "dataset_catalog", "variable_catalog"]
+    assert table_names == ["data_tiny", "dataset_catalog", "multiple_response_set_catalog", "variable_catalog"]
     assert connection.execute("select __case_ordinal, age, name from data_tiny order by __case_ordinal").fetchall() == [
         (1, 34.0, "Ada"), (2, None, "")
     ]
