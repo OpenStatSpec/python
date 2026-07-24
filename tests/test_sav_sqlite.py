@@ -42,6 +42,9 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert pd.isna(frame["age"].iloc[1])
     assert frame["name"].tolist() == ["Ada", ""]
     assert meta.column_labels == ["Age", "Name"]
+    assert meta.variable_value_labels == {"age": {34.0: "thirty-four"}}
+    assert meta.original_variable_types == {"age": "F8.0", "name": "A12"}
+    assert meta.variable_measure == {"age": "scale", "name": "nominal"}
     assert meta.missing_ranges == {"age": [{"lo": 34.0, "hi": 34.0}]}
     assert meta.notes == ["Fixture note"]
 
