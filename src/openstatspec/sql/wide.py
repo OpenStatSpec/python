@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select
+from .profiles import preflight, profile_for_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -61,6 +62,8 @@ def create_wide_dataset(
     rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
     source_encoding: str | None = None, documents: str = "[]",
 ) -> dict[str, Any]:
+    profile = profile_for_url(database_url)
+    preflight(profile, len(variables))
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog = catalog(metadata)

@@ -6,14 +6,14 @@ from typing import Any
 
 from .core import CapabilityDeclaration
 from .spss import export_dataset, import_dataset, inspect_source
-from .sql import validate_dataset
+from .sql import declared_profiles, validate_dataset
 
 
 def capabilities() -> Mapping[str, Any]:
     return CapabilityDeclaration(
         specification="OpenStatSpec strict wide-table SPSS profile (initial)",
         formats={"SAV": {"import": True, "export": True}, "ZSAV": {"import": True, "export": False}},
-        database_profiles={"sqlite": {"import": True, "export": True}},
+        database_profiles=declared_profiles(),
     ).as_dict()
 
 
