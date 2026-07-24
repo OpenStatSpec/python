@@ -1,3 +1,4 @@
+from .results import Diagnostic, OperationResult
 """Pure OpenStatSpec concepts; no file or database adapter code."""
 
 from dataclasses import dataclass, field

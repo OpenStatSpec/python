@@ -20,6 +20,8 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert inspected["source_sha256"]
     assert inspected["loss_report"][0]["code"] == "unobservable-source-dictionary-features"
     assert imported["case_count"] == 1
+    from openstatspec.core.results import OperationResult
+    assert isinstance(openstatspec.import_sav(source, database_url=f"sqlite:///{tmp_path / 'typed.sqlite'}", dataset_id="typed"), OperationResult)
 
     assert openstatspec.cli.main(["validate", "--database-url", database, "--dataset-id", "fixture"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True

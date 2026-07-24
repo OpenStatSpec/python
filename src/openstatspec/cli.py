@@ -32,5 +32,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = inspect(args.source)
     else:
         result = validate(database_url=args.database_url, dataset_id=args.dataset_id)
-    print(json.dumps(result, default=str, sort_keys=True))
+    print(json.dumps(result.as_dict() if hasattr(result, "as_dict") else result, default=str, sort_keys=True))
     return 0
