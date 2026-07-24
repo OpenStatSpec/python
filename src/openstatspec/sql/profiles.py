@@ -19,6 +19,7 @@ class SqlProfile:
     binary64_numeric: bool
     lossless_text: bool
     tested_reference: bool = False
+    driver_packages: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -27,12 +28,13 @@ class SqlProfile:
             "binary64_numeric": self.binary64_numeric,
             "lossless_text": self.lossless_text,
             "tested_reference": self.tested_reference,
+            "driver_packages": list(self.driver_packages),
         }
 
 
 SQLITE = SqlProfile("sqlite", ("sqlite",), 1_999, 255, True, True, True)
-POSTGRESQL = SqlProfile("postgresql", ("postgresql", "postgres"), 1_599, 63, True, True)
-MYSQL = SqlProfile("mysql", ("mysql", "mariadb"), 1_016, 64, True, True)
+POSTGRESQL = SqlProfile("postgresql", ("postgresql", "postgres"), 1_599, 63, True, True, False, ("psycopg",))
+MYSQL = SqlProfile("mysql", ("mysql", "mariadb"), 1_016, 64, True, True, False, ("PyMySQL or mariadb",))
 PROFILES = (SQLITE, POSTGRESQL, MYSQL)
 
 
