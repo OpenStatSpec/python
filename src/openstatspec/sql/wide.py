@@ -117,6 +117,8 @@ def create_wide_dataset(
         metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog])
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.dataset_id == dataset_id)).first():
             raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
+        if connection.execute(select(datasets.c.dataset_id).where(datasets.c.data_table == data_table.name)).first():
+            raise ValueError(f"Dataset ID {dataset_id!r} collides with an existing physical data-table name; import was not started.")
         data_table.create(connection)
         materialized = [{"__case_ordinal": ordinal, **row} for ordinal, row in enumerate(rows, start=1)]
         connection.execute(insert(datasets).values(

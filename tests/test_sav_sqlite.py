@@ -71,3 +71,17 @@ def test_validation_rejects_catalog_type_mismatch(tmp_path) -> None:
     connection.commit()
     with pytest.raises(ValueError, match="String variable"):
         openstatspec.validate(database_url=database, dataset_id="fixture")
+
+
+def test_import_rejects_physical_table_name_collision_without_partial_catalog(tmp_path) -> None:
+    source = tmp_path / "fixture.sav"
+    database_path = tmp_path / "dataset.sqlite"
+    database = f"sqlite:///{database_path}"
+    pyreadstat.write_sav(pd.DataFrame({"answer": [1.0]}), source)
+    openstatspec.import_sav(source, database_url=database, dataset_id="wave-1")
+
+    with pytest.raises(ValueError, match="collides"):
+        openstatspec.import_sav(source, database_url=database, dataset_id="wave 1")
+
+    connection = sqlite3.connect(database_path)
+    assert connection.execute("select dataset_id from dataset_catalog").fetchall() == [("wave-1",)]
