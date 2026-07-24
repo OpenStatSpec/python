@@ -28,3 +28,51 @@ def test_export_reports_unwritable_spss_dictionary_features(tmp_path) -> None:
     assert {event["code"] for event in result["loss_report"]} == {
         "multiple-response-sets-not-exported", "variable-alignment-not-exported", "unobservable-source-dictionary-features"
     }
+
+
+def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path) -> None:
+    import pandas as pd
+    import pyreadstat
+    import pytest
+
+    from openstatspec.core import UnsupportedOperationError
+
+    source = tmp_path / "source.sav"
+    database_path = tmp_path / "persisted.sqlite"
+    database = f"sqlite:///{database_path}"
+    blocked = tmp_path / "blocked.sav"
+    approved = tmp_path / "approved.sav"
+    pyreadstat.write_sav(pd.DataFrame({"answer": [1.0]}), source)
+
+    imported = __import__("openstatspec").import_sav(
+        source, database_url=database, dataset_id="persisted"
+    )
+    assert {event["code"] for event in imported["loss_report"]} == {
+        "unobservable-source-dictionary-features"
+    }
+
+    import sqlite3
+    connection = sqlite3.connect(database_path)
+    assert connection.execute(
+        "select dataset_id, code from fidelity_event_catalog"
+    ).fetchall() == [("persisted", "unobservable-source-dictionary-features")]
+    connection.close()
+
+    with pytest.raises(
+        UnsupportedOperationError, match="unobservable-source-dictionary-features"
+    ):
+        __import__("openstatspec").export_sav(
+            database_url=database, dataset_id="persisted", destination=blocked
+        )
+    assert not blocked.exists()
+
+    exported = __import__("openstatspec").export_sav(
+        database_url=database,
+        dataset_id="persisted",
+        destination=approved,
+        allow_loss=["unobservable-source-dictionary-features"],
+    )
+    assert approved.exists()
+    assert {event["code"] for event in exported["loss_report"]} == {
+        "unobservable-source-dictionary-features"
+    }

@@ -10,7 +10,7 @@ from typing import Any
 import pyreadstat
 
 from ..core import LossReport, UnsupportedOperationError
-from ..sql.wide import create_wide_dataset, physical_name, read_wide_dataset
+from ..sql.wide import create_wide_dataset, physical_name, read_fidelity_events, read_wide_dataset
 
 
 def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
@@ -76,6 +76,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     _require_source(source_path)
     frame, meta = pyreadstat.read_sav(source_path, user_missing=True, disable_datetime_conversion=True)
     variables = _variables(meta, list(frame.columns))
+    import_loss_report = _import_loss_report(meta)
     result = create_wide_dataset(
         database_url=database_url, dataset_id=dataset_id, source_name=source_path.name,
         source_format=source_path.suffix[1:].upper(), rows=_rows(frame, variables),
@@ -88,8 +89,9 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         imported_at=datetime.now(UTC).isoformat(),
         documents=json.dumps(list(getattr(meta, "notes", []) or [])),
         multiple_response_sets=json.dumps(dict(getattr(meta, "mr_sets", {}) or {}), default=str),
+        fidelity_events=import_loss_report,
     )
-    return {**result, "loss_report": _import_loss_report(meta)}
+    return {**result, "loss_report": import_loss_report}
 
 
 def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str | Path, allow_loss: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -114,7 +116,10 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
         item["source_name"]: {(float(key) if item["storage_kind"] == "numeric" else key): value for key, value in json.loads(item["value_labels"]).items()}
         for item in variables if item["value_labels"] != "{}"
     }
-    loss_report = _export_loss_report(dataset, variables)
+    loss_report = _merge_loss_reports(
+        read_fidelity_events(database_url=database_url, dataset_id=dataset_id),
+        _export_loss_report(dataset, variables),
+    )
     rejected = [event["code"] for event in loss_report if event["code"] not in allow_loss]
     if rejected:
         raise UnsupportedOperationError("Export requires explicit allow_loss for: " + ", ".join(rejected))
@@ -159,6 +164,16 @@ def _export_loss_report(dataset: dict[str, Any], variables: list[dict[str, Any]]
     if any(item.get("alignment") not in (None, "unknown") for item in variables):
         events.append({"code": "variable-alignment-not-exported", "detail": "The SAV writer has no variable-alignment output capability."})
     return tuple(events)
+
+
+def _merge_loss_reports(*reports: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
+    """Keep one deterministic diagnostic per loss code across import and export."""
+    events: dict[str, dict[str, str]] = {}
+    for report in reports:
+        for event in report:
+            events.setdefault(event["code"], event)
+    return tuple(events[code] for code in sorted(events))
+
 
 def _require_source(source_path: Path) -> None:
     if source_path.suffix.lower() not in {".sav", ".zsav"}:

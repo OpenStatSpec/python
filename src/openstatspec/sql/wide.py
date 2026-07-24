@@ -11,7 +11,7 @@ from .profiles import preflight, validate_connection_url
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
 
-def catalog(metadata: MetaData) -> tuple[Table, Table]:
+def catalog(metadata: MetaData) -> tuple[Table, Table, Table]:
     datasets = Table(
         "dataset_catalog", metadata,
         Column("dataset_id", String(255), primary_key=True),
@@ -46,8 +46,13 @@ def catalog(metadata: MetaData) -> tuple[Table, Table]:
         Column("value_labels", Text, nullable=False, default="{}"),
         Column("missing_ranges", Text, nullable=False, default="[]"),
     )
-    return datasets, variables
-
+    fidelity_events = Table(
+        "fidelity_event_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("code", String(128), primary_key=True),
+        Column("detail", Text, nullable=False),
+    )
+    return datasets, variables, fidelity_events
 
 
 def multiple_response_set_catalog(metadata: MetaData) -> Table:
@@ -103,12 +108,13 @@ def create_wide_dataset(
     source_created_at: str | None = None, source_modified_at: str | None = None,
     imported_at: str = "",
     multiple_response_sets: str = "{}",
+    fidelity_events: Iterable[Mapping[str, str]] = (),
 ) -> dict[str, Any]:
     profile = validate_connection_url(database_url)
     preflight(profile, len(variables))
     engine = create_engine(database_url)
     metadata = MetaData()
-    datasets, variable_catalog = catalog(metadata)
+    datasets, variable_catalog, fidelity_event_catalog = catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
     data_table = Table(
         data_table_name(dataset_id), metadata,
@@ -117,7 +123,7 @@ def create_wide_dataset(
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, fidelity_event_catalog])
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.dataset_id == dataset_id)).first():
             raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.data_table == data_table.name)).first():
@@ -138,12 +144,19 @@ def create_wide_dataset(
         mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
         if mrset_rows:
             connection.execute(insert(multiple_response_catalog), mrset_rows)
+        event_rows = [
+            {"dataset_id": dataset_id, "code": event["code"], "detail": event["detail"]}
+            for event in fidelity_events
+        ]
+        if event_rows:
+            connection.execute(insert(fidelity_event_catalog), event_rows)
         if materialized:
             try:
                 connection.execute(insert(data_table), materialized)
             except Exception:
                 data_table.drop(connection, checkfirst=True)
                 connection.execute(delete(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(fidelity_event_catalog).where(fidelity_event_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(datasets).where(datasets.c.dataset_id == dataset_id))
                 connection.commit()
@@ -154,7 +167,7 @@ def create_wide_dataset(
 def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     engine = create_engine(database_url)
     metadata = MetaData()
-    datasets, variable_catalog = catalog(metadata)
+    datasets, variable_catalog, _ = catalog(metadata)
     with engine.connect() as connection:
         dataset = connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one()
         data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
@@ -163,6 +176,21 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
         ).mappings().all()
         rows = connection.execute(select(data_table).order_by(data_table.c.__case_ordinal)).mappings().all()
     return dict(dataset), [dict(item) for item in variables], [dict(item) for item in rows]
+
+
+def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, str], ...]:
+    """Read import-time fidelity diagnostics for a catalogued dataset."""
+    engine = create_engine(database_url)
+    metadata = MetaData()
+    _, _, fidelity_event_catalog = catalog(metadata)
+    with engine.connect() as connection:
+        fidelity_event_catalog.create(connection, checkfirst=True)
+        events = connection.execute(
+            select(fidelity_event_catalog)
+            .where(fidelity_event_catalog.c.dataset_id == dataset_id)
+            .order_by(fidelity_event_catalog.c.code)
+        ).mappings().all()
+    return tuple({"code": item["code"], "detail": item["detail"]} for item in events)
 
 
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
