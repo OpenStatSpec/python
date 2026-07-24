@@ -60,6 +60,11 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
     _, meta = pyreadstat.read_sav(source_path, metadataonly=True, user_missing=True)
     return {
         "source_format": source_path.suffix[1:].upper(), "source_name": source_path.name,
+        "source_sha256": _sha256(source_path), "source_encoding": getattr(meta, "file_encoding", None),
+        "file_label": getattr(meta, "file_label", "") or "",
+        "documents": list(getattr(meta, "notes", []) or []),
+        "multiple_response_sets": dict(getattr(meta, "mr_sets", {}) or {}),
+        "loss_report": _import_loss_report(meta),
         "variable_count": len(meta.column_names), "variables": _variables(meta, list(meta.column_names)),
     }
 

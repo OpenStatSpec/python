@@ -13,6 +13,12 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
     assert openstatspec.cli.main(["import", str(source), "--database-url", database, "--dataset-id", "fixture"]) == 0
     imported = json.loads(capsys.readouterr().out)
+    preview = openstatspec.cli.main(["inspect", str(source)])
+    assert preview == 0
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected["source_format"] == "SAV"
+    assert inspected["source_sha256"]
+    assert inspected["loss_report"] == []
     assert imported["case_count"] == 1
 
     assert openstatspec.cli.main(["validate", "--database-url", database, "--dataset-id", "fixture"]) == 0
