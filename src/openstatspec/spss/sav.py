@@ -23,12 +23,14 @@ def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
     value_labels = dict(getattr(meta, "variable_value_labels", {}) or {})
     missing_ranges = dict(getattr(meta, "missing_ranges", {}) or {})
     widths = dict(getattr(meta, "variable_storage_width", {}) or {})
+    readstat_types = dict(getattr(meta, "readstat_variable_types", {}) or {})
     result = []
     for ordinal, source_name in enumerate(names, start=1):
         kind = "string" if str(formats.get(source_name, "")).upper().startswith("A") else "numeric"
         result.append({
             "ordinal": ordinal, "source_name": source_name,
             "physical_name": physical_name(source_name, used), "storage_kind": kind,
+            "readstat_storage_type": readstat_types.get(source_name),
             "string_width": widths.get(source_name) if kind == "string" else None,
             "label": labels.get(source_name, "") or "", "format": formats.get(source_name),
             "measure": measures.get(source_name), "alignment": alignments.get(source_name),
@@ -79,6 +81,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         source_format=source_path.suffix[1:].upper(), rows=_rows(frame, variables),
         variables=variables, file_label=getattr(meta, "file_label", "") or "",
         source_encoding=getattr(meta, "file_encoding", None),
+        source_table_name=getattr(meta, "table_name", None),
         source_sha256=_sha256(source_path),
         source_created_at=_iso_datetime(getattr(meta, "creation_time", None)),
         source_modified_at=_iso_datetime(getattr(meta, "modification_time", None)),
