@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select
+from sqlalchemy import delete, BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select
 from .profiles import preflight, profile_for_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
@@ -135,7 +135,15 @@ def create_wide_dataset(
         if mrset_rows:
             connection.execute(insert(multiple_response_catalog), mrset_rows)
         if materialized:
-            connection.execute(insert(data_table), materialized)
+            try:
+                connection.execute(insert(data_table), materialized)
+            except Exception:
+                data_table.drop(connection, checkfirst=True)
+                connection.execute(delete(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(datasets).where(datasets.c.dataset_id == dataset_id))
+                connection.commit()
+                raise
     return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized)}
 
 
