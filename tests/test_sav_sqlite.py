@@ -1,4 +1,5 @@
 import hashlib
+import pytest
 import json
 import sqlite3
 
@@ -56,3 +57,17 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert meta.missing_ranges == {"age": [{"lo": 34.0, "hi": 34.0}]}
     assert meta.notes == ["Fixture note"]
 
+
+
+def test_validation_rejects_catalog_type_mismatch(tmp_path) -> None:
+    source = tmp_path / "fixture.sav"
+    database_path = tmp_path / "dataset.sqlite"
+    database = f"sqlite:///{database_path}"
+    pyreadstat.write_sav(pd.DataFrame({"answer": [1.0]}), source)
+    openstatspec.import_sav(source, database_url=database, dataset_id="fixture")
+
+    connection = sqlite3.connect(database_path)
+    connection.execute("update variable_catalog set storage_kind = 'string' where dataset_id = 'fixture'")
+    connection.commit()
+    with pytest.raises(ValueError, match="String variable"):
+        openstatspec.validate(database_url=database, dataset_id="fixture")

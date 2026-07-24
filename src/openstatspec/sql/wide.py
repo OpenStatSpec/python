@@ -124,13 +124,25 @@ def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, An
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")
     expected_columns = {"__case_ordinal", *(item["physical_name"] for item in variables)}
-    actual_columns = set(rows[0]) if rows else {column.name for column in Table(dataset["data_table"], MetaData(), autoload_with=create_engine(database_url)).columns}
+    reflected_table = Table(dataset["data_table"], MetaData(), autoload_with=create_engine(database_url))
+    reflected_columns = {column.name: column for column in reflected_table.columns}
+    actual_columns = set(reflected_columns)
     if actual_columns != expected_columns:
         raise ValueError("Data-table columns do not match the registered source variables.")
     if dataset["case_count"] != len(rows):
         raise ValueError("Registered case count does not match the data table.")
     if len({item["physical_name"] for item in variables}) != len(variables):
         raise ValueError("Registered physical variable names are not unique.")
+    case_ordinal = reflected_columns["__case_ordinal"]
+    if not isinstance(case_ordinal.type, BigInteger) or case_ordinal.nullable:
+        raise ValueError("Reserved case ordinal must be a non-null BIGINT column.")
+    for item in variables:
+        column = reflected_columns[item["physical_name"]]
+        if item["storage_kind"] == "numeric":
+            if not isinstance(column.type, Float) or not column.nullable:
+                raise ValueError(f"Numeric variable {item['source_name']!r} must be a nullable binary64 column.")
+        elif not isinstance(column.type, Text) or column.nullable:
+            raise ValueError(f"String variable {item['source_name']!r} must be a non-null text column.")
     if [row["__case_ordinal"] for row in rows] != list(range(1, len(rows) + 1)):
         raise ValueError("Case ordinals are not contiguous source order.")
     return {"dataset_id": dataset["dataset_id"], "valid": True, "case_count": len(rows), "variable_count": len(variables)}
