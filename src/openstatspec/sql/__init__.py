@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from ..core import UnsupportedOperationError
+from .wide import validate_wide_dataset
 
 
 def validate_dataset(*, database_url: Any, dataset_id: str, **options: Any) -> dict[str, Any]:
-    raise UnsupportedOperationError("No OpenStatSpec SQL profile is implemented; validation cannot guess a schema.")
+    return validate_wide_dataset(database_url=str(database_url), dataset_id=dataset_id)

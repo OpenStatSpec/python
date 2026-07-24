@@ -3,16 +3,16 @@
 from pathlib import Path
 from typing import Any
 
-from ..core import UnsupportedOperationError
+from .sav import export_sav_dataset, import_sav_dataset, inspect_sav
 
 
 def inspect_source(source: str | Path, **options: Any) -> dict[str, Any]:
-    raise UnsupportedOperationError("No SAV/ZSAV profile is implemented; source metadata cannot be guessed.")
+    return inspect_sav(source)
 
 
 def import_dataset(source: str | Path, *, database_url: Any, dataset_id: str, **options: Any) -> dict[str, Any]:
-    raise UnsupportedOperationError("No SAV/ZSAV-to-SQL profile is implemented; no partial import was attempted.")
+    return import_sav_dataset(source=source, database_url=str(database_url), dataset_id=dataset_id)
 
 
 def export_dataset(*, database_url: Any, dataset_id: str, destination: str | Path, **options: Any) -> dict[str, Any]:
-    raise UnsupportedOperationError("No SQL-to-SAV/ZSAV profile is implemented; no lossy export was attempted.")
+    return export_sav_dataset(database_url=str(database_url), dataset_id=dataset_id, destination=destination)

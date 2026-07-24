@@ -26,4 +26,7 @@ class CapabilityDeclaration:
         return cls()
 
     def as_dict(self) -> dict[str, Any]:
-        return {"specification": self.specification, "formats": self.formats, "database_profiles": self.database_profiles, "operations": {"inspect": False, "import_sav": False, "export_sav": False, "validate": False}}
+        return {
+            "specification": self.specification, "formats": self.formats, "database_profiles": self.database_profiles,
+            "operations": {"inspect": True, "import_sav": True, "export_sav": True, "validate": True},
+        }

@@ -10,7 +10,11 @@ from .sql import validate_dataset
 
 
 def capabilities() -> Mapping[str, Any]:
-    return CapabilityDeclaration.empty().as_dict()
+    return CapabilityDeclaration(
+        specification="OpenStatSpec strict wide-table SPSS profile (initial)",
+        formats={"SAV": {"import": True, "export": True}, "ZSAV": {"import": True, "export": False}},
+        database_profiles={"sqlite": {"import": True, "export": True}},
+    ).as_dict()
 
 
 def inspect(source: str | Path, /, **options: Any) -> Mapping[str, Any]:
