@@ -106,8 +106,18 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
 
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
+    profile = profile_for_url(database_url)
+    preflight(profile, len(variables))
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")
+    expected_columns = {"__case_ordinal", *(item["physical_name"] for item in variables)}
+    actual_columns = set(rows[0]) if rows else {column.name for column in Table(dataset["data_table"], MetaData(), autoload_with=create_engine(database_url)).columns}
+    if actual_columns != expected_columns:
+        raise ValueError("Data-table columns do not match the registered source variables.")
+    if dataset["case_count"] != len(rows):
+        raise ValueError("Registered case count does not match the data table.")
+    if len({item["physical_name"] for item in variables}) != len(variables):
+        raise ValueError("Registered physical variable names are not unique.")
     if [row["__case_ordinal"] for row in rows] != list(range(1, len(rows) + 1)):
         raise ValueError("Case ordinals are not contiguous source order.")
     return {"dataset_id": dataset["dataset_id"], "valid": True, "case_count": len(rows), "variable_count": len(variables)}
