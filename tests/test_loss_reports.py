@@ -20,7 +20,7 @@ def test_export_reports_unwritable_spss_dictionary_features(tmp_path) -> None:
     )
 
     result = export_sav(
-        database_url=database, dataset_id="dictionary-gap", destination=tmp_path / "output.sav"
+        database_url=database, dataset_id="dictionary-gap", destination=tmp_path / "output.sav", allow_loss=["unobservable-source-dictionary-features", "multiple-response-sets-not-exported", "variable-alignment-not-exported"]
     )
     import sqlite3
     connection = sqlite3.connect(tmp_path / "dataset.sqlite")

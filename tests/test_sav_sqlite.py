@@ -42,7 +42,7 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     created_at, modified_at, imported_at = connection.execute("select source_created_at, source_modified_at, imported_at from dataset_catalog").fetchone()
     assert created_at and modified_at and imported_at
 
-    openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
+    openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported, allow_loss=["unobservable-source-dictionary-features"])
     frame, meta = pyreadstat.read_sav(exported, user_missing=True)
     assert frame["age"].iloc[0] == 34.0
     assert pd.isna(frame["age"].iloc[1])
@@ -52,7 +52,7 @@ def test_sav_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert meta.original_variable_types == {"age": "F8.0", "name": "A12"}
     assert meta.variable_measure == {"age": "scale", "name": "nominal"}
     zsav = tmp_path / "roundtrip.zsav"
-    openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=zsav)
+    openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=zsav, allow_loss=["unobservable-source-dictionary-features"])
     compressed_frame, _ = pyreadstat.read_sav(zsav, user_missing=True)
     assert compressed_frame["name"].tolist() == ["Ada", ""]
     assert meta.missing_ranges == {"age": [{"lo": 34.0, "hi": 34.0}]}
@@ -103,5 +103,5 @@ def test_long_utf8_strings_and_date_format_remain_source_semantic(tmp_path) -> N
     connection = sqlite3.connect(database_path)
     assert connection.execute("select comment, interview_date from data_semantic").fetchone() == (long_text, 23123.0)
     assert connection.execute("select storage_kind, format from variable_catalog where source_name = 'interview_date'").fetchone() == ("numeric", "DATE11")
-    openstatspec.export_sav(database_url=database, dataset_id="semantic", destination=exported)
+    openstatspec.export_sav(database_url=database, dataset_id="semantic", destination=exported, allow_loss=["unobservable-source-dictionary-features"])
     assert compare_sav_semantics(source, exported) == {"equivalent": True, "differences": []}

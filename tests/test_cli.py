@@ -26,7 +26,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert openstatspec.cli.main(["validate", "--database-url", database, "--dataset-id", "fixture"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
 
-    assert openstatspec.cli.main(["export", "--database-url", database, "--dataset-id", "fixture", "--output", str(output)]) == 0
+    assert openstatspec.cli.main(["export", "--database-url", database, "--dataset-id", "fixture", "--output", str(output), "--allow-loss", "unobservable-source-dictionary-features"]) == 0
     assert json.loads(capsys.readouterr().out)["destination"] == str(output)
     assert pyreadstat.read_sav(output)[0]["answer"].tolist() == [1.0]
 

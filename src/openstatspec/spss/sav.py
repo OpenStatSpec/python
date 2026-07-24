@@ -92,7 +92,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     return {**result, "loss_report": _import_loss_report(meta)}
 
 
-def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str | Path) -> dict[str, Any]:
+def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str | Path, allow_loss: tuple[str, ...] = ()) -> dict[str, Any]:
     destination_path = Path(destination)
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
         raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
@@ -114,6 +114,10 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
         item["source_name"]: {(float(key) if item["storage_kind"] == "numeric" else key): value for key, value in json.loads(item["value_labels"]).items()}
         for item in variables if item["value_labels"] != "{}"
     }
+    loss_report = _export_loss_report(dataset, variables)
+    rejected = [event["code"] for event in loss_report if event["code"] not in allow_loss]
+    if rejected:
+        raise UnsupportedOperationError("Export requires explicit allow_loss for: " + ", ".join(rejected))
     pyreadstat.write_sav(
         frame, destination_path, file_label=dataset["file_label"], column_labels=labels,
         compress=destination_path.suffix.lower() == ".zsav",
@@ -123,7 +127,7 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
     )
     return {
         "dataset_id": dataset_id, "destination": str(destination_path),
-        "loss_report": _export_loss_report(dataset, variables),
+        "loss_report": loss_report,
     }
 
 
