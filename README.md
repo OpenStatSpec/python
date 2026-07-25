@@ -37,6 +37,22 @@ openstatspec import responses.sav --database-url postgresql+psycopg://... --data
 openstatspec export --database-url postgresql+psycopg://... --dataset-id responses-2026 --output responses-roundtrip.sav
 ```
 
-The initial scaffold deliberately declares no conforming SPSS or SQL profile.
-The entry points are stable, but fail explicitly until an implementation has
-been proven by OpenStatSpec conformance fixtures.
+## 0.1.0 support status
+
+The adapter supports unencrypted SAV and ZSAV import and SAV/ZSAV export for
+the semantics exposed by its SPSS engine. SQLite is the local reference path.
+PostgreSQL and MySQL/MariaDB are also covered by service-backed CI conformance
+checks. Use these explicit SQLAlchemy URLs:
+
+- SQLite: `sqlite:///dataset.sqlite`
+- PostgreSQL: `postgresql+psycopg://user:password@host/database`
+- MySQL/MariaDB: `mysql+pymysql://user:password@host/database`
+
+Run `openstatspec capabilities` before an integration to inspect the
+machine-readable feature matrix. Export is deliberately strict: if known
+dictionary semantics cannot be reproduced, it stops until you pass the exact
+diagnostic code with `--allow-loss`. This avoids silent loss while making an
+intentional lossy export auditable.
+
+See [the SAV profile](docs/sav-profile.md) for feature boundaries and
+[release readiness](docs/release-readiness.md) for the pre-tag checklist.

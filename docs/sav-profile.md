@@ -13,17 +13,20 @@ measurement level, user-missing rules, file notes, and source encoding
 metadata. User-missing values remain stored values; their interpretation is
 kept as metadata and is restored to SAV on export.
 
-## Declared SQL profiles
+## Verified SQL profiles
 
-SQLite is the tested reference profile. PostgreSQL and MySQL/MariaDB have
-explicit preflight declarations but need live-server conformance fixtures
-before they are described as tested. An import that exceeds a target's strict
-single-table column limit fails before it creates a dataset.
+SQLite has a local reference fixture. PostgreSQL and MySQL/MariaDB have
+service-backed conformance checks in GitHub Actions that import, validate, and
+export the same supported fixture. The MySQL service test verifies the shared
+MySQL/MariaDB profile contract; it does not claim separately tested coverage
+for every MariaDB release or server configuration. An import that exceeds a
+target's strict single-table column limit fails before it creates a dataset.
 
 ## Explicit current boundaries
 
 - Imports accept unencrypted `.sav` and `.zsav` sources through pyreadstat.
-- Export currently writes `.sav` only. Requesting `.zsav` fails explicitly.
+- Exports write SAV and ZSAV; ZSAV output uses the engine's compressed
+  SAV writer path.
 - The writer restores metadata supported by pyreadstat. SPSS dictionary
   constructs that pyreadstat does not expose as stable writer inputs—such as
   multiple-response sets and variable sets—are not silently claimed as
