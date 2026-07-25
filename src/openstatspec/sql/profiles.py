@@ -33,8 +33,8 @@ class SqlProfile:
 
 
 SQLITE = SqlProfile("sqlite", ("sqlite",), 1_999, 255, True, True, True)
-POSTGRESQL = SqlProfile("postgresql", ("postgresql", "postgres"), 1_599, 63, True, True, False, ("psycopg",))
-MYSQL = SqlProfile("mysql", ("mysql", "mariadb"), 1_016, 64, True, True, False, ("PyMySQL or mariadb",))
+POSTGRESQL = SqlProfile("postgresql", ("postgresql", "postgres"), 1_599, 63, True, True, True, ("psycopg",))
+MYSQL = SqlProfile("mysql", ("mysql", "mariadb"), 1_016, 64, True, True, True, ("PyMySQL or mariadb",))
 PROFILES = (SQLITE, POSTGRESQL, MYSQL)
 
 
