@@ -2,10 +2,12 @@
 
 import json
 import re
+from datetime import UTC, datetime
+from uuid import uuid4
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import delete, BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select
+from sqlalchemy import delete, BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select, update
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from .profiles import preflight, validate_connection_url
 
@@ -28,7 +30,7 @@ def binary64_type() -> Float:
     )
 
 
-def catalog(metadata: MetaData) -> tuple[Table, Table, Table]:
+def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
     datasets = Table(
         "dataset_catalog", metadata,
         Column("dataset_id", String(255), primary_key=True),
@@ -65,12 +67,78 @@ def catalog(metadata: MetaData) -> tuple[Table, Table, Table]:
     )
     fidelity_events = Table(
         "fidelity_event_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("code", String(128), primary_key=True),
+        Column("operation_id", String(36), primary_key=True),
+        Column("ordinal", Integer, primary_key=True),
+        Column("dataset_id", String(255)),
+        Column("direction", String(16), nullable=False),
+        Column("severity", String(16), nullable=False),
         Column("detail", Text, nullable=False),
+        Column("details", Text, nullable=False, default="{}"),
+        Column("code", String(128), nullable=False),
     )
-    return datasets, variables, fidelity_events
+    operations = Table(
+        "operation_catalog", metadata,
+        Column("operation_id", String(36), primary_key=True),
+        Column("direction", String(16), nullable=False),
+        Column("status", String(16), nullable=False),
+        Column("dataset_id", String(255)),
+        Column("source", Text),
+        Column("destination", Text),
+        Column("created_at", String(40), nullable=False),
+        Column("completed_at", String(40)),
+        Column("details", Text, nullable=False, default="{}"),
+    )
+    return datasets, variables, fidelity_events, operations
 
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _event_rows(
+    *, operation_id: str, dataset_id: str | None, direction: str,
+    fidelity_events: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize the public compact diagnostic shape into durable catalog rows."""
+    rows: list[dict[str, Any]] = []
+    for ordinal, event in enumerate(fidelity_events, start=1):
+        detail = str(event["detail"])
+        details = event.get("details", {})
+        rows.append({
+            "operation_id": operation_id, "ordinal": ordinal, "dataset_id": dataset_id,
+            "direction": str(event.get("direction", direction)),
+            "severity": str(event.get("severity", "warning")),
+            "code": str(event["code"]), "detail": detail,
+            "details": json.dumps(details, default=str, sort_keys=True),
+        })
+
+    return rows
+
+
+
+def _record_failed_preflight(
+    *, engine: Any, metadata: MetaData, datasets: Table, variable_catalog: Table,
+    multiple_response_catalog: Table, fidelity_event_catalog: Table,
+    operation_catalog: Table, operation_id: str, source_name: str,
+    variable_count: int, profile_name: str, error: Exception,
+) -> None:
+    """Persist a failed preflight without creating any source dataset state."""
+    with engine.begin() as connection:
+        metadata.create_all(connection, tables=[
+            datasets, variable_catalog, multiple_response_catalog,
+            fidelity_event_catalog, operation_catalog,
+        ])
+        connection.execute(insert(operation_catalog).values(
+            operation_id=operation_id, direction="import", status="failed", dataset_id=None,
+            source=source_name, created_at=_now(), completed_at=_now(),
+            details=json.dumps({"reason": "preflight", "variable_count": variable_count}, sort_keys=True),
+        ))
+        connection.execute(insert(fidelity_event_catalog), _event_rows(
+            operation_id=operation_id, dataset_id=None, direction="import", fidelity_events=({
+                "code": "target-capability-exceeded", "detail": str(error), "severity": "error",
+                "details": {"variable_count": variable_count, "profile": profile_name},
+            },),
+        ))
 
 def multiple_response_set_catalog(metadata: MetaData) -> Table:
     return Table(
@@ -125,14 +193,25 @@ def create_wide_dataset(
     source_created_at: str | None = None, source_modified_at: str | None = None,
     imported_at: str = "",
     multiple_response_sets: str = "{}",
-    fidelity_events: Iterable[Mapping[str, str]] = (),
+    fidelity_events: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     profile = validate_connection_url(database_url)
-    preflight(profile, len(variables))
     engine = create_engine(database_url)
     metadata = MetaData()
-    datasets, variable_catalog, fidelity_event_catalog = catalog(metadata)
+    datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
+    operation_id = str(uuid4())
+    try:
+        preflight(profile, len(variables))
+    except Exception as error:
+        _record_failed_preflight(
+            engine=engine, metadata=metadata, datasets=datasets,
+            variable_catalog=variable_catalog, multiple_response_catalog=multiple_response_catalog,
+            fidelity_event_catalog=fidelity_event_catalog, operation_catalog=operation_catalog,
+            operation_id=operation_id, source_name=source_name, variable_count=len(variables),
+            profile_name=profile.name, error=error,
+        )
+        raise
     data_table = Table(
         data_table_name(dataset_id), metadata,
         Column("__case_ordinal", BigInteger, primary_key=True, nullable=False),
@@ -140,7 +219,11 @@ def create_wide_dataset(
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, fidelity_event_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, fidelity_event_catalog, operation_catalog])
+        connection.execute(insert(operation_catalog).values(
+            operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
+            source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables)}, sort_keys=True),
+        ))
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.dataset_id == dataset_id)).first():
             raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.data_table == data_table.name)).first():
@@ -161,10 +244,9 @@ def create_wide_dataset(
         mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
         if mrset_rows:
             connection.execute(insert(multiple_response_catalog), mrset_rows)
-        event_rows = [
-            {"dataset_id": dataset_id, "code": event["code"], "detail": event["detail"]}
-            for event in fidelity_events
-        ]
+        event_rows = _event_rows(
+            operation_id=operation_id, dataset_id=dataset_id, direction="import", fidelity_events=fidelity_events,
+        )
         if event_rows:
             connection.execute(insert(fidelity_event_catalog), event_rows)
         if materialized:
@@ -178,13 +260,16 @@ def create_wide_dataset(
                 connection.execute(delete(datasets).where(datasets.c.dataset_id == dataset_id))
                 connection.commit()
                 raise
-    return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized)}
+        connection.execute(update(operation_catalog).where(operation_catalog.c.operation_id == operation_id).values(
+            status="succeeded", completed_at=_now(),
+        ))
+    return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized), "operation_id": operation_id}
 
 
 def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     engine = create_engine(database_url)
     metadata = MetaData()
-    datasets, variable_catalog, _ = catalog(metadata)
+    datasets, variable_catalog, _, _ = catalog(metadata)
     with engine.connect() as connection:
         dataset = connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one()
         data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
@@ -199,7 +284,7 @@ def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[st
     """Read import-time fidelity diagnostics for a catalogued dataset."""
     engine = create_engine(database_url)
     metadata = MetaData()
-    _, _, fidelity_event_catalog = catalog(metadata)
+    _, _, fidelity_event_catalog, _ = catalog(metadata)
     with engine.connect() as connection:
         fidelity_event_catalog.create(connection, checkfirst=True)
         events = connection.execute(
@@ -209,6 +294,35 @@ def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[st
         ).mappings().all()
     return tuple({"code": item["code"], "detail": item["detail"]} for item in events)
 
+
+
+def record_export_operation(
+    *, database_url: str, dataset_id: str, destination: str,
+    allowed_fidelity_events: Iterable[Mapping[str, Any]],
+) -> str:
+    """Persist a completed export and the fidelity loss explicitly accepted by its caller."""
+    engine = create_engine(database_url)
+    metadata = MetaData()
+    datasets, variables, fidelity_events, operations = catalog(metadata)
+    multiple_response = multiple_response_set_catalog(metadata)
+    operation_id = str(uuid4())
+    events = tuple(allowed_fidelity_events)
+    with engine.begin() as connection:
+        metadata.create_all(connection, tables=[datasets, variables, multiple_response, fidelity_events, operations])
+        connection.execute(insert(operations).values(
+            operation_id=operation_id, direction="export", status="succeeded", dataset_id=dataset_id,
+            destination=destination, created_at=_now(), completed_at=_now(),
+            details=json.dumps({"allow_loss": [event["code"] for event in events]}, sort_keys=True),
+        ))
+        rows = _event_rows(
+            operation_id=operation_id, dataset_id=dataset_id, direction="export",
+            fidelity_events=({**event, "severity": event.get("severity", "warning"),
+                              "details": {**event.get("details", {}), "accepted_by_user": True}}
+                             for event in events),
+        )
+        if rows:
+            connection.execute(insert(fidelity_events), rows)
+    return operation_id
 
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)

@@ -76,3 +76,35 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     assert {event["code"] for event in exported["loss_report"]} == {
         "unobservable-source-dictionary-features"
     }
+
+
+def test_loss_allowed_export_persists_accepted_diagnostics(tmp_path) -> None:
+    import sqlite3
+
+    database_path = tmp_path / "accepted-loss.sqlite"
+    database = f"sqlite:///{database_path}"
+    create_wide_dataset(
+        database_url=database, dataset_id="accepted", source_name="fixture.sav", source_format="SAV",
+        rows=[{"answer": 1.0}], variables=[{
+            "ordinal": 1, "source_name": "answer", "physical_name": "answer",
+            "storage_kind": "numeric", "string_width": None, "label": "", "format": "F8.0",
+            "measure": "nominal", "alignment": None, "display_width": 8,
+            "value_labels": "{}", "missing_ranges": "[]",
+        }],
+    )
+    result = export_sav(
+        database_url=database, dataset_id="accepted", destination=tmp_path / "accepted.sav",
+        allow_loss=["unobservable-source-dictionary-features"],
+    )
+
+    connection = sqlite3.connect(database_path)
+    assert connection.execute(
+        "select direction, status, dataset_id from operation_catalog where operation_id = ?",
+        (result["operation_id"],),
+    ).fetchone() == ("export", "succeeded", "accepted")
+    direction, severity, code, details = connection.execute(
+        "select direction, severity, code, details from fidelity_event_catalog where operation_id = ?",
+        (result["operation_id"],),
+    ).fetchone()
+    assert (direction, severity, code) == ("export", "warning", "unobservable-source-dictionary-features")
+    assert '"accepted_by_user": true' in details

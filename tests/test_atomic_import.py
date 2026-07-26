@@ -29,3 +29,28 @@ def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
     assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
     assert "variable_catalog" in tables
     assert connection.execute("select count(*) from variable_catalog").fetchone() == (0,)
+
+
+def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path) -> None:
+    database_path = tmp_path / "preflight.sqlite"
+    database = f"sqlite:///{database_path}"
+
+    with pytest.raises(Exception, match="Target capability exceeded"):
+        create_wide_dataset(
+            database_url=database, dataset_id="too-wide", source_name="too-wide.sav",
+            source_format="SAV", rows=(), variables=[{}] * 2_001,
+        )
+
+    connection = sqlite3.connect(database_path)
+    assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
+    assert "data_too_wide" not in {
+        row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")
+    }
+    assert connection.execute(
+        "select direction, status, dataset_id from operation_catalog"
+    ).fetchall() == [("import", "failed", None)]
+    direction, severity, code, details = connection.execute(
+        "select direction, severity, code, details from fidelity_event_catalog"
+    ).fetchone()
+    assert (direction, severity, code) == ("import", "error", "target-capability-exceeded")
+    assert '"variable_count": 2001' in details

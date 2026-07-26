@@ -10,7 +10,7 @@ from typing import Any
 import pyreadstat
 
 from ..core import LossReport, UnsupportedOperationError
-from ..sql.wide import create_wide_dataset, physical_name, read_fidelity_events, read_wide_dataset
+from ..sql.wide import create_wide_dataset, physical_name, read_fidelity_events, read_wide_dataset, record_export_operation
 
 
 def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
@@ -130,8 +130,12 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
         variable_display_width=displays, variable_value_labels=value_labels,
         missing_ranges=missing_ranges, note=json.loads(dataset["documents"]),
     )
+    operation_id = record_export_operation(
+        database_url=database_url, dataset_id=dataset_id, destination=str(destination_path),
+        allowed_fidelity_events=tuple(event for event in loss_report if event["code"] in allow_loss),
+    )
     return {
-        "dataset_id": dataset_id, "destination": str(destination_path),
+        "dataset_id": dataset_id, "destination": str(destination_path), "operation_id": operation_id,
         "loss_report": loss_report,
     }
 
