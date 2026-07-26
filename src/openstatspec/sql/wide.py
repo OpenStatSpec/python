@@ -1,7 +1,9 @@
 """SQLite reference SQL profile for the strict OpenStatSpec wide-table contract."""
 
 import json
+import math
 import re
+import sys
 from datetime import UTC, datetime
 from uuid import uuid4
 from collections.abc import Iterable, Mapping
@@ -198,6 +200,18 @@ def missing_rule_catalog(metadata: MetaData) -> Table:
 
 
 def _typed_endpoint(value: Any) -> tuple[str, float | None, str | None]:
+    """Encode typed values without losing SPSS LOWEST/HIGHEST sentinels.
+
+    ReadStat exposes a LOWEST range bound as NaN and HIGHEST as positive
+    infinity. Storing either in a SQL binary64 column is not portable, so the
+    catalog records an explicit endpoint type and reconstructs the ReadStat
+    writer input on export.
+    """
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "lowest", None, None
+        if math.isinf(value):
+            return ("highest" if value > 0 else "lowest"), None, None
     if isinstance(value, bool):
         return "text", None, str(value)
     if isinstance(value, (int, float)):
@@ -382,7 +396,12 @@ def create_wide_dataset(
 
 
 def _endpoint_from_row(row: Mapping[str, Any], *, prefix: str) -> Any:
-    return row[f"{prefix}_numeric"] if row[f"{prefix}_type"] == "numeric" else row[f"{prefix}_text"]
+    endpoint_type = row[f"{prefix}_type"]
+    if endpoint_type == "lowest":
+        return -sys.float_info.max
+    if endpoint_type == "highest":
+        return sys.float_info.max
+    return row[f"{prefix}_numeric"] if endpoint_type == "numeric" else row[f"{prefix}_text"]
 
 
 def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:

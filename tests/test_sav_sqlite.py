@@ -1,7 +1,7 @@
 import hashlib
 import pytest
 import json
-from conformance import compare_sav_semantics
+from conformance import compare_sav_semantics, write_supported_semantics_fixture
 import sqlite3
 
 import openstatspec
@@ -192,3 +192,47 @@ def test_legacy_json_metadata_remains_exportable_after_catalog_migration(tmp_pat
     assert metadata.notes == ["legacy document"]
     assert metadata.variable_value_labels == {"code": {1.0: "one"}}
     assert metadata.missing_ranges == {"code": [{"lo": 2.0, "hi": 2.0}]}
+
+
+@pytest.mark.parametrize("suffix", [".sav", ".zsav"])
+def test_supported_spss_semantics_fixture_round_trips_through_sqlite(tmp_path, suffix: str) -> None:
+    # Attributes, variable sets, and MR sets are explicit fidelity losses, not
+    # currently supported round-trip semantics.
+    source = tmp_path / f"supported{suffix}"
+    database_path = tmp_path / f"supported-{suffix[1:]}.sqlite"
+    destination = tmp_path / f"supported-roundtrip{suffix}"
+    expected = write_supported_semantics_fixture(source)
+    dataset_id = f"supported-{suffix[1:]}"
+
+    result = openstatspec.import_sav(
+        source, database_url=f"sqlite:///{database_path}", dataset_id=dataset_id,
+    )
+    assert result["case_count"] == 4
+    assert openstatspec.validate(
+        database_url=f"sqlite:///{database_path}", dataset_id=dataset_id
+    )["valid"] is True
+
+    connection = sqlite3.connect(database_path)
+    assert connection.execute("select source_format, source_encoding from dataset_catalog where dataset_id = ?", (dataset_id,)).fetchone() == (suffix[1:].upper(), "UTF-8")
+    data_table = "data_supported_sav" if suffix == ".sav" else "data_supported_zsav"
+    assert connection.execute(
+        f"select comment from {data_table} order by __case_ordinal"
+    ).fetchall()[0] == (expected["long_text"],)
+    # Typed normalized catalog values retain insertion order and string-vs-number identity.
+    assert connection.execute(
+        "select ordinal, numeric_value, text_value, label from value_label_catalog "
+        "where dataset_id = ? and variable_ordinal = 3 order by ordinal",
+        (dataset_id,),
+    ).fetchall() == [
+        (1, 3.0, None, "third"),
+        (2, 1.0, None, "first"),
+        (3, 2.0, None, "second"),
+    ]
+
+    openstatspec.export_sav(
+        database_url=f"sqlite:///{database_path}",
+        dataset_id=dataset_id,
+        destination=destination,
+        allow_loss=["unobservable-source-dictionary-features"],
+    )
+    assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
