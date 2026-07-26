@@ -20,6 +20,7 @@ class SqlProfile:
     identifier_limit: int
     binary64_numeric: bool
     lossless_text: bool
+    max_text_value_bytes: int
     tested_reference: bool = False
     driver_packages: tuple[str, ...] = ()
 
@@ -29,14 +30,27 @@ class SqlProfile:
             "identifier_limit": self.identifier_limit,
             "binary64_numeric": self.binary64_numeric,
             "lossless_text": self.lossless_text,
+            "max_text_value_bytes": self.max_text_value_bytes,
             "tested_reference": self.tested_reference,
             "driver_packages": list(self.driver_packages),
         }
 
 
-SQLITE = SqlProfile("sqlite", ("sqlite",), 1_999, 255, True, True, True)
-POSTGRESQL = SqlProfile("postgresql", ("postgresql", "postgres"), 1_599, 63, True, True, True, ("psycopg",))
-MYSQL = SqlProfile("mysql", ("mysql", "mariadb"), 1_016, 64, True, True, True, ("PyMySQL or mariadb",))
+SQLITE = SqlProfile(
+    "sqlite", ("sqlite",), 1_999, 255, True, True,
+    1_000_000_000, True,
+)
+POSTGRESQL = SqlProfile(
+    "postgresql", ("postgresql", "postgres"), 1_599, 63, True, True,
+    1_073_741_824, True, ("psycopg",),
+)
+# SQLAlchemy's generic Text column compiles to MySQL TEXT, not MEDIUMTEXT.
+# The contract therefore declares TEXT's 64 KiB payload limit rather than
+# promising an unimplemented wider physical type.
+MYSQL = SqlProfile(
+    "mysql", ("mysql", "mariadb"), 1_016, 64, True, True,
+    65_535, True, ("PyMySQL or mariadb",),
+)
 PROFILES = (SQLITE, POSTGRESQL, MYSQL)
 
 
@@ -76,7 +90,7 @@ def _exceeded(reason: str, message: str, **details: Any) -> TargetCapabilityExce
 
 
 def preflight(profile: SqlProfile, variables_or_count: int | Iterable[Mapping[str, Any]]) -> None:
-    """Validate strict physical identifiers before any source dataset is created."""
+    """Validate strict target capabilities before any source dataset is created."""
     variables = None if isinstance(variables_or_count, int) else list(variables_or_count)
     variable_count = variables_or_count if isinstance(variables_or_count, int) else len(variables)
     if variable_count > profile.max_physical_variables:
@@ -117,6 +131,27 @@ def preflight(profile: SqlProfile, variables_or_count: int | Iterable[Mapping[st
                 identifier=expected_name, identifier_bytes=identifier_bytes,
                 maximum=profile.identifier_limit,
             )
+        if variable.get("storage_kind") == "string":
+            declared_width = variable.get("string_width")
+            if declared_width is not None and (
+                isinstance(declared_width, bool)
+                or not isinstance(declared_width, int)
+                or declared_width < 0
+            ):
+                raise _exceeded(
+                    "invalid_declared_string_width",
+                    f"{source_name!r} has an invalid declared string width.",
+                    source_name=source_name, string_width=declared_width,
+                )
+            if declared_width is not None and declared_width > profile.max_text_value_bytes:
+                raise _exceeded(
+                    "declared_string_width_limit",
+                    f"{source_name!r} declares {declared_width} UTF-8 bytes; "
+                    f"{profile.name} permits {profile.max_text_value_bytes}.",
+                    source_name=source_name, string_width=declared_width,
+                    maximum=profile.max_text_value_bytes,
+                )
+
 
 
 def _physical_name(source_name: str, used: set[str]) -> str:

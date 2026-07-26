@@ -1,8 +1,11 @@
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+import openstatspec.sql.wide as wide
+from openstatspec.sql.profiles import SQLITE
 from openstatspec.sql.wide import create_wide_dataset
 
 
@@ -77,3 +80,35 @@ def test_identifier_mapping_preflight_records_failure_before_dataset_creation(tm
     assert connection.execute("select dataset_id, status from operation_catalog").fetchall() == [(None, "failed")]
     details = connection.execute("select details from fidelity_event_catalog").fetchone()[0]
     assert '"reason": "physical_identifier_mapping_invalid"' in details
+
+
+def test_declared_string_width_preflight_is_atomic_and_diagnostic(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "string-width.sqlite"
+    database = f"sqlite:///{database_path}"
+    monkeypatch.setattr(
+        wide, "validate_connection_url", lambda _url: replace(SQLITE, max_text_value_bytes=3)
+    )
+    variables = [{
+        "ordinal": 1, "source_name": "name", "physical_name": "name",
+        "storage_kind": "string", "string_width": 4, "label": "",
+        "format": "A4", "measure": "nominal", "alignment": "left",
+        "display_width": 4, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+
+    with pytest.raises(Exception, match="Target capability exceeded"):
+        create_wide_dataset(
+            database_url=database, dataset_id="too-wide-string", source_name="fixture.sav",
+            source_format="SAV", rows=[{"name": "aa"}], variables=variables,
+        )
+
+    connection = sqlite3.connect(database_path)
+    assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
+    assert "data_too_wide_string" not in {
+        row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")
+    }
+    assert connection.execute(
+        "select dataset_id, status from operation_catalog"
+    ).fetchall() == [(None, "failed")]
+    details = connection.execute("select details from fidelity_event_catalog").fetchone()[0]
+    assert '"reason": "declared_string_width_limit"' in details
+    assert '"string_width": 4' in details
