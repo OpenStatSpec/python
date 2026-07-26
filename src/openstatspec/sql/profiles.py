@@ -4,7 +4,9 @@ A declaration is deliberately not a claim that a live target has been tested.
 Importers use this information for preflight checks before creating a dataset.
 """
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
 
 from ..core import UnsupportedOperationError
@@ -58,9 +60,74 @@ def validate_connection_url(database_url: str) -> SqlProfile:
         raise UnsupportedOperationError("MySQL/MariaDB requires an explicit mysql+pymysql or mariadb+mariadbconnector URL.")
     return profile
 
-def preflight(profile: SqlProfile, variable_count: int) -> None:
+class TargetCapabilityExceededError(UnsupportedOperationError):
+    """A strict wide-table capability check failed before source state existed."""
+
+    def __init__(self, message: str, *, details: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.details = dict(details)
+
+
+def _exceeded(reason: str, message: str, **details: Any) -> TargetCapabilityExceededError:
+    return TargetCapabilityExceededError(
+        "Target capability exceeded: " + message,
+        details={"reason": reason, **details},
+    )
+
+
+def preflight(profile: SqlProfile, variables_or_count: int | Iterable[Mapping[str, Any]]) -> None:
+    """Validate strict physical identifiers before any source dataset is created."""
+    variables = None if isinstance(variables_or_count, int) else list(variables_or_count)
+    variable_count = variables_or_count if isinstance(variables_or_count, int) else len(variables)
     if variable_count > profile.max_physical_variables:
-        raise UnsupportedOperationError(
-            f"Target capability exceeded: {profile.name} supports at most "
-            f"{profile.max_physical_variables} source variables in one strict wide table."
+        raise _exceeded(
+            "physical_variable_limit",
+            f"{profile.name} supports at most {profile.max_physical_variables} "
+            "source variables in one strict wide table.",
+            variable_count=variable_count, maximum=profile.max_physical_variables,
         )
+    if variables is None:
+        return
+
+    used = {"__case_ordinal"}
+    source_names: set[str] = set()
+    for expected_ordinal, variable in enumerate(variables, start=1):
+        source_name = variable.get("source_name")
+        if not isinstance(source_name, str) or not source_name or source_name in source_names:
+            raise _exceeded(
+                "source_identifier_collision", "source variable names must be non-empty and unique.",
+                source_name=source_name,
+            )
+        source_names.add(source_name)
+        expected_name = _physical_name(source_name, used)
+        actual_name = variable.get("physical_name")
+        if variable.get("ordinal") != expected_ordinal or actual_name != expected_name:
+            raise _exceeded(
+                "physical_identifier_mapping_invalid",
+                f"{source_name!r} must map deterministically to {expected_name!r} in source order.",
+                source_name=source_name, expected_physical_name=expected_name,
+                actual_physical_name=actual_name,
+            )
+        identifier_bytes = len(expected_name.encode("utf-8"))
+        if identifier_bytes > profile.identifier_limit:
+            raise _exceeded(
+                "identifier_limit",
+                f"identifier {expected_name!r} is {identifier_bytes} bytes; "
+                f"{profile.name} permits {profile.identifier_limit}.",
+                identifier=expected_name, identifier_bytes=identifier_bytes,
+                maximum=profile.identifier_limit,
+            )
+
+
+def _physical_name(source_name: str, used: set[str]) -> str:
+    """The profile-independent deterministic OpenStatSpec SQL-name mapping."""
+    import re
+
+    stem = re.sub(r"[^a-zA-Z0-9_]+", "_", source_name).strip("_").lower() or "variable"
+    stem = stem[:54]
+    candidate, suffix = stem, 2
+    while candidate.lower() in used or candidate.startswith("__"):
+        candidate = f"{stem[:50]}_{suffix}"
+        suffix += 1
+    used.add(candidate.lower())
+    return candidate

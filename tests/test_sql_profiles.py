@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from sqlalchemy import Column, MetaData, Table
 from sqlalchemy.dialects import mysql, postgresql, sqlite
@@ -36,3 +38,9 @@ def test_numeric_columns_compile_to_explicit_binary64_types() -> None:
 def test_unknown_target_is_explicitly_rejected() -> None:
     with pytest.raises(UnsupportedOperationError, match="No OpenStatSpec SQL profile"):
         profile_for_url("oracle://host/database")
+
+def test_identifier_length_preflight_uses_profile_limit() -> None:
+    limited = replace(SQLITE, identifier_limit=3)
+    variables = [{"ordinal": 1, "source_name": "name", "physical_name": "name"}]
+    with pytest.raises(UnsupportedOperationError, match="Target capability exceeded"):
+        preflight(limited, variables)

@@ -131,12 +131,14 @@ def _record_failed_preflight(
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="failed", dataset_id=None,
             source=source_name, created_at=_now(), completed_at=_now(),
-            details=json.dumps({"reason": "preflight", "variable_count": variable_count}, sort_keys=True),
+            details=json.dumps({"reason": "preflight", "variable_count": variable_count,
+                "capability": getattr(error, "details", {})}, sort_keys=True),
         ))
         connection.execute(insert(fidelity_event_catalog), _event_rows(
             operation_id=operation_id, dataset_id=None, direction="import", fidelity_events=({
                 "code": "target-capability-exceeded", "detail": str(error), "severity": "error",
-                "details": {"variable_count": variable_count, "profile": profile_name},
+                "details": {"variable_count": variable_count, "profile": profile_name,
+                            **getattr(error, "details", {})},
             },),
         ))
 
@@ -303,7 +305,7 @@ def create_wide_dataset(
     documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
     operation_id = str(uuid4())
     try:
-        preflight(profile, len(variables))
+        preflight(profile, variables)
     except Exception as error:
         _record_failed_preflight(
             engine=engine, metadata=metadata, datasets=datasets,
@@ -479,7 +481,7 @@ def record_export_operation(
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
     profile = validate_connection_url(database_url)
-    preflight(profile, len(variables))
+    preflight(profile, variables)
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")
     expected_columns = {"__case_ordinal", *(item["physical_name"] for item in variables)}
