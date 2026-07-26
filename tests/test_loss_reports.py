@@ -108,3 +108,49 @@ def test_loss_allowed_export_persists_accepted_diagnostics(tmp_path) -> None:
     ).fetchone()
     assert (direction, severity, code) == ("export", "warning", "unobservable-source-dictionary-features")
     assert '"accepted_by_user": true' in details
+
+
+def test_non_utf8_source_encoding_is_explicit_export_loss(tmp_path) -> None:
+    """The writer has no output-encoding argument, so it must fail closed."""
+    import pyreadstat
+    import pytest
+
+    from openstatspec.api import capability_matrix
+    from openstatspec.core import UnsupportedOperationError
+
+    database_path = tmp_path / "legacy-encoding.sqlite"
+    database = f"sqlite:///{database_path}"
+    destination = tmp_path / "legacy-encoding.sav"
+    create_wide_dataset(
+        database_url=database, dataset_id="legacy-encoding", source_name="legacy.sav",
+        source_format="SAV", source_encoding="WINDOWS-1252",
+        rows=[{"name": "Muller"}], variables=[{
+            "ordinal": 1, "source_name": "name", "physical_name": "name",
+            "storage_kind": "string", "string_width": 8, "label": "",
+            "format": "A8", "measure": "nominal", "alignment": None,
+            "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+        }],
+    )
+
+    with pytest.raises(UnsupportedOperationError, match="source-encoding-not-preserved"):
+        export_sav(
+            database_url=database, dataset_id="legacy-encoding", destination=destination,
+            allow_loss=["unobservable-source-dictionary-features"],
+        )
+    assert not destination.exists()
+
+    exported = export_sav(
+        database_url=database, dataset_id="legacy-encoding", destination=destination,
+        allow_loss=[
+            "unobservable-source-dictionary-features",
+            "source-encoding-not-preserved",
+        ],
+    )
+    assert {event["code"] for event in exported["loss_report"]} == {
+        "source-encoding-not-preserved",
+        "unobservable-source-dictionary-features",
+    }
+    _, metadata = pyreadstat.read_sav(destination, metadataonly=True)
+    assert metadata.file_encoding == "UTF-8"
+    assert capability_matrix()["spss"]["print_format"] == "supported"
+    assert capability_matrix()["spss"]["write_format"] == "unobservable"

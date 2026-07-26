@@ -13,6 +13,9 @@ from ..core import LossReport, UnsupportedOperationError
 from ..sql.wide import create_wide_dataset, physical_name, read_fidelity_events, read_wide_dataset, record_export_operation
 
 
+_UTF8_ENCODINGS = {"UTF-8", "UTF8"}
+
+
 def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
     used = {"__case_ordinal"}
     labels = dict(getattr(meta, "column_names_to_labels", {}) or {})
@@ -167,19 +170,28 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 def _import_loss_report(meta: Any) -> tuple[dict[str, str], ...]:
-    events = [{"code": "unobservable-source-dictionary-features", "detail": "The reader does not expose SPSS variable sets or custom file/variable attributes, so their presence cannot be established or preserved."}]
+    events = [{"code": "unobservable-source-dictionary-features", "detail": "The reader does not expose SPSS variable sets, custom file/variable attributes, variable roles, or separate write formats, so their presence cannot be established or preserved."}]
+    if _is_non_utf8_encoding(getattr(meta, "file_encoding", None)):
+        events.append({"code": "source-encoding-not-preserved", "detail": "The SAV writer has no output-encoding option and writes UTF-8, so a non-UTF-8 source encoding cannot be restored."})
     if getattr(meta, "mr_sets", {}) or {}:
         events.append({"code": "multiple-response-sets-not-exportable", "detail": "Multiple-response sets are catalogued but pyreadstat cannot write them back to SAV."})
     return tuple(events)
 
 
 def _export_loss_report(dataset: dict[str, Any], variables: list[dict[str, Any]]) -> tuple[dict[str, str], ...]:
-    events = [{"code": "unobservable-source-dictionary-features", "detail": "Variable sets and custom file/variable attributes are not observable through the reader and therefore cannot be restored by export."}]
+    events = [{"code": "unobservable-source-dictionary-features", "detail": "Variable sets, custom file/variable attributes, variable roles, and separate SPSS write formats are not observable through the reader and therefore cannot be restored by export."}]
+    if _is_non_utf8_encoding(dataset.get("source_encoding")):
+        events.append({"code": "source-encoding-not-preserved", "detail": "The SAV writer has no output-encoding option and writes UTF-8, so a non-UTF-8 source encoding cannot be restored."})
     if dataset["multiple_response_sets"] != "{}":
         events.append({"code": "multiple-response-sets-not-exported", "detail": "The SAV writer has no multiple-response-set output capability."})
     if any(item.get("alignment") not in (None, "unknown") for item in variables):
         events.append({"code": "variable-alignment-not-exported", "detail": "The SAV writer has no variable-alignment output capability."})
     return tuple(events)
+
+
+def _is_non_utf8_encoding(encoding: Any) -> bool:
+    """Whether a known source encoding differs from the writer's UTF-8 output."""
+    return encoding is not None and str(encoding).strip().replace("_", "-").upper() not in _UTF8_ENCODINGS
 
 
 def _merge_loss_reports(*reports: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:

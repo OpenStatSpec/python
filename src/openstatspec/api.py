@@ -15,7 +15,9 @@ def capability_matrix() -> Mapping[str, Any]:
     return {
         "spss": {
             "values": "supported", "variable_labels": "supported",
-            "value_labels": "supported", "formats": "supported",
+            "value_labels": "supported",
+            "print_format": "supported", "write_format": "unobservable",
+            "source_encoding": "preserved only when UTF-8",
             "measurement_level": "supported", "user_missing_rules": "supported",
             "documents": "supported", "multiple_response_sets": "lossy",
             "variable_alignment": "lossy", "variable_sets": "unobservable",
