@@ -6,9 +6,26 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import delete, BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select
+from sqlalchemy.dialects import mysql, postgresql, sqlite
 from .profiles import preflight, validate_connection_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
+
+
+def binary64_type() -> Float:
+    """Return the required IEEE-754 binary64 SQL type for every profile.
+
+    ``Float()`` is not adequate as a portable declaration: SQLAlchemy compiles
+    it to ``FLOAT`` for MySQL, which is single precision there. The strict
+    profile therefore declares the physical type explicitly for every target.
+    """
+    return (
+        Float(precision=53)
+        .with_variant(mysql.DOUBLE(asdecimal=False), "mysql")
+        .with_variant(mysql.DOUBLE(asdecimal=False), "mariadb")
+        .with_variant(postgresql.DOUBLE_PRECISION(), "postgresql")
+        .with_variant(sqlite.REAL(), "sqlite")
+    )
 
 
 def catalog(metadata: MetaData) -> tuple[Table, Table, Table]:
@@ -119,7 +136,7 @@ def create_wide_dataset(
     data_table = Table(
         data_table_name(dataset_id), metadata,
         Column("__case_ordinal", BigInteger, primary_key=True, nullable=False),
-        *(Column(item["physical_name"], Float() if item["storage_kind"] == "numeric" else Text(),
+        *(Column(item["physical_name"], binary64_type() if item["storage_kind"] == "numeric" else Text(),
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
