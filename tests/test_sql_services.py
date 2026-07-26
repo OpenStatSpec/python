@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 import openstatspec
+from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 
 pytestmark = pytest.mark.services
@@ -69,3 +70,48 @@ def test_live_profile_import_validate_and_export(environment_name, dataset_id, s
     assert frame["name"].tolist() == ["Ada", ""]
     assert metadata.column_labels == ["Age", "Name"]
     assert metadata.variable_value_labels == {"age": {34.0: "thirty-four"}}
+
+@pytest.mark.parametrize(
+    ("environment_name", "dataset_id"),
+    [
+        ("OPENSTATSPEC_POSTGRES_URL", "semantics_pg"),
+        ("OPENSTATSPEC_MYSQL_URL", "semantics_mysql"),
+        ("OPENSTATSPEC_MARIADB_URL", "semantics_mariadb"),
+    ],
+)
+@pytest.mark.parametrize("suffix", [".sav", ".zsav"])
+def test_live_profile_preserves_supported_sav_semantics(
+    environment_name, dataset_id, suffix, tmp_path,
+):
+    """Exercise every supported SPSS semantic on each real SQL family.
+
+    The narrow contract has no alternate long-form fallback: every profile
+    must preserve the exact wide table and supported dictionary metadata for
+    both uncompressed SAV and compressed ZSAV inputs.
+    """
+    database_url = os.environ.get(environment_name)
+    if not database_url:
+        pytest.skip(f"{environment_name} is not configured")
+
+    source = tmp_path / f"{dataset_id}{suffix}"
+    destination = tmp_path / f"{dataset_id}-roundtrip{suffix}"
+    write_supported_semantics_fixture(source)
+
+    imported = openstatspec.import_sav(
+        source, database_url=database_url, dataset_id=f"{dataset_id}_{suffix[1:]}",
+    )
+    assert imported["case_count"] == 4
+    assert openstatspec.validate(
+        database_url=database_url, dataset_id=f"{dataset_id}_{suffix[1:]}",
+    )["valid"] is True
+
+    openstatspec.export_sav(
+        database_url=database_url,
+        dataset_id=f"{dataset_id}_{suffix[1:]}",
+        destination=destination,
+        allow_loss=["unobservable-source-dictionary-features"],
+    )
+    assert compare_sav_semantics(source, destination) == {
+        "equivalent": True,
+        "differences": [],
+    }
