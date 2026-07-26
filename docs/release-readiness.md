@@ -17,9 +17,8 @@ validate that representation and export it back to SAV or ZSAV.
 | PostgreSQL | `postgresql+psycopg://…` | GitHub Actions PostgreSQL service |
 | MySQL/MariaDB | `mysql+pymysql://…` | GitHub Actions MySQL service |
 
-The MySQL service test establishes the shared MySQL/MariaDB profile contract.
-It is not a claim that every MariaDB release or configuration has separately
-been tested.
+Separate MySQL 8.4 and MariaDB 11.4 services test the shared MySQL/MariaDB
+profile contract. This does not claim coverage for every server configuration.
 
 ## Export-loss policy
 
@@ -36,8 +35,8 @@ machine-readable loss report with the export result.
 ## Maintainer checks before tagging
 
 1. Run `python -m pytest`.
-2. Run the service-backed profile checks with configured PostgreSQL and MySQL
-   URLs, or confirm the GitHub Actions SQL-services job is green.
+2. Run the service-backed profile checks with configured PostgreSQL, MySQL, and
+   MariaDB URLs, or confirm the GitHub Actions SQL-services job is green.
 3. Build with `python -m build` and install the generated wheel in a clean
    environment.
 4. Confirm `openstatspec capabilities` reflects the intended support boundary.

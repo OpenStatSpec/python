@@ -41,8 +41,8 @@ openstatspec export --database-url postgresql+psycopg://... --dataset-id respons
 
 The adapter supports unencrypted SAV and ZSAV import and SAV/ZSAV export for
 the semantics exposed by its SPSS engine. SQLite is the local reference path.
-PostgreSQL and MySQL/MariaDB are also covered by service-backed CI conformance
-checks. Use these explicit SQLAlchemy URLs:
+PostgreSQL, MySQL, and MariaDB are each covered by separate service-backed CI
+conformance checks. Use these explicit SQLAlchemy URLs:
 
 - SQLite: `sqlite:///dataset.sqlite`
 - PostgreSQL: `postgresql+psycopg://user:password@host/database`

@@ -1,4 +1,4 @@
-"""Real-service conformance checks for PostgreSQL and MySQL/MariaDB profiles."""
+"""Real-service conformance checks for PostgreSQL, MySQL, and MariaDB profiles."""
 
 import os
 
@@ -31,7 +31,11 @@ def source_sav(tmp_path):
 
 @pytest.mark.parametrize(
     ("environment_name", "dataset_id"),
-    [("OPENSTATSPEC_POSTGRES_URL", "profile_pg"), ("OPENSTATSPEC_MYSQL_URL", "profile_mysql")],
+    [
+        ("OPENSTATSPEC_POSTGRES_URL", "profile_pg"),
+        ("OPENSTATSPEC_MYSQL_URL", "profile_mysql"),
+        ("OPENSTATSPEC_MARIADB_URL", "profile_mariadb"),
+    ],
 )
 def test_live_profile_import_validate_and_export(environment_name, dataset_id, source_sav, tmp_path):
     database_url = os.environ.get(environment_name)

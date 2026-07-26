@@ -15,11 +15,11 @@ kept as metadata and is restored to SAV on export.
 
 ## Verified SQL profiles
 
-SQLite has a local reference fixture. PostgreSQL and MySQL/MariaDB have
-service-backed conformance checks in GitHub Actions that import, validate, and
-export the same supported fixture. The MySQL service test verifies the shared
-MySQL/MariaDB profile contract; it does not claim separately tested coverage
-for every MariaDB release or server configuration. An import that exceeds a
+SQLite has a local reference fixture. PostgreSQL, MySQL, and MariaDB have
+separate service-backed conformance checks in GitHub Actions that import,
+validate, and export the same supported fixture. MySQL 8.4 and MariaDB 11.4
+exercise the shared profile contract; this does not claim coverage for every
+server configuration. An import that exceeds a
 target's strict single-table column limit fails before it creates a dataset.
 
 ## Explicit current boundaries

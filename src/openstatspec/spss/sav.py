@@ -101,7 +101,19 @@ def export_sav_dataset(*, database_url: str, dataset_id: str, destination: str |
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
     import pandas as pd
     frame = pd.DataFrame(
-        [{item["source_name"]: row[item["physical_name"]] for item in variables} for row in rows],
+        [
+            {
+                item["source_name"]: (
+                    None
+                    if row[item["physical_name"]] is None
+                    else float(row[item["physical_name"]])
+                )
+                if item["storage_kind"] == "numeric"
+                else row[item["physical_name"]]
+                for item in variables
+            }
+            for row in rows
+        ],
         columns=[item["source_name"] for item in variables],
     )
     labels = {item["source_name"]: item["label"] for item in variables if item["label"]}
