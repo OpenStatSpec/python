@@ -7,7 +7,7 @@ from uuid import uuid4
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import delete, BigInteger, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select, update
+from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select, update
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from .profiles import preflight, validate_connection_url
 
@@ -151,6 +151,106 @@ def multiple_response_set_catalog(metadata: MetaData) -> Table:
         Column("definition", Text, nullable=False),
     )
 
+
+def document_catalog(metadata: MetaData) -> Table:
+    """Ordered file documents, normalized independently from the legacy JSON column."""
+    return Table(
+        "document_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("ordinal", Integer, primary_key=True),
+        Column("text", Text, nullable=False),
+    )
+
+
+def value_label_catalog(metadata: MetaData) -> Table:
+    """Typed, ordered value labels; JSON on variable_catalog remains a read fallback."""
+    return Table(
+        "value_label_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("variable_ordinal", Integer, primary_key=True),
+        Column("ordinal", Integer, primary_key=True),
+        Column("value_type", String(16), nullable=False),
+        Column("numeric_value", binary64_type()),
+        Column("text_value", Text),
+        Column("label", Text, nullable=False),
+    )
+
+
+def missing_rule_catalog(metadata: MetaData) -> Table:
+    """Typed inclusive SPSS user-missing intervals, including discrete values as lo == hi."""
+    return Table(
+        "missing_rule_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("variable_ordinal", Integer, primary_key=True),
+        Column("ordinal", Integer, primary_key=True),
+        Column("kind", String(16), nullable=False),
+        Column("lower_type", String(16), nullable=False),
+        Column("lower_numeric", binary64_type()),
+        Column("lower_text", Text),
+        Column("upper_type", String(16), nullable=False),
+        Column("upper_numeric", binary64_type()),
+        Column("upper_text", Text),
+        Column("lower_inclusive", Boolean, nullable=False, default=True),
+        Column("upper_inclusive", Boolean, nullable=False, default=True),
+    )
+
+
+def _typed_endpoint(value: Any) -> tuple[str, float | None, str | None]:
+    if isinstance(value, bool):
+        return "text", None, str(value)
+    if isinstance(value, (int, float)):
+        return "numeric", float(value), None
+    return "text", None, "" if value is None else str(value)
+
+
+def document_rows(dataset_id: str, documents: str) -> list[dict[str, Any]]:
+    return [
+        {"dataset_id": dataset_id, "ordinal": ordinal, "text": str(text)}
+        for ordinal, text in enumerate(json.loads(documents or "[]"), start=1)
+    ]
+
+
+def value_label_rows(dataset_id: str, variables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for variable in variables:
+        labels = json.loads(variable.get("value_labels") or "{}")
+        for ordinal, (raw_value, label) in enumerate(labels.items(), start=1):
+            value: Any = float(raw_value) if variable["storage_kind"] == "numeric" else raw_value
+            value_type, numeric_value, text_value = _typed_endpoint(value)
+            rows.append({
+                "dataset_id": dataset_id, "variable_ordinal": variable["ordinal"], "ordinal": ordinal,
+                "value_type": value_type, "numeric_value": numeric_value, "text_value": text_value,
+                "label": str(label),
+            })
+    return rows
+
+
+def missing_rule_rows(dataset_id: str, variables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for variable in variables:
+        rules = json.loads(variable.get("missing_ranges") or "[]")
+        for ordinal, raw_rule in enumerate(rules, start=1):
+            if isinstance(raw_rule, dict):
+                lower = raw_rule.get("lo")
+                upper = raw_rule.get("hi")
+            else:
+                lower = upper = raw_rule
+            lower_type, lower_numeric, lower_text = _typed_endpoint(lower)
+            upper_type, upper_numeric, upper_text = _typed_endpoint(upper)
+            kind = "discrete" if lower_type == upper_type and (lower_numeric == upper_numeric and lower_text == upper_text) else "range"
+            rows.append({
+                "dataset_id": dataset_id, "variable_ordinal": variable["ordinal"], "ordinal": ordinal,
+                "kind": kind,
+                "lower_type": lower_type, "lower_numeric": lower_numeric, "lower_text": lower_text,
+                "upper_type": upper_type, "upper_numeric": upper_numeric, "upper_text": upper_text,
+                "lower_inclusive": True, "upper_inclusive": True,
+            })
+    return rows
+
+
+def normalized_metadata_tables(metadata: MetaData) -> tuple[Table, Table, Table]:
+    return document_catalog(metadata), value_label_catalog(metadata), missing_rule_catalog(metadata)
+
 def multiple_response_set_rows(dataset_id: str, definitions: str) -> list[dict[str, Any]]:
     sets = json.loads(definitions)
     rows = []
@@ -200,6 +300,7 @@ def create_wide_dataset(
     metadata = MetaData()
     datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
+    documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
     operation_id = str(uuid4())
     try:
         preflight(profile, len(variables))
@@ -219,7 +320,7 @@ def create_wide_dataset(
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, fidelity_event_catalog, operation_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, fidelity_event_catalog, operation_catalog])
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
             source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables)}, sort_keys=True),
@@ -241,6 +342,15 @@ def create_wide_dataset(
             multiple_response_sets=multiple_response_sets,
         ))
         connection.execute(insert(variable_catalog), [dict(dataset_id=dataset_id, **item) for item in variables])
+        docs_rows = document_rows(dataset_id, documents)
+        if docs_rows:
+            connection.execute(insert(documents_catalog), docs_rows)
+        labels_rows = value_label_rows(dataset_id, variables)
+        if labels_rows:
+            connection.execute(insert(value_labels_catalog), labels_rows)
+        missing_rows = missing_rule_rows(dataset_id, variables)
+        if missing_rows:
+            connection.execute(insert(missing_rules_catalog), missing_rows)
         mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
         if mrset_rows:
             connection.execute(insert(multiple_response_catalog), mrset_rows)
@@ -255,6 +365,9 @@ def create_wide_dataset(
             except Exception:
                 data_table.drop(connection, checkfirst=True)
                 connection.execute(delete(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(value_labels_catalog).where(value_labels_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(fidelity_event_catalog).where(fidelity_event_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(datasets).where(datasets.c.dataset_id == dataset_id))
@@ -266,18 +379,57 @@ def create_wide_dataset(
     return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized), "operation_id": operation_id}
 
 
+def _endpoint_from_row(row: Mapping[str, Any], *, prefix: str) -> Any:
+    return row[f"{prefix}_numeric"] if row[f"{prefix}_type"] == "numeric" else row[f"{prefix}_text"]
+
+
 def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read a strict dataset, preferring normalized metadata with JSON compatibility fallback."""
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog, _, _ = catalog(metadata)
-    with engine.connect() as connection:
-        dataset = connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one()
+    documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
+    with engine.begin() as connection:
+        metadata.create_all(connection, tables=[documents_catalog, value_labels_catalog, missing_rules_catalog])
+        dataset = dict(connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one())
         data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
-        variables = connection.execute(
+        variables = [dict(item) for item in connection.execute(
             select(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id).order_by(variable_catalog.c.ordinal)
+        ).mappings().all()]
+        rows = [dict(item) for item in connection.execute(
+            select(data_table).order_by(data_table.c.__case_ordinal)
+        ).mappings().all()]
+        document_rows_result = connection.execute(
+            select(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id)
+            .order_by(documents_catalog.c.ordinal)
         ).mappings().all()
-        rows = connection.execute(select(data_table).order_by(data_table.c.__case_ordinal)).mappings().all()
-    return dict(dataset), [dict(item) for item in variables], [dict(item) for item in rows]
+        label_rows_result = connection.execute(
+            select(value_labels_catalog).where(value_labels_catalog.c.dataset_id == dataset_id)
+            .order_by(value_labels_catalog.c.variable_ordinal, value_labels_catalog.c.ordinal)
+        ).mappings().all()
+        missing_rows_result = connection.execute(
+            select(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id)
+            .order_by(missing_rules_catalog.c.variable_ordinal, missing_rules_catalog.c.ordinal)
+        ).mappings().all()
+
+    if document_rows_result:
+        dataset["documents"] = json.dumps([item["text"] for item in document_rows_result], ensure_ascii=False)
+    variables_by_ordinal = {item["ordinal"]: item for item in variables}
+    labels_by_variable: dict[int, dict[Any, str]] = {}
+    for item in label_rows_result:
+        labels_by_variable.setdefault(item["variable_ordinal"], {})[
+            item["numeric_value"] if item["value_type"] == "numeric" else item["text_value"]
+        ] = item["label"]
+    for ordinal, labels in labels_by_variable.items():
+        variables_by_ordinal[ordinal]["value_labels"] = json.dumps(labels, ensure_ascii=False)
+    rules_by_variable: dict[int, list[dict[str, Any]]] = {}
+    for item in missing_rows_result:
+        lower = _endpoint_from_row(item, prefix="lower")
+        upper = _endpoint_from_row(item, prefix="upper")
+        rules_by_variable.setdefault(item["variable_ordinal"], []).append({"lo": lower, "hi": upper})
+    for ordinal, rules in rules_by_variable.items():
+        variables_by_ordinal[ordinal]["missing_ranges"] = json.dumps(rules, ensure_ascii=False)
+    return dataset, variables, rows
 
 
 def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, str], ...]:

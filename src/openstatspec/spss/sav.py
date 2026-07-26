@@ -35,7 +35,7 @@ def _variables(meta: Any, names: list[str]) -> list[dict[str, Any]]:
             "label": labels.get(source_name, "") or "", "format": formats.get(source_name),
             "measure": measures.get(source_name), "alignment": alignments.get(source_name),
             "display_width": displays.get(source_name),
-            "value_labels": json.dumps(value_labels.get(source_name, {}), sort_keys=True),
+            "value_labels": json.dumps(value_labels.get(source_name, {}), ensure_ascii=False),
             "missing_ranges": json.dumps(missing_ranges.get(source_name, []), default=str),
         })
     return result
