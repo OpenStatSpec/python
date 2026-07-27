@@ -1,7 +1,7 @@
 """Strict SAV/ZSAV adapter backed exclusively by pyspssio.
 
 The adapter keeps SPSS data in one physical wide table and preserves every
-metadata feature exposed by pyspssio.  A source feature that pyspssio cannot
+metadata feature exposed by pyspssio plus standard type-6 document records. A source feature that neither path can
 observe or write is a durable fidelity event and blocks export unless the
 caller explicitly accepts that exact loss.
 """
@@ -9,13 +9,16 @@ caller explicitly accepts that exact loss.
 import hashlib
 import json
 import math
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
 import pyspssio
 
+from .raw_dictionary import RawDictionaryError, read_document_lines, write_document_lines
 from .dictionary import (
     attribute_pairs,
     attribute_values,
@@ -44,7 +47,7 @@ def engine_identity() -> dict[str, str]:
     return {
         "package": "pyspssio",
         "distribution": "TonisOrmisson/pyspssio",
-        "pinned_commit": "0b3f879",
+        "pinned_commit": "446af0c",
         "installed_version": str(pyspssio.__version__),
     }
 
@@ -64,6 +67,13 @@ def _dictionary(source_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                 for name in reader.var_names
                 if variable_attribute_pairs(reader, name)
             }
+        try:
+            metadata["_documents"] = read_document_lines(
+                source_path, encoding=str(metadata.get("encoding") or "UTF-8"),
+            )
+        except RawDictionaryError as error:
+            metadata["_documents"] = None
+            metadata["_documents_error"] = str(error)
     except Exception as error:  # The source stays importable, but not silently faithful.
         metadata["_var_sets"] = None
         metadata["_var_sets_error"] = str(error)
@@ -188,7 +198,7 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
         "source_sha256": _sha256(source_path),
         "source_encoding": metadata.get("encoding"),
         "file_label": str(metadata.get("file_label") or ""),
-        "documents": [],
+        "documents": list(metadata.get("_documents") or []),
         "file_attributes": dict(metadata.get("file_attributes") or {}),
         "case_weight_variable": metadata.get("case_weight_var") or None,
         "multiple_response_sets": dict(metadata.get("mrsets") or {}),
@@ -222,7 +232,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         source_encoding=metadata.get("encoding"),
         source_sha256=_sha256(source_path),
         imported_at=datetime.now(UTC).isoformat(),
-        documents="[]",  # pyspssio 0.5.x has no public document-text API.
+        documents=_json_ordered(metadata.get("_documents") or []),
         file_attributes=_json_ordered(metadata.get("file_attributes") or {}),
         file_attribute_values=dict(metadata.get("file_attributes") or {}),
         variable_attribute_values=dict(metadata.get("var_attributes") or {}),
@@ -296,9 +306,26 @@ def export_sav_dataset(
 def _write_with_dictionary_bridge(
     destination: Path, frame: pd.DataFrame, dataset: dict[str, Any], variables: list[dict[str, Any]],
 ) -> None:
-    """Write an SPSS dictionary without flattening raw IBM I/O metadata."""
+    """Write a dictionary through pyspssio and preserve its document record.
+
+    IBM I/O can copy document records but cannot expose their lines.  The
+    strict helper reads and writes a temporary UTF-8 SAV source; the selected
+    pyspssio engine then copies it into the real SAV or ZSAV writer, which
+    keeps any ZSAV internal dictionary offsets valid.
+    """
     metadata = _writer_metadata(dataset, variables)
-    with pyspssio.Writer(str(destination), mode="w") as writer:
+    documents = _json_load(dataset.get("documents"), [])
+    with ExitStack() as stack:
+        document_source = None
+        if documents:
+            temporary_directory = Path(stack.enter_context(TemporaryDirectory()))
+            temporary_source = temporary_directory / "documents.sav"
+            pyspssio.write_sav(
+                str(temporary_source), pd.DataFrame({"document_source": [0.0]}),
+            )
+            write_document_lines(temporary_source, documents, encoding="UTF-8")
+            document_source = stack.enter_context(pyspssio.Reader(str(temporary_source), mode="r"))
+        writer = stack.enter_context(pyspssio.Writer(str(destination), mode="w"))
         writer.compression = 2 if destination.suffix.lower() == ".zsav" else 1
         writer.file_label = str(dataset.get("file_label") or "")
         for variable in variables:
@@ -307,11 +334,10 @@ def _write_with_dictionary_bridge(
                 int(variable["string_width"] or 0) if variable["storage_kind"] == "string" else 0,
             )
         for variable in variables:
-            print_format = _catalog_format(variable, "print_format")
-            write_format = _catalog_format(variable, "write_format")
             set_format_tuples(
                 writer, name=variable["source_name"],
-                print_format=print_format, write_format=write_format,
+                print_format=_catalog_format(variable, "print_format"),
+                write_format=_catalog_format(variable, "write_format"),
             )
         for name in (
             "var_labels", "var_measure_levels", "var_roles", "var_alignments",
@@ -334,9 +360,10 @@ def _write_with_dictionary_bridge(
         variable_sets = (dataset.get("source_extensions") or {}).get("spss.variable_sets")
         if variable_sets:
             writer.var_sets = variable_sets
+        if document_source is not None:
+            writer.copy_documents_from(document_source)
         writer.commit_header()
         writer.write_data(frame)
-
 
 def _catalog_format(variable: dict[str, Any], key: str) -> tuple[int, int, int]:
     encoded = variable.get(key)
@@ -395,12 +422,13 @@ def _typed_value_labels(variable: dict[str, Any]) -> dict[Any, str]:
 
 
 def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    events: dict[str, dict[str, Any]] = {
-        "documents-unobservable": {
-            "code": "documents-unobservable",
-            "detail": "pyspssio does not expose SAV document text through its public API; the file label is preserved separately.",
-        },
-    }
+    events: dict[str, dict[str, Any]] = {}
+    if metadata.get("_documents") is None:
+        events["documents-unreadable"] = {
+            "code": "documents-unreadable",
+            "detail": "The strict raw SAV dictionary reader could not inspect document text.",
+            "details": {"engine_error": metadata.get("_documents_error", "unknown")},
+        }
     variable_sets = metadata.get("_var_sets")
     if variable_sets is None:
         events["variable-sets-unobservable"] = {

@@ -10,7 +10,7 @@ from openstatspec.spss import sav as sav_module
 from openstatspec.sql.wide import create_wide_dataset, read_fidelity_events
 
 
-_REQUIRED_ENGINE_LOSS = ["documents-unobservable"]
+_REQUIRED_ENGINE_LOSS = []
 
 
 def test_import_retains_observed_variable_sets_as_source_extension(tmp_path, monkeypatch) -> None:
@@ -26,9 +26,7 @@ def test_import_retains_observed_variable_sets_as_source_extension(tmp_path, mon
 
     monkeypatch.setattr(sav_module, "_dictionary", dictionary_with_variable_set)
     imported = openstatspec.import_sav(source, database_url=f"sqlite:///{database_path}", dataset_id="variables")
-    assert {diagnostic.code for diagnostic in imported.diagnostics} == {
-        "documents-unobservable",
-    }
+    assert {diagnostic.code for diagnostic in imported.diagnostics} == set()
     connection = sqlite3.connect(database_path)
     assert connection.execute(
         "select extension_key, payload from source_extension_catalog where dataset_id = 'variables'"

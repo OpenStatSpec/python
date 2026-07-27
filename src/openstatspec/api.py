@@ -29,7 +29,7 @@ def capability_matrix() -> Mapping[str, Any]:
             "print_format": "supported",
             "write_format": "supported",
             "file_label": "supported",
-            "documents": "unobservable",
+            "documents": "supported",
             "source_encoding": {
                 "utf8": "supported",
                 "legacy_code_pages": "fail-closed-on-export",

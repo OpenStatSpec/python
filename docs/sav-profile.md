@@ -23,7 +23,7 @@ limit fails before it creates a dataset.
 ## Fidelity contract
 
 The adapter must preserve and validate only the source semantics that the
-selected engine exposes and that a conformance fixture proves. Unsupported
+selected engine or the adapter's narrow, fail-closed type-6 document bridge exposes and that a conformance fixture proves. Unsupported
 semantics fail explicitly; they never silently disappear. Encryption and
 byte-identical reproduction are outside the contract. The contract is semantic
 equivalence of supported values, order, and dictionary metadata.
@@ -38,7 +38,7 @@ of this boundary. It records the pinned source commit and installed engine versi
 | --- | --- | --- |
 | File label | Supported through the pinned fork | The adapter persists it in the dataset catalog and writes it through the IBM I/O identifier-string API. |
 | Very-long UTF-8 strings | Supported | The SAV and ZSAV fixture preserves a 340-byte, multi-byte UTF-8 string through the SQL catalog and back. |
-| Ordered document text | Unobservable | The engine exposes file-to-file document copying, but not reading or creating document text. Import records documents-unobservable; export requires that audited loss to be accepted. |
+| Ordered document text | Supported through a strict type-6 dictionary bridge plus the pinned fork | Import stores normalized document rows; export creates a temporary UTF-8 SAV source and has IBM I/O copy the records into SAV or ZSAV without invalidating ZSAV dictionary offsets. |
 | Print and write formats independently | Supported as raw IBM I/O tuples | The adapter stores both tuples separately and writes them without collapsing either value. |
 | Variable sets | Supported through raw IBM I/O | The adapter stores source sets in the extension catalog and writes them through the raw dictionary setter. Invalid target definitions fail before data are written. |
 | Legacy compatible variable names | Fail-closed on export | A compatible name that differs from the long source name is retained in the catalog, but cannot be set through the public writer. Export requires `compatible-variable-name-not-exportable`. |

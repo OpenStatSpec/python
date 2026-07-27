@@ -5,7 +5,7 @@ SPSS engine is a separate third-party distribution:
 
 | Component | Version | Applicable terms |
 | --- | --- | --- |
-| pyspssio | TonisOrmisson/pyspssio pinned commit 0b3f879 | MIT for the Python wrapper, except for its IBM I/O Module files |
+| pyspssio | TonisOrmisson/pyspssio pinned commit 446af0c | MIT for the Python wrapper, except for its IBM I/O Module files |
 | IBM I/O Modules for IBM SPSS Statistics Data Files | bundled by the pinned pyspssio fork | IBM International License Agreement for Non-Warranted Programs and the accompanying License Information / REDIST files |
 
 pyspssio ships the IBM licence, redistribution list, and third-party notices

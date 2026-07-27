@@ -10,7 +10,7 @@ import openstatspec
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 from openstatspec.core import UnsupportedOperationError
 
-_REQUIRED_ENGINE_LOSS = ["documents-unobservable"]
+_REQUIRED_ENGINE_LOSS = []
 
 _COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
 
@@ -52,9 +52,7 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert connection.execute("select source_sha256 from dataset_catalog").fetchone() == (hashlib.sha256(source.read_bytes()).hexdigest(),)
     assert connection.execute("select role, alignment, display_width, attributes from variable_catalog where source_name = 'age'").fetchone() == ("target", "right", 12, json.dumps({"Origin": "fixture"}))
 
-    with pytest.raises(UnsupportedOperationError, match="documents-unobservable"):
-        openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
-    openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported, allow_loss=_REQUIRED_ENGINE_LOSS)
+    openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
     frame, meta = pyspssio.read_sav(str(exported), convert_datetimes=False, include_user_missing=True)
     assert frame["age"].iloc[0] == 34.0
     assert pd.isna(frame["age"].iloc[1])

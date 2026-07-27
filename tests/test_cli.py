@@ -17,11 +17,9 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert openstatspec.cli.main(["inspect", str(source)]) == 0
     inspected = json.loads(capsys.readouterr().out)
     assert inspected["source_format"] == "SAV"
-    assert inspected["engine"]["pinned_commit"] == "0b3f879"
+    assert inspected["engine"]["pinned_commit"] == "446af0c"
     assert inspected["source_sha256"]
-    assert {event["code"] for event in inspected["loss_report"]} == {
-        "documents-unobservable",
-    }
+    assert inspected["loss_report"] == []
     assert imported["case_count"] == 1
 
     from openstatspec.core.results import OperationResult
@@ -32,7 +30,6 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
     assert openstatspec.cli.main([
         "export", "--database-url", database, "--dataset-id", "fixture", "--output", str(output),
-        "--allow-loss", "documents-unobservable",
     ]) == 0
     assert json.loads(capsys.readouterr().out)["destination"] == str(output)
     assert pyspssio.read_sav(str(output), convert_datetimes=False)[0]["answer"].tolist() == [1.0]
@@ -40,7 +37,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
-    assert matrix["engine"]["pinned_commit"] == "0b3f879"
+    assert matrix["engine"]["pinned_commit"] == "446af0c"
 
     assert matrix["spss"] == {
         "values": "supported",
@@ -49,7 +46,7 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
         "print_format": "supported",
         "write_format": "supported",
         "file_label": "supported",
-        "documents": "unobservable",
+        "documents": "supported",
         "source_encoding": {
             "utf8": "supported",
             "legacy_code_pages": "fail-closed-on-export",
