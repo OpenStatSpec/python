@@ -16,6 +16,8 @@ _REQUIRED_ENGINE_LOSS = [
     "separate-write-format-unobservable",
 ]
 
+_COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
+
 
 def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"
@@ -85,7 +87,7 @@ def test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav
     assert openstatspec.validate(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")["valid"] is True
     connection = sqlite3.connect(database_path)
     assert connection.execute(f"select comment from data_supported_{suffix[1:]} order by __case_ordinal").fetchone() == (expected["long_text"],)
-    openstatspec.export_sav(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
+    openstatspec.export_sav(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
 
 

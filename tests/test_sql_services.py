@@ -13,6 +13,7 @@ from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 pytestmark = pytest.mark.services
 _REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable", "separate-write-format-unobservable"]
+_COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
 
 
 @pytest.fixture
@@ -72,5 +73,5 @@ def test_live_profile_preserves_supported_sav_semantics(environment_name, datase
     imported = openstatspec.import_sav(source, database_url=database_url, dataset_id=f"{dataset_id}_{suffix[1:]}")
     assert imported["case_count"] == 4
     assert openstatspec.validate(database_url=database_url, dataset_id=f"{dataset_id}_{suffix[1:]}")["valid"] is True
-    openstatspec.export_sav(database_url=database_url, dataset_id=f"{dataset_id}_{suffix[1:]}", destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
+    openstatspec.export_sav(database_url=database_url, dataset_id=f"{dataset_id}_{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}

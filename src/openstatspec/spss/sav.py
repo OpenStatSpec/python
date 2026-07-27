@@ -147,6 +147,8 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
     _require_source(source_path)
     metadata, loss_report = _dictionary(source_path)
     names = list(metadata.get("var_names") or [])
+    variables = _variables(metadata, names)
+    loss_report = _merge_loss_reports(tuple(loss_report.values()), _compat_name_loss_report(variables))
     return {
         "source_format": source_path.suffix[1:].upper(),
         "source_name": source_path.name,
@@ -157,9 +159,9 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
         "file_attributes": dict(metadata.get("file_attributes") or {}),
         "case_weight_variable": metadata.get("case_weight_var") or None,
         "multiple_response_sets": dict(metadata.get("mrsets") or {}),
-        "loss_report": tuple(loss_report.values()),
+        "loss_report": loss_report,
         "variable_count": len(names),
-        "variables": _variables(metadata, names),
+        "variables": variables,
     }
 
 
@@ -175,6 +177,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     # frame read's values where a future pyspssio version exposes more there.
     metadata = {**dictionary, **metadata}
     variables = _variables(metadata, list(frame.columns))
+    loss_report = _merge_loss_reports(tuple(loss_report.values()), _compat_name_loss_report(variables))
     result = create_wide_dataset(
         database_url=database_url,
         dataset_id=dataset_id,
@@ -196,9 +199,9 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
             {"spss.variable_sets": metadata["_var_sets"]}
             if metadata.get("_var_sets") else {}
         ),
-        fidelity_events=tuple(loss_report.values()),
+        fidelity_events=loss_report,
     )
-    return {**result, "loss_report": tuple(loss_report.values())}
+    return {**result, "loss_report": loss_report}
 
 
 def export_sav_dataset(
@@ -215,8 +218,8 @@ def export_sav_dataset(
         multiple_response_sets=dataset.get("multiple_response_sets"),
     )
     loss_report = _merge_loss_reports(
+        _export_loss_report(dataset, variables),
         read_fidelity_events(database_url=database_url, dataset_id=dataset_id),
-        _export_loss_report(dataset),
     )
     rejected = [event["code"] for event in loss_report if event["code"] not in allow_loss]
     if rejected:
@@ -365,7 +368,40 @@ def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return events
 
 
-def _export_loss_report(dataset: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+def _compat_name_loss_report(variables: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """Report legacy SPSS compatible names the writer cannot set explicitly.
+
+    A compatible name is meaningful only when it differs from the long source
+    variable name. ``pyspssio`` exposes these names while reading, but its
+    public writer metadata has no ``var_compat_names`` input. It may derive a
+    name today, but that is not a preservation contract: export must therefore
+    require an explicit, auditable acceptance rather than silently rederive or
+    rename the value.
+    """
+    events: list[dict[str, Any]] = []
+    for variable in variables:
+        source_name = str(variable["source_name"])
+        compat_name = variable.get("compat_name")
+        if compat_name is None or str(compat_name).casefold() == source_name.casefold():
+            continue
+        events.append({
+            "code": "compatible-variable-name-not-exportable",
+            "detail": (
+                "pyspssio exposes the source compatible variable name but its public "
+                "writer API cannot set or guarantee preservation of that name."
+            ),
+            "details": {
+                "source_name": source_name,
+                "compatible_name": str(compat_name),
+                "physical_name": str(variable["physical_name"]),
+            },
+        })
+    return tuple(events)
+
+
+def _export_loss_report(
+    dataset: dict[str, Any], variables: list[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
     events: list[dict[str, Any]] = []
     if _is_non_utf8_encoding(dataset.get("source_encoding")):
         events.append({
@@ -373,6 +409,7 @@ def _export_loss_report(dataset: dict[str, Any]) -> tuple[dict[str, Any], ...]:
             "detail": "The pyspssio writer has no source-encoding preservation contract for this legacy code page.",
             "details": {"source_encoding": dataset.get("source_encoding")},
         })
+    events.extend(_compat_name_loss_report(variables))
     return tuple(events)
 
 

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pandas as pd
@@ -69,3 +70,65 @@ def test_non_utf8_source_encoding_is_explicit_export_loss(tmp_path) -> None:
     assert {diagnostic.code for diagnostic in exported.diagnostics} == {"source-encoding-not-preserved"}
     metadata = pyspssio.read_metadata(str(destination))
     assert metadata["encoding"] == "UTF-8"
+
+@pytest.mark.parametrize("suffix", [".sav", ".zsav"])
+def test_compatible_variable_name_requires_explicit_audited_export_loss(tmp_path, suffix: str) -> None:
+    """A long SPSS name exposes a legacy compatible name the writer cannot set."""
+    source = tmp_path / f"compat-source{suffix}"
+    database_path = tmp_path / f"compat-{suffix[1:]}.sqlite"
+    database = f"sqlite:///{database_path}"
+    blocked = tmp_path / f"compat-blocked{suffix}"
+    approved = tmp_path / f"compat-approved{suffix}"
+    source_name = "long_variable_name"
+
+    pyspssio.write_sav(str(source), pd.DataFrame({source_name: [1.0]}))
+    assert pyspssio.read_metadata(str(source))["var_compat_names"][source_name] != source_name
+
+    imported = openstatspec.import_sav(source, database_url=database, dataset_id=f"compat-{suffix[1:]}")
+    diagnostic = next(
+        item for item in imported.diagnostics
+        if item.code == "compatible-variable-name-not-exportable"
+    )
+    assert diagnostic.details == {
+        "source_name": source_name,
+        "compatible_name": "LONG_VAR",
+        "physical_name": source_name,
+    }
+
+    # Export must also assess the current normalized SQL catalog. Clear the
+    # import event and alter the catalog value to prove that no persisted
+    # diagnostic can mask an unguarded re-export or silent renaming path.
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "delete from fidelity_event_catalog where dataset_id = ? and code = ?",
+        (f"compat-{suffix[1:]}", "compatible-variable-name-not-exportable"),
+    )
+    connection.execute(
+        "update variable_catalog set compat_name = ? where dataset_id = ? and source_name = ?",
+        ("CUSTOM_NAME", f"compat-{suffix[1:]}", source_name),
+    )
+    connection.commit()
+    expected_catalog_detail = {
+        "source_name": source_name,
+        "compatible_name": "CUSTOM_NAME",
+        "physical_name": source_name,
+    }
+
+    with pytest.raises(UnsupportedOperationError, match="compatible-variable-name-not-exportable"):
+        openstatspec.export_sav(
+            database_url=database, dataset_id=f"compat-{suffix[1:]}", destination=blocked,
+            allow_loss=_REQUIRED_ENGINE_LOSS,
+        )
+    assert not blocked.exists()
+
+    result = openstatspec.export_sav(
+        database_url=database, dataset_id=f"compat-{suffix[1:]}", destination=approved,
+        allow_loss=[*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"],
+    )
+    accepted = next(item for item in result.diagnostics if item.code == "compatible-variable-name-not-exportable")
+    assert accepted.details == expected_catalog_detail
+    persisted = connection.execute(
+        "select details from fidelity_event_catalog where operation_id = ? and code = ?",
+        (result["operation_id"], "compatible-variable-name-not-exportable"),
+    ).fetchone()[0]
+    assert json.loads(persisted) == {**expected_catalog_detail, "accepted_by_user": True}
