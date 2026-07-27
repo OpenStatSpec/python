@@ -24,6 +24,7 @@ from ..sql.wide import (
     read_fidelity_events,
     read_wide_dataset,
     record_export_operation,
+    validate_spss_catalog,
 )
 
 _UTF8_ENCODINGS = {"UTF-8", "UTF8"}
@@ -206,6 +207,11 @@ def export_sav_dataset(
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
         raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
+    validate_spss_catalog(
+        variables,
+        case_weight_variable=dataset.get("case_weight_variable"),
+        multiple_response_sets=dataset.get("multiple_response_sets"),
+    )
     loss_report = _merge_loss_reports(
         read_fidelity_events(database_url=database_url, dataset_id=dataset_id),
         _export_loss_report(dataset),

@@ -11,9 +11,23 @@ from typing import Any
 
 from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
 from sqlalchemy.dialects import mysql, postgresql, sqlite
+from ..core import UnsupportedOperationError
 from .profiles import preflight, validate_connection_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
+
+
+class CatalogPreflightError(UnsupportedOperationError):
+    """A semantic SPSS catalog rule failed before an import or writer runs."""
+
+    def __init__(self, code: str, detail: str, *, details: Mapping[str, Any]) -> None:
+        super().__init__(f"OpenStatSpec catalog preflight failed [{code}]: {detail}")
+        self.code = code
+        self.details = {"reason": code, **details}
+
+
+def _catalog_error(code: str, detail: str, **details: Any) -> CatalogPreflightError:
+    return CatalogPreflightError(code, detail, details=details)
 
 
 def binary64_type() -> Float:
@@ -185,7 +199,7 @@ def _record_failed_preflight(
         ))
         connection.execute(insert(fidelity_event_catalog), _event_rows(
             operation_id=operation_id, dataset_id=None, direction="import", fidelity_events=({
-                "code": "target-capability-exceeded", "detail": str(error), "severity": "error",
+                "code": getattr(error, "code", "target-capability-exceeded"), "detail": str(error), "severity": "error",
                 "details": {"variable_count": variable_count, "profile": profile_name,
                             **getattr(error, "details", {})},
             },),
@@ -350,6 +364,189 @@ def _mr_counted_value(definition: Mapping[str, Any]) -> tuple[str | None, float 
     return "text", None, str(value)
 
 
+def _multiple_response_definitions(definitions: str | Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if definitions is None or definitions == "":
+        return {}
+    if isinstance(definitions, str):
+        try:
+            definitions = json.loads(definitions)
+        except json.JSONDecodeError as error:
+            raise _catalog_error(
+                "multiple-response-definition-invalid",
+                "Multiple-response set catalog is not valid JSON.",
+                error=str(error),
+            ) from error
+    if not isinstance(definitions, Mapping):
+        raise _catalog_error(
+            "multiple-response-definition-invalid",
+            "Multiple-response set catalog must be an object keyed by set name.",
+            actual_type=type(definitions).__name__,
+        )
+    return definitions
+
+
+def _mr_is_dichotomy(definition: Mapping[str, Any]) -> bool:
+    value = definition.get("is_dichotomy")
+    if value is not None:
+        return bool(value)
+    return definition.get("set_type", definition.get("type")) in {"MD", "D", "E"} or (
+        definition.get("counted_value", definition.get("countedvalue")) is not None
+    )
+
+
+def validate_spss_catalog(
+    variables: Iterable[Mapping[str, Any]], *,
+    case_weight_variable: str | None = None,
+    multiple_response_sets: str | Mapping[str, Any] | None = None,
+) -> None:
+    """Validate SPSS dictionary cross-references before persisting or writing."""
+    variables_by_name: dict[str, Mapping[str, Any]] = {}
+    for variable in variables:
+        source_name = variable.get("source_name")
+        if isinstance(source_name, str):
+            variables_by_name[source_name] = variable
+
+    if case_weight_variable is not None:
+        if not isinstance(case_weight_variable, str) or not case_weight_variable:
+            raise _catalog_error(
+                "case-weight-variable-invalid",
+                "The case-weight reference must be a non-empty source variable name.",
+                case_weight_variable=case_weight_variable,
+            )
+        weight = variables_by_name.get(case_weight_variable)
+        if weight is None:
+            raise _catalog_error(
+                "case-weight-variable-not-found",
+                "The case-weight reference does not name a source variable.",
+                case_weight_variable=case_weight_variable,
+            )
+        if weight.get("storage_kind") != "numeric":
+            raise _catalog_error(
+                "case-weight-variable-not-numeric",
+                "The case-weight variable must use SPSS numeric storage.",
+                case_weight_variable=case_weight_variable,
+                storage_kind=weight.get("storage_kind"),
+            )
+        if str(weight.get("measure") or "").lower() != "scale":
+            raise _catalog_error(
+                "case-weight-variable-not-scale",
+                "The case-weight variable must have SPSS scale measurement level.",
+                case_weight_variable=case_weight_variable,
+                measurement_level=weight.get("measure"),
+            )
+
+    for set_name, definition in _multiple_response_definitions(multiple_response_sets).items():
+        if not isinstance(set_name, str) or not set_name:
+            raise _catalog_error(
+                "multiple-response-set-name-invalid",
+                "A multiple-response set needs a non-empty string name.",
+                set_name=set_name,
+            )
+        if not isinstance(definition, Mapping):
+            raise _catalog_error(
+                "multiple-response-definition-invalid",
+                "A multiple-response set definition must be an object.",
+                set_name=set_name,
+                actual_type=type(definition).__name__,
+            )
+        members = definition.get("variable_list", definition.get("variables", []))
+        if isinstance(members, str):
+            members = members.split()
+        if not isinstance(members, (list, tuple)) or not members:
+            raise _catalog_error(
+                "multiple-response-members-invalid",
+                "A multiple-response set needs at least one ordered member variable.",
+                set_name=set_name,
+            )
+        if any(not isinstance(member, str) or not member for member in members):
+            raise _catalog_error(
+                "multiple-response-member-invalid",
+                "Every multiple-response member must be a non-empty source variable name.",
+                set_name=set_name,
+            )
+        if len(set(members)) != len(members):
+            raise _catalog_error(
+                "multiple-response-member-duplicate",
+                "A multiple-response set cannot list one source variable twice.",
+                set_name=set_name,
+            )
+        member_variables: list[Mapping[str, Any]] = []
+        for member in members:
+            variable = variables_by_name.get(member)
+            if variable is None:
+                raise _catalog_error(
+                    "multiple-response-member-not-found",
+                    "A multiple-response member does not name a source variable.",
+                    set_name=set_name,
+                    member=member,
+                )
+            member_variables.append(variable)
+        storage_kinds = {str(variable.get("storage_kind")) for variable in member_variables}
+        if len(storage_kinds) != 1 or storage_kinds == {"None"}:
+            raise _catalog_error(
+                "multiple-response-member-type-mismatch",
+                "All multiple-response members must have one shared SPSS storage kind.",
+                set_name=set_name,
+                members=list(members),
+                storage_kinds=sorted(storage_kinds),
+            )
+        is_dichotomy = _mr_is_dichotomy(definition)
+        counted_value = definition.get("counted_value", definition.get("countedvalue"))
+        if not is_dichotomy:
+            if counted_value is not None:
+                raise _catalog_error(
+                    "multiple-response-counted-value-not-permitted",
+                    "An MC multiple-response set cannot define a dichotomy counted value.",
+                    set_name=set_name,
+                    counted_value=counted_value,
+                )
+            continue
+        if counted_value is None:
+            raise _catalog_error(
+                "multiple-response-counted-value-missing",
+                "An MD multiple-response set must define its counted value.",
+                set_name=set_name,
+            )
+        storage_kind = storage_kinds.pop()
+        if storage_kind == "numeric":
+            if isinstance(counted_value, bool) or not isinstance(counted_value, (int, float)) or not math.isfinite(float(counted_value)):
+                raise _catalog_error(
+                    "multiple-response-counted-value-type-mismatch",
+                    "An MD set of numeric variables requires a finite numeric counted value.",
+                    set_name=set_name,
+                    counted_value=counted_value,
+                    storage_kind=storage_kind,
+                )
+        elif storage_kind == "string":
+            if not isinstance(counted_value, str):
+                raise _catalog_error(
+                    "multiple-response-counted-value-type-mismatch",
+                    "An MD set of string variables requires a string counted value.",
+                    set_name=set_name,
+                    counted_value=counted_value,
+                    storage_kind=storage_kind,
+                )
+            encoded_length = len(counted_value.encode("utf-8"))
+            for member, variable in zip(members, member_variables):
+                width = variable.get("string_width")
+                if isinstance(width, int) and encoded_length > width:
+                    raise _catalog_error(
+                        "multiple-response-counted-value-too-wide",
+                        "The MD counted value exceeds a member's declared SPSS string width.",
+                        set_name=set_name,
+                        member=member,
+                        counted_value=counted_value,
+                        counted_value_bytes=encoded_length,
+                        string_width=width,
+                    )
+        else:
+            raise _catalog_error(
+                "multiple-response-member-storage-invalid",
+                "A multiple-response member has unsupported SPSS storage kind.",
+                set_name=set_name,
+                storage_kind=storage_kind,
+            )
+
 def multiple_response_set_rows(dataset_id: str, definitions: str) -> list[dict[str, Any]]:
     sets = json.loads(definitions or "{}")
     rows: list[dict[str, Any]] = []
@@ -462,6 +659,11 @@ def create_wide_dataset(
     operation_id = str(uuid4())
     try:
         preflight(profile, variables)
+        validate_spss_catalog(
+            variables,
+            case_weight_variable=case_weight_variable,
+            multiple_response_sets=multiple_response_sets,
+        )
     except Exception as error:
         _record_failed_preflight(
             engine=engine, metadata=metadata, datasets=datasets,
@@ -672,6 +874,11 @@ def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, An
     dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
     profile = validate_connection_url(database_url)
     preflight(profile, variables)
+    validate_spss_catalog(
+        variables,
+        case_weight_variable=dataset.get("case_weight_variable"),
+        multiple_response_sets=dataset.get("multiple_response_sets"),
+    )
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")
     expected_columns = {"__case_ordinal", *(item["physical_name"] for item in variables)}

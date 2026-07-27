@@ -44,7 +44,7 @@ def write_supported_semantics_fixture(destination: str | Path) -> dict[str, Any]
             "status": {"values": ["NA", "DK"]},
         },
         "var_measure_levels": {
-            "lowest_range": "scale", "highest_range": "scale", "code": "ordinal",
+            "lowest_range": "scale", "highest_range": "scale", "code": "scale",
             "status": "nominal", "comment": "nominal", "interview_date": "scale",
         },
         "var_alignments": {column: "left" for column in frame.columns},
