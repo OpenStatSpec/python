@@ -19,9 +19,9 @@ def capability_matrix() -> Mapping[str, Any]:
             "print_format": "supported", "write_format": "unobservable",
             "source_encoding": "preserved only when UTF-8",
             "measurement_level": "supported", "user_missing_rules": "supported",
-            "documents": "supported", "multiple_response_sets": "lossy",
-            "variable_alignment": "lossy", "variable_sets": "unobservable",
-            "custom_attributes": "unobservable", "variable_role": "unobservable",
+            "documents": "unobservable", "multiple_response_sets": "supported",
+            "variable_alignment": "supported", "variable_sets": "fail-closed",
+            "custom_attributes": "supported", "variable_role": "supported",
         },
         "sql_profiles": declared_profiles(),
     }

@@ -9,7 +9,7 @@ from uuid import uuid4
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, select, update
+from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from .profiles import preflight, validate_connection_url
 
@@ -48,6 +48,8 @@ def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
         Column("case_count", BigInteger, nullable=False),
         Column("file_label", Text, nullable=False, default=""),
         Column("documents", Text, nullable=False, default="[]"),
+        Column("file_attributes", Text, nullable=False, default="{}"),
+        Column("case_weight_variable", String(255)),
         Column("multiple_response_sets", Text, nullable=False, default="{}"),
     )
     variables = Table(
@@ -62,8 +64,11 @@ def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
         Column("label", Text, nullable=False, default=""),
         Column("format", String(64)),
         Column("measure", String(32)),
+        Column("role", String(32)),
         Column("alignment", String(32)),
         Column("display_width", Integer),
+        Column("attributes", Text, nullable=False, default="{}"),
+        Column("compat_name", String(255)),
         Column("value_labels", Text, nullable=False, default="{}"),
         Column("missing_ranges", Text, nullable=False, default="[]"),
     )
@@ -95,6 +100,38 @@ def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+def _migrate_catalog_columns(connection: Any, datasets: Table, variables: Table) -> None:
+    """Add pyspssio metadata columns to catalogs created by earlier adapters.
+
+    This additive migration is intentionally small and portable: no existing
+    source data or dictionary row is rewritten, while a later import can store
+    the newly observable metadata alongside it.
+    """
+    inspector = inspect(connection)
+    additions = {
+        datasets.name: {
+            "file_attributes": "TEXT NOT NULL DEFAULT '{}'",
+            "case_weight_variable": "VARCHAR(255)",
+        },
+        variables.name: {
+            "role": "VARCHAR(32)",
+            "attributes": "TEXT NOT NULL DEFAULT '{}'",
+            "compat_name": "VARCHAR(255)",
+        },
+    }
+    preparer = connection.dialect.identifier_preparer
+    for table_name, columns in additions.items():
+        if not inspector.has_table(table_name):
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table_name)}
+        for name, declaration in columns.items():
+            if name not in existing:
+                connection.execute(text(
+                    f"ALTER TABLE {preparer.quote(table_name)} ADD COLUMN "
+                    f"{preparer.quote(name)} {declaration}"
+                ))
+
 
 
 def _event_rows(
@@ -304,6 +341,7 @@ def create_wide_dataset(
     *, database_url: str, dataset_id: str, source_name: str, source_format: str,
     rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
     source_encoding: str | None = None, documents: str = "[]",
+    file_attributes: str = "{}", case_weight_variable: str | None = None,
     source_table_name: str | None = None,
     source_sha256: str = "",
     source_created_at: str | None = None, source_modified_at: str | None = None,
@@ -337,6 +375,7 @@ def create_wide_dataset(
     )
     with engine.begin() as connection:
         metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, fidelity_event_catalog, operation_catalog])
+        _migrate_catalog_columns(connection, datasets, variable_catalog)
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
             source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables)}, sort_keys=True),
@@ -355,6 +394,7 @@ def create_wide_dataset(
             source_created_at=source_created_at, source_modified_at=source_modified_at,
             imported_at=imported_at,
             file_label=file_label, documents=documents,
+            file_attributes=file_attributes, case_weight_variable=case_weight_variable,
             multiple_response_sets=multiple_response_sets,
         ))
         connection.execute(insert(variable_catalog), [dict(dataset_id=dataset_id, **item) for item in variables])
@@ -411,7 +451,8 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
     datasets, variable_catalog, _, _ = catalog(metadata)
     documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[documents_catalog, value_labels_catalog, missing_rules_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog])
+        _migrate_catalog_columns(connection, datasets, variable_catalog)
         dataset = dict(connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one())
         data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
         variables = [dict(item) for item in connection.execute(

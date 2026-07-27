@@ -9,9 +9,13 @@ from typing import Any
 class Diagnostic:
     code: str
     detail: str
+    details: Mapping[str, Any] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, str]:
-        return {"code": self.code, "detail": self.detail}
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"code": self.code, "detail": self.detail}
+        if self.details:
+            result["details"] = dict(self.details)
+        return result
 
 
 @dataclass(frozen=True)
@@ -36,5 +40,8 @@ class OperationResult(Mapping[str, Any]):
 
 def result(values: Mapping[str, Any]) -> OperationResult:
     payload = dict(values)
-    diagnostics = tuple(Diagnostic(**item) for item in payload.pop("loss_report", ()))
+    diagnostics = tuple(
+        Diagnostic(code=item["code"], detail=item["detail"], details=item.get("details", {}))
+        for item in payload.pop("loss_report", ())
+    )
     return OperationResult(payload, diagnostics)

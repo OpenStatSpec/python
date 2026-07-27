@@ -1,29 +1,16 @@
-"""Reusable fixtures and semantic comparators for supported SAV/ZSAV round trips.
-
-These helpers deliberately compare only metadata that the Python adapter and
-its current SAV writer expose. Attributes, variable sets, and
-multiple-response sets are not asserted here because they are explicitly
-reported as unsupported fidelity losses.
-"""
+"""Reusable pyspssio fixtures and semantic comparators for SAV/ZSAV round trips."""
 
 import math
-import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import pyreadstat
+import pyspssio
 from pandas.testing import assert_frame_equal
 
 
 def write_supported_semantics_fixture(destination: str | Path) -> dict[str, Any]:
-    """Write a fixture spanning every currently supported dictionary semantic.
-
-    -sys.float_info.max and sys.float_info.max are how ReadStat represents
-    SPSS LOWEST and HIGHEST missing-range endpoints on write. ReadStat exposes
-    them as NaN and +inf when the SAV/ZSAV file is read back; the comparator
-    canonicalizes those markers.
-    """
+    """Write the metadata pyspssio demonstrably exposes and restores."""
     destination = Path(destination)
     long_text = "Õ🙂漢字" * 90
     frame = pd.DataFrame({
@@ -33,92 +20,63 @@ def write_supported_semantics_fixture(destination: str | Path) -> dict[str, Any]
         "status": ["NA", "DK", "ok", ""],
         "comment": [long_text, "", "näide", long_text],
         "interview_date": [23123.0, 23124.0, 23125.0, 23126.0],
+        "resp_a": [1.0, 0.0, 1.0, 0.0],
+        "resp_b": [0.0, 1.0, 1.0, 0.0],
     })
-    pyreadstat.write_sav(
-        frame,
-        destination,
-        compress=destination.suffix.lower() == ".zsav",
-        file_label="OpenStatSpec supported-semantics fixture",
-        column_labels={
-            "lowest_range": "LOWEST-style missing range",
-            "highest_range": "HIGHEST-style missing range",
-            "code": "Ordered numeric code",
-            "status": "String missing code",
-            "comment": "Long UTF-8 comment",
-            "interview_date": "SPSS numeric date",
+    metadata = {
+        "var_types": {"status": 8, "comment": 1024},
+        "var_formats": {
+            "lowest_range": "F12.1", "highest_range": "F12.1", "code": "F8.0",
+            "status": "A8", "comment": "A1024", "interview_date": "DATE11",
         },
-        variable_value_labels={
-            # Deliberately non-sorted insertion order is part of the fixture.
+        "var_labels": {
+            "lowest_range": "LOWEST-style missing range", "highest_range": "HIGHEST-style missing range",
+            "code": "Ordered numeric code", "status": "String missing code",
+            "comment": "Long UTF-8 comment", "interview_date": "SPSS numeric date",
+        },
+        "var_value_labels": {
             "code": {3.0: "third", 1.0: "first", 2.0: "second"},
             "status": {"DK": "don't know", "NA": "not answered", "ok": "valid"},
         },
-        missing_ranges={
-            "lowest_range": [{"lo": -sys.float_info.max, "hi": -1.0}, 7.0],
-            "highest_range": [{"lo": 1.0, "hi": sys.float_info.max}, -99.0],
-            "status": ["NA", "DK"],
+        "var_missing_values": {
+            "lowest_range": {"lo": -sys_float_max(), "hi": -1.0, "values": [7.0]},
+            "highest_range": {"lo": 1.0, "hi": sys_float_max(), "values": [-99.0]},
+            "status": {"values": ["NA", "DK"]},
         },
-        variable_measure={
-            "lowest_range": "scale",
-            "highest_range": "scale",
-            "code": "ordinal",
-            "status": "nominal",
-            "comment": "nominal",
-            "interview_date": "scale",
+        "var_measure_levels": {
+            "lowest_range": "scale", "highest_range": "scale", "code": "ordinal",
+            "status": "nominal", "comment": "nominal", "interview_date": "scale",
         },
-        variable_display_width={
-            "lowest_range": 12,
-            "highest_range": 12,
-            "code": 8,
-            "status": 12,
-            "comment": 48,
-            "interview_date": 11,
-        },
-        variable_format={
-            "lowest_range": "F12.1",
-            "highest_range": "F12.1",
-            "code": "F8.0",
-            "status": "A8",
-            "comment": "A1024",
-            "interview_date": "DATE11",
-        },
-        note=["First ordered document", "Teine dokument: Õ🙂"],
-    )
+        "var_alignments": {column: "left" for column in frame.columns},
+        "var_column_widths": {"lowest_range": 12, "highest_range": 12, "code": 8, "status": 12, "comment": 48, "interview_date": 11},
+        "var_roles": {"code": "target", "status": "input"},
+        "var_attributes": {"code": {"Origin": "fixture"}},
+        "mrsets": {"$responses": {"label": "Responses", "counted_value": 1, "variable_list": ["resp_a", "resp_b"]}},
+        "file_attributes": {"Fixture": "OpenStatSpec"},
+        "case_weight_var": "code",
+    }
+    pyspssio.write_sav(str(destination), frame, metadata=metadata)
     return {"long_text": long_text}
 
 
-def _canonical_missing_endpoint(value: Any, *, endpoint: str) -> Any:
-    """Normalize ReadStat's public sentinels for SPSS LOWEST/HIGHEST."""
-    if isinstance(value, float):
-        if math.isnan(value):
-            return "<LOWEST>" if endpoint == "lo" else "<SYSTEM-NAN>"
-        if math.isinf(value):
-            return "<HIGHEST>" if value > 0 else "<LOWEST>"
-    return value
+def sys_float_max() -> float:
+    return float.fromhex("0x1.fffffffffffffp+1023")
 
 
-def _canonical_missing_ranges(metadata: Any) -> dict[str, tuple[tuple[Any, Any], ...]]:
-    result: dict[str, tuple[tuple[Any, Any], ...]] = {}
-    for variable, rules in (getattr(metadata, "missing_ranges", {}) or {}).items():
-        result[variable] = tuple(
-            (
-                _canonical_missing_endpoint(rule.get("lo"), endpoint="lo"),
-                _canonical_missing_endpoint(rule.get("hi"), endpoint="hi"),
-            )
-            for rule in rules
-        )
+def _canonical_missing(metadata: dict[str, Any]) -> dict[str, tuple[tuple[Any, Any, tuple[Any, ...]], ...]]:
+    result: dict[str, tuple[tuple[Any, Any, tuple[Any, ...]], ...]] = {}
+    for name, rule in (metadata.get("var_missing_values") or {}).items():
+        rule = rule or {}
+        if "lo" in rule or "hi" in rule:
+            result[name] = ((rule.get("lo"), rule.get("hi"), tuple(rule.get("values") or ())),)
+        else:
+            result[name] = ((None, None, tuple(rule.get("values") or ())),)
     return result
 
 
-def _ordered_value_labels(metadata: Any) -> dict[str, tuple[tuple[Any, str], ...]]:
-    return {
-        variable: tuple((value, str(label)) for value, label in labels.items())
-        for variable, labels in (getattr(metadata, "variable_value_labels", {}) or {}).items()
-    }
-
-
 def compare_sav_semantics(source: str | Path, exported: str | Path) -> dict[str, Any]:
-    source_frame, source_meta = pyreadstat.read_sav(source, user_missing=True, disable_datetime_conversion=True)
-    exported_frame, exported_meta = pyreadstat.read_sav(exported, user_missing=True, disable_datetime_conversion=True)
+    source_frame, source_metadata = pyspssio.read_sav(str(source), convert_datetimes=False, include_user_missing=True)
+    exported_frame, exported_metadata = pyspssio.read_sav(str(exported), convert_datetimes=False, include_user_missing=True)
     failures: list[str] = []
     if list(source_frame.columns) != list(exported_frame.columns):
         failures.append("variable-order")
@@ -127,19 +85,12 @@ def compare_sav_semantics(source: str | Path, exported: str | Path) -> dict[str,
     except AssertionError:
         failures.append("values-or-case-order")
     for attribute in (
-        "column_labels",
-        "original_variable_types",
-        "variable_measure",
-        "variable_display_width",
-        "variable_storage_width",
-        "notes",
-        "file_label",
-        "file_encoding",
+        "encoding", "case_weight_var", "file_attributes", "mrsets", "var_types", "var_formats",
+        "var_labels", "var_alignments", "var_column_widths", "var_measure_levels", "var_roles",
+        "var_value_labels", "var_attributes",
     ):
-        if getattr(source_meta, attribute, None) != getattr(exported_meta, attribute, None):
+        if source_metadata.get(attribute) != exported_metadata.get(attribute):
             failures.append(attribute)
-    if _canonical_missing_ranges(source_meta) != _canonical_missing_ranges(exported_meta):
-        failures.append("missing_ranges")
-    if _ordered_value_labels(source_meta) != _ordered_value_labels(exported_meta):
-        failures.append("variable_value_labels")
+    if _canonical_missing(source_metadata) != _canonical_missing(exported_metadata):
+        failures.append("var_missing_values")
     return {"equivalent": not failures, "differences": failures}
