@@ -189,6 +189,10 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         file_attributes=_json(metadata.get("file_attributes") or {}),
         case_weight_variable=metadata.get("case_weight_var") or None,
         multiple_response_sets=_json(metadata.get("mrsets") or {}),
+        source_extensions=(
+            {"spss.variable_sets": metadata["_var_sets"]}
+            if metadata.get("_var_sets") else {}
+        ),
         fidelity_events=tuple(loss_report.values()),
     )
     return {**result, "loss_report": tuple(loss_report.values())}

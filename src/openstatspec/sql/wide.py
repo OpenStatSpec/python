@@ -101,7 +101,9 @@ def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
-def _migrate_catalog_columns(connection: Any, datasets: Table, variables: Table) -> None:
+def _migrate_catalog_columns(
+    connection: Any, datasets: Table, variables: Table, multiple_response: Table,
+) -> None:
     """Add pyspssio metadata columns to catalogs created by earlier adapters.
 
     This additive migration is intentionally small and portable: no existing
@@ -118,6 +120,14 @@ def _migrate_catalog_columns(connection: Any, datasets: Table, variables: Table)
             "role": "VARCHAR(32)",
             "attributes": "TEXT NOT NULL DEFAULT '{}'",
             "compat_name": "VARCHAR(255)",
+        },
+        multiple_response.name: {
+            "is_dichotomy": "BOOLEAN",
+            "use_category_labels": "BOOLEAN",
+            "use_first_var_label": "BOOLEAN",
+            "counted_value_type": "VARCHAR(16)",
+            "counted_numeric": "DOUBLE",
+            "counted_text": "TEXT",
         },
     }
     preparer = connection.dialect.identifier_preparer
@@ -188,9 +198,34 @@ def multiple_response_set_catalog(metadata: MetaData) -> Table:
         Column("set_name", String(255), primary_key=True),
         Column("member_ordinal", Integer, primary_key=True),
         Column("kind", String(16)), Column("label", Text),
-        Column("counted_value", Text), Column("variable_name", String(255)),
+        Column("is_dichotomy", Boolean),
+        Column("use_category_labels", Boolean),
+        Column("use_first_var_label", Boolean),
+        Column("counted_value", Text),
+        Column("counted_value_type", String(16)),
+        Column("counted_numeric", binary64_type()),
+        Column("counted_text", Text),
+        Column("variable_name", String(255)),
         Column("definition", Text, nullable=False),
     )
+
+
+def source_extension_catalog(metadata: MetaData) -> Table:
+    """Namespaced raw source semantics retained even when export is fail-closed."""
+    return Table(
+        "source_extension_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("extension_key", String(255), primary_key=True),
+        Column("payload", Text, nullable=False),
+    )
+
+
+def source_extension_rows(dataset_id: str, extensions: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"dataset_id": dataset_id, "extension_key": str(key),
+         "payload": json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True)}
+        for key, payload in sorted(extensions.items())
+    ]
 
 
 def document_catalog(metadata: MetaData) -> Table:
@@ -304,22 +339,89 @@ def missing_rule_rows(dataset_id: str, variables: list[dict[str, Any]]) -> list[
 def normalized_metadata_tables(metadata: MetaData) -> tuple[Table, Table, Table]:
     return document_catalog(metadata), value_label_catalog(metadata), missing_rule_catalog(metadata)
 
+def _mr_counted_value(definition: Mapping[str, Any]) -> tuple[str | None, float | None, str | None]:
+    value = definition.get("counted_value", definition.get("countedvalue"))
+    if value is None:
+        return None, None, None
+    if isinstance(value, bool):
+        return "text", None, str(value)
+    if isinstance(value, (int, float)):
+        return "numeric", float(value), None
+    return "text", None, str(value)
+
+
 def multiple_response_set_rows(dataset_id: str, definitions: str) -> list[dict[str, Any]]:
-    sets = json.loads(definitions)
-    rows = []
+    sets = json.loads(definitions or "{}")
+    rows: list[dict[str, Any]] = []
     for set_name, definition in sets.items():
+        if not isinstance(definition, Mapping):
+            continue
         members = definition.get("variable_list", definition.get("variables", []))
         if isinstance(members, str):
             members = members.split()
+        is_dichotomy = definition.get("is_dichotomy")
+        if is_dichotomy is None:
+            is_dichotomy = definition.get("set_type", definition.get("type")) in {"MD", "D", "E"} or (
+                definition.get("counted_value", definition.get("countedvalue")) is not None
+            )
+        kind = "MD" if is_dichotomy else "MC"
+        value_type, numeric_value, text_value = _mr_counted_value(definition)
         for ordinal, variable_name in enumerate(members or [None], start=1):
             rows.append({
                 "dataset_id": dataset_id, "set_name": set_name, "member_ordinal": ordinal,
-                "kind": definition.get("set_type", definition.get("type")),
-                "label": definition.get("label"),
-                "counted_value": str(definition.get("counted_value", definition.get("countedvalue", ""))),
-                "variable_name": variable_name, "definition": json.dumps(definition, default=str, sort_keys=True),
+                "kind": kind, "label": definition.get("label"),
+                "is_dichotomy": bool(is_dichotomy),
+                "use_category_labels": bool(definition.get("use_category_labels", False)),
+                "use_first_var_label": bool(definition.get("use_first_var_label", False)),
+                "counted_value": "" if value_type is None else str(
+                    numeric_value if value_type == "numeric" else text_value
+                ),
+                "counted_value_type": value_type,
+                "counted_numeric": numeric_value, "counted_text": text_value,
+                "variable_name": variable_name,
+                "definition": json.dumps(definition, default=str, ensure_ascii=False, sort_keys=True),
             })
     return rows
+
+
+def multiple_response_sets_from_rows(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Reconstruct pyspssio MR metadata from normalized catalog rows.
+
+    The new typed fields are authoritative. ``definition`` only supplies
+    backwards compatibility for catalogs written before those fields existed.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row["set_name"])
+        if name not in result:
+            try:
+                legacy = json.loads(row.get("definition") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                legacy = {}
+            definition = dict(legacy) if isinstance(legacy, Mapping) else {}
+            definition["variable_list"] = []
+            result[name] = definition
+        definition = result[name]
+        if row.get("label") is not None:
+            definition["label"] = row["label"]
+        if row.get("is_dichotomy") is not None:
+            definition["is_dichotomy"] = bool(row["is_dichotomy"])
+        elif row.get("kind") is not None:
+            definition["is_dichotomy"] = str(row["kind"]).upper() == "MD"
+        if row.get("use_category_labels") is not None:
+            definition["use_category_labels"] = bool(row["use_category_labels"])
+        if row.get("use_first_var_label") is not None:
+            definition["use_first_var_label"] = bool(row["use_first_var_label"])
+        value_type = row.get("counted_value_type")
+        if value_type == "numeric":
+            definition["counted_value"] = row.get("counted_numeric")
+        elif value_type == "text":
+            definition["counted_value"] = row.get("counted_text")
+        elif row.get("counted_value") not in (None, ""):
+            definition["counted_value"] = row["counted_value"]
+        if row.get("variable_name") is not None:
+            definition["variable_list"].append(row["variable_name"])
+    return result
 
 def physical_name(source_name: str, used: set[str]) -> str:
     stem = _IDENTIFIER.sub("_", source_name).strip("_").lower() or "variable"
@@ -347,6 +449,7 @@ def create_wide_dataset(
     source_created_at: str | None = None, source_modified_at: str | None = None,
     imported_at: str = "",
     multiple_response_sets: str = "{}",
+    source_extensions: Mapping[str, Any] | None = None,
     fidelity_events: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     profile = validate_connection_url(database_url)
@@ -354,6 +457,7 @@ def create_wide_dataset(
     metadata = MetaData()
     datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
+    source_extensions_catalog = source_extension_catalog(metadata)
     documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
     operation_id = str(uuid4())
     try:
@@ -374,8 +478,8 @@ def create_wide_dataset(
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, fidelity_event_catalog, operation_catalog])
-        _migrate_catalog_columns(connection, datasets, variable_catalog)
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, fidelity_event_catalog, operation_catalog])
+        _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
             source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables)}, sort_keys=True),
@@ -410,6 +514,9 @@ def create_wide_dataset(
         mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
         if mrset_rows:
             connection.execute(insert(multiple_response_catalog), mrset_rows)
+        extension_rows = source_extension_rows(dataset_id, source_extensions or {})
+        if extension_rows:
+            connection.execute(insert(source_extensions_catalog), extension_rows)
         event_rows = _event_rows(
             operation_id=operation_id, dataset_id=dataset_id, direction="import", fidelity_events=fidelity_events,
         )
@@ -421,6 +528,7 @@ def create_wide_dataset(
             except Exception:
                 data_table.drop(connection, checkfirst=True)
                 connection.execute(delete(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(source_extensions_catalog).where(source_extensions_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(value_labels_catalog).where(value_labels_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id))
@@ -449,10 +557,12 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog, _, _ = catalog(metadata)
+    multiple_response_catalog = multiple_response_set_catalog(metadata)
+    source_extensions_catalog = source_extension_catalog(metadata)
     documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog])
-        _migrate_catalog_columns(connection, datasets, variable_catalog)
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog])
+        _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
         dataset = dict(connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one())
         data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
         variables = [dict(item) for item in connection.execute(
@@ -473,9 +583,26 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
             select(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id)
             .order_by(missing_rules_catalog.c.variable_ordinal, missing_rules_catalog.c.ordinal)
         ).mappings().all()
+        mrset_rows_result = connection.execute(
+            select(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id)
+            .order_by(multiple_response_catalog.c.set_name, multiple_response_catalog.c.member_ordinal)
+        ).mappings().all()
+        extension_rows_result = connection.execute(
+            select(source_extensions_catalog).where(source_extensions_catalog.c.dataset_id == dataset_id)
+            .order_by(source_extensions_catalog.c.extension_key)
+        ).mappings().all()
 
     if document_rows_result:
         dataset["documents"] = json.dumps([item["text"] for item in document_rows_result], ensure_ascii=False)
+    if mrset_rows_result:
+        dataset["multiple_response_sets"] = json.dumps(
+            multiple_response_sets_from_rows(mrset_rows_result), ensure_ascii=False, default=str,
+        )
+    if extension_rows_result:
+        dataset["source_extensions"] = {
+            item["extension_key"]: json.loads(item["payload"])
+            for item in extension_rows_result
+        }
     variables_by_ordinal = {item["ordinal"]: item for item in variables}
     labels_by_variable: dict[int, dict[Any, str]] = {}
     for item in label_rows_result:
@@ -494,7 +621,7 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
     return dataset, variables, rows
 
 
-def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, str], ...]:
+def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], ...]:
     """Read import-time fidelity diagnostics for a catalogued dataset."""
     engine = create_engine(database_url)
     metadata = MetaData()
@@ -506,7 +633,10 @@ def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[st
             .where(fidelity_event_catalog.c.dataset_id == dataset_id)
             .order_by(fidelity_event_catalog.c.code)
         ).mappings().all()
-    return tuple({"code": item["code"], "detail": item["detail"]} for item in events)
+    return tuple({
+        "code": item["code"], "detail": item["detail"],
+        "details": json.loads(item["details"] or "{}"),
+    } for item in events)
 
 
 
