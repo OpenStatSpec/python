@@ -10,10 +10,7 @@ from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.wide import create_wide_dataset, read_wide_dataset
 
 
-_REQUIRED_ENGINE_LOSS = [
-    "file-label-and-documents-unobservable",
-    "separate-write-format-unobservable",
-]
+_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable"]
 
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
@@ -106,7 +103,7 @@ def test_attribute_catalog_migrates_old_json_catalog_without_rewriting_it(tmp_pa
     assert pyspssio.read_metadata(str(destination))["file_attributes"] == {"File": "legacy"}
 
 
-def test_attribute_catalog_preserves_ordered_arrays_and_fails_closed_for_pyspssio(tmp_path) -> None:
+def test_attribute_catalog_preserves_ordered_arrays_through_raw_pyspssio_bridge(tmp_path) -> None:
     database = f"sqlite:///{tmp_path / 'array.sqlite'}"
     create_wide_dataset(
         database_url=database, dataset_id="array", source_name="array.sav", source_format="SAV",
@@ -125,7 +122,18 @@ def test_attribute_catalog_preserves_ordered_arrays_and_fails_closed_for_pyspssi
     dataset, variables, _ = read_wide_dataset(database_url=database, dataset_id="array")
     assert json.loads(dataset["file_attributes"]) == {"Array": ["one", "two"], "After": "three"}
     assert json.loads(variables[0]["attributes"]) == {"Array": ["red", "blue"]}
-    with pytest.raises(UnsupportedOperationError, match="multi-value SPSS custom attribute 'Array' on file"):
-        openstatspec.export_sav(
-            database_url=database, dataset_id="array", destination=tmp_path / "array.sav",
-        )
+    destination = tmp_path / "array.sav"
+    openstatspec.export_sav(
+        database_url=database, dataset_id="array", destination=destination,
+        allow_loss=_REQUIRED_ENGINE_LOSS,
+    )
+    from openstatspec.spss.dictionary import (
+        attribute_values, file_attribute_pairs, variable_attribute_pairs,
+    )
+    with pyspssio.Reader(str(destination), mode="r") as reader:
+        assert attribute_values(file_attribute_pairs(reader)) == {
+            "Array": ["one", "two"], "After": "three",
+        }
+        assert attribute_values(variable_attribute_pairs(reader, "answer")) == {
+            "Array": ["red", "blue"],
+        }

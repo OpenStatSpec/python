@@ -77,6 +77,9 @@ def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
         Column("string_width", Integer),
         Column("label", Text, nullable=False, default=""),
         Column("format", String(64)),
+        # format remains the legacy print-format mirror; SPSS has a distinct write format.
+        Column("print_format", String(64)),
+        Column("write_format", String(64)),
         Column("measure", String(32)),
         Column("role", String(32)),
         Column("alignment", String(32)),
@@ -134,6 +137,8 @@ def _migrate_catalog_columns(
             "role": "VARCHAR(32)",
             "attributes": "TEXT NOT NULL DEFAULT '{}'",
             "compat_name": "VARCHAR(255)",
+            "print_format": "VARCHAR(64)",
+            "write_format": "VARCHAR(64)",
         },
         multiple_response.name: {
             "is_dichotomy": "BOOLEAN",

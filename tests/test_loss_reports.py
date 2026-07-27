@@ -10,7 +10,7 @@ from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.wide import create_wide_dataset
 
 
-_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable", "separate-write-format-unobservable"]
+_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable"]
 
 
 def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path) -> None:

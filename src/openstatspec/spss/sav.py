@@ -9,7 +9,6 @@ caller explicitly accepts that exact loss.
 import hashlib
 import json
 import math
-import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,18 @@ from typing import Any
 import pandas as pd
 import pyspssio
 
+from .dictionary import (
+    attribute_pairs,
+    attribute_values,
+    file_attribute_pairs,
+    format_string,
+    format_tuple,
+    format_tuples,
+    set_file_attribute_pairs,
+    set_format_tuples,
+    set_variable_attribute_pairs,
+    variable_attribute_pairs,
+)
 from ..core import UnsupportedOperationError
 from ..sql.wide import (
     create_wide_dataset,
@@ -36,6 +47,15 @@ def _dictionary(source_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         with pyspssio.Reader(str(source_path), mode="r") as reader:
             metadata["_var_sets"] = dict(reader.var_sets or {})
+            print_formats, write_formats = format_tuples(reader)
+            metadata["_print_format_tuples"] = print_formats
+            metadata["_write_format_tuples"] = write_formats
+            metadata["file_attributes"] = attribute_values(file_attribute_pairs(reader))
+            metadata["var_attributes"] = {
+                name: attribute_values(variable_attribute_pairs(reader, name))
+                for name in reader.var_names
+                if variable_attribute_pairs(reader, name)
+            }
     except Exception as error:  # The source stays importable, but not silently faithful.
         metadata["_var_sets"] = None
         metadata["_var_sets_error"] = str(error)
@@ -47,6 +67,8 @@ def _variables(metadata: dict[str, Any], names: list[str]) -> list[dict[str, Any
     types = dict(metadata.get("var_types") or {})
     labels = dict(metadata.get("var_labels") or {})
     formats = dict(metadata.get("var_formats") or {})
+    print_formats = dict(metadata.get("_print_format_tuples") or {})
+    write_formats = dict(metadata.get("_write_format_tuples") or {})
     measures = dict(metadata.get("var_measure_levels") or {})
     roles = dict(metadata.get("var_roles") or {})
     alignments = dict(metadata.get("var_alignments") or {})
@@ -67,7 +89,9 @@ def _variables(metadata: dict[str, Any], names: list[str]) -> list[dict[str, Any
             "readstat_storage_type": f"pyspssio:{kind}",
             "string_width": width if kind == "string" else None,
             "label": str(labels.get(source_name) or ""),
-            "format": formats.get(source_name),
+            "format": format_string(print_formats[source_name]) if source_name in print_formats else formats.get(source_name),
+            "print_format": _json(list(print_formats[source_name])) if source_name in print_formats else None,
+            "write_format": _json(list(write_formats[source_name])) if source_name in write_formats else None,
             "measure": measures.get(source_name),
             "role": roles.get(source_name),
             "alignment": alignments.get(source_name),
@@ -237,11 +261,8 @@ def export_sav_dataset(
         ],
         columns=[variable["source_name"] for variable in variables],
     )
-    metadata = _writer_metadata(dataset, variables)
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("error", category=pyspssio.SPSSWarning)
-            pyspssio.write_sav(str(destination_path), frame, metadata=metadata)
+        _write_with_dictionary_bridge(destination_path, frame, dataset, variables)
     except Exception:
         destination_path.unlink(missing_ok=True)
         raise
@@ -261,19 +282,69 @@ def export_sav_dataset(
     }
 
 
+def _write_with_dictionary_bridge(
+    destination: Path, frame: pd.DataFrame, dataset: dict[str, Any], variables: list[dict[str, Any]],
+) -> None:
+    """Write an SPSS dictionary without flattening raw IBM I/O metadata."""
+    metadata = _writer_metadata(dataset, variables)
+    with pyspssio.Writer(str(destination), mode="w") as writer:
+        writer.compression = 2 if destination.suffix.lower() == ".zsav" else 1
+        for variable in variables:
+            writer._add_var(  # pylint: disable=protected-access
+                variable["source_name"],
+                int(variable["string_width"] or 0) if variable["storage_kind"] == "string" else 0,
+            )
+        for variable in variables:
+            print_format = _catalog_format(variable, "print_format")
+            write_format = _catalog_format(variable, "write_format")
+            set_format_tuples(
+                writer, name=variable["source_name"],
+                print_format=print_format, write_format=write_format,
+            )
+        for name in (
+            "var_labels", "var_measure_levels", "var_roles", "var_alignments",
+            "var_column_widths", "var_value_labels", "var_missing_values", "mrsets",
+        ):
+            value = metadata.get(name)
+            if value:
+                setattr(writer, name, value)
+        if dataset.get("case_weight_variable"):
+            writer.case_weight_var = dataset["case_weight_variable"]
+        set_file_attribute_pairs(
+            writer, attribute_pairs(_json_load(dataset.get("file_attributes"), {})),
+        )
+        for variable in variables:
+            values = _json_load(variable.get("attributes"), {})
+            if values:
+                set_variable_attribute_pairs(
+                    writer, variable["source_name"], attribute_pairs(values),
+                )
+        variable_sets = (dataset.get("source_extensions") or {}).get("spss.variable_sets")
+        if variable_sets:
+            writer.var_sets = variable_sets
+        writer.commit_header()
+        writer.write_data(frame)
+
+
+def _catalog_format(variable: dict[str, Any], key: str) -> tuple[int, int, int]:
+    encoded = variable.get(key)
+    if encoded:
+        return format_tuple(_json_load(encoded, encoded))
+    legacy = variable.get("format")
+    if legacy:
+        return format_tuple(legacy)
+    if variable["storage_kind"] == "string":
+        return 1, int(variable["string_width"] or 1), 0
+    return 5, 8, 2
+
+
 def _writer_metadata(dataset: dict[str, Any], variables: list[dict[str, Any]]) -> dict[str, Any]:
     metadata: dict[str, Any] = {
-        "file_attributes": _pyspssio_attribute_values(
-            _json_load(dataset.get("file_attributes"), {}), scope="file",
-        ),
         "case_weight_var": dataset.get("case_weight_variable") or None,
         "mrsets": _json_load(dataset.get("multiple_response_sets"), {}),
         "var_types": {
             item["source_name"]: int(item["string_width"] or 1)
             for item in variables if item["storage_kind"] == "string"
-        },
-        "var_formats": {
-            item["source_name"]: item["format"] for item in variables if item.get("format")
         },
         "var_labels": {
             item["source_name"]: item["label"] for item in variables if item.get("label")
@@ -291,12 +362,6 @@ def _writer_metadata(dataset: dict[str, Any], variables: list[dict[str, Any]]) -
             item["source_name"]: int(item["display_width"])
             for item in variables if item.get("display_width") is not None
         },
-        "var_attributes": {
-            item["source_name"]: _pyspssio_attribute_values(
-                _json_load(item.get("attributes"), {}), scope=f"variable {item['source_name']!r}",
-            )
-            for item in variables if _json_load(item.get("attributes"), {})
-        },
         "var_value_labels": {
             item["source_name"]: _typed_value_labels(item)
             for item in variables if _json_load(item.get("value_labels"), {})
@@ -308,24 +373,6 @@ def _writer_metadata(dataset: dict[str, Any], variables: list[dict[str, Any]]) -
         },
     }
     return {key: value for key, value in metadata.items() if value not in ({}, None)}
-
-
-def _pyspssio_attribute_values(values: dict[str, Any], *, scope: str) -> dict[str, str]:
-    """Convert canonical scalar attributes for pyspssio without hiding arrays.
-
-    pyspssio 0.5.x exposes SPSS attributes as one text value per name.  The
-    relational catalog preserves a future/source multi-value array, but an
-    export must fail rather than stringify and silently change that array.
-    """
-    result: dict[str, str] = {}
-    for name, value in values.items():
-        if isinstance(value, (list, tuple)):
-            raise UnsupportedOperationError(
-                f"pyspssio cannot faithfully write the multi-value SPSS custom attribute "
-                f"{name!r} on {scope}."
-            )
-        result[str(name)] = "" if value is None else str(value)
-    return result
 
 
 def _typed_value_labels(variable: dict[str, Any]) -> dict[Any, str]:
@@ -341,10 +388,6 @@ def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "code": "file-label-and-documents-unobservable",
             "detail": "pyspssio 0.5.x exposes neither SAV file label nor document text through its public API.",
         },
-        "separate-write-format-unobservable": {
-            "code": "separate-write-format-unobservable",
-            "detail": "pyspssio exposes one format and writes it as both SPSS print and write format.",
-        },
     }
     variable_sets = metadata.get("_var_sets")
     if variable_sets is None:
@@ -352,12 +395,6 @@ def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "code": "variable-sets-unobservable",
             "detail": "pyspssio could not inspect source variable sets; they cannot be preserved silently.",
             "details": {"engine_error": metadata.get("_var_sets_error", "unknown")},
-        }
-    elif variable_sets:
-        events["variable-sets-not-exportable"] = {
-            "code": "variable-sets-not-exportable",
-            "detail": "pyspssio exposes source variable sets but its writer does not faithfully round trip them.",
-            "details": {"set_count": len(variable_sets)},
         }
     if _is_non_utf8_encoding(metadata.get("encoding")):
         events["source-encoding-not-preserved"] = {

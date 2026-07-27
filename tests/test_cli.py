@@ -19,7 +19,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert inspected["source_format"] == "SAV"
     assert inspected["source_sha256"]
     assert {event["code"] for event in inspected["loss_report"]} == {
-        "file-label-and-documents-unobservable", "separate-write-format-unobservable",
+        "file-label-and-documents-unobservable",
     }
     assert imported["case_count"] == 1
 
@@ -31,7 +31,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
     assert openstatspec.cli.main([
         "export", "--database-url", database, "--dataset-id", "fixture", "--output", str(output),
-        "--allow-loss", "file-label-and-documents-unobservable", "--allow-loss", "separate-write-format-unobservable",
+        "--allow-loss", "file-label-and-documents-unobservable",
     ]) == 0
     assert json.loads(capsys.readouterr().out)["destination"] == str(output)
     assert pyspssio.read_sav(str(output), convert_datetimes=False)[0]["answer"].tolist() == [1.0]

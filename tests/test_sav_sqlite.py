@@ -11,10 +11,7 @@ from conformance import compare_sav_semantics, write_supported_semantics_fixture
 from openstatspec.core import UnsupportedOperationError
 
 
-_REQUIRED_ENGINE_LOSS = [
-    "file-label-and-documents-unobservable",
-    "separate-write-format-unobservable",
-]
+_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable"]
 
 _COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
 
@@ -106,3 +103,60 @@ def test_import_rejects_physical_table_name_collision_without_partial_catalog(tm
         openstatspec.import_sav(source, database_url=database, dataset_id="wave 1")
     connection = sqlite3.connect(database_path)
     assert connection.execute("select dataset_id from dataset_catalog").fetchall() == [("wave-1",)]
+@pytest.mark.parametrize("suffix", [".sav", ".zsav"])
+def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arrays(tmp_path, suffix: str) -> None:
+    """The raw IBM I/O path, rather than write_sav, is the fidelity proof."""
+    from openstatspec.spss.dictionary import (
+        attribute_values,
+        file_attribute_pairs,
+        format_tuples,
+        set_file_attribute_pairs,
+        set_format_tuples,
+        set_variable_attribute_pairs,
+        variable_attribute_pairs,
+    )
+
+    source = tmp_path / f"raw-source{suffix}"
+    destination = tmp_path / f"raw-destination{suffix}"
+    database = f"sqlite:///{tmp_path / f'raw-{suffix[1:]}.sqlite'}"
+    with pyspssio.Writer(str(source), mode="w") as writer:
+        writer.compression = 2 if suffix == ".zsav" else 1
+        writer._add_var("answer", 0)  # pylint: disable=protected-access
+        writer._add_var("comment", 12)  # pylint: disable=protected-access
+        set_format_tuples(
+            writer, name="answer", print_format=(5, 8, 1), write_format=(3, 12, 3),
+        )
+        set_format_tuples(
+            writer, name="comment", print_format=(1, 12, 0), write_format=(1, 12, 0),
+        )
+        set_file_attribute_pairs(writer, [("Array[1]", "one"), ("Array[2]", "two")])
+        set_variable_attribute_pairs(
+            writer, "answer", [("Array[1]", "red"), ("Array[2]", "blue")],
+        )
+        writer.var_sets = {"Analysis": ["answer", "comment"]}
+        writer.commit_header()
+        writer.write_data(pd.DataFrame({"answer": [1.0], "comment": ["yes"]}))
+
+    openstatspec.import_sav(source, database_url=database, dataset_id="raw")
+    connection = sqlite3.connect(tmp_path / f"raw-{suffix[1:]}.sqlite")
+    assert connection.execute(
+        "select print_format, write_format from variable_catalog "
+        "where dataset_id = 'raw' and source_name = 'answer'"
+    ).fetchone() == ("[5, 8, 1]", "[3, 12, 3]")
+    assert connection.execute(
+        "select payload from source_extension_catalog "
+        "where dataset_id = 'raw' and extension_key = 'spss.variable_sets'"
+    ).fetchone() == (json.dumps({"Analysis": ["answer", "comment"]}),)
+    openstatspec.export_sav(
+        database_url=database, dataset_id="raw", destination=destination,
+        allow_loss=_REQUIRED_ENGINE_LOSS,
+    )
+    with pyspssio.Reader(str(destination), mode="r") as reader:
+        print_formats, write_formats = format_tuples(reader)
+        assert print_formats["answer"] == (5, 8, 1)
+        assert write_formats["answer"] == (3, 12, 3)
+        assert reader.var_sets == {"Analysis": ["answer", "comment"]}
+        assert attribute_values(file_attribute_pairs(reader)) == {"Array": ["one", "two"]}
+        assert attribute_values(variable_attribute_pairs(reader, "answer")) == {
+            "Array": ["red", "blue"],
+        }
