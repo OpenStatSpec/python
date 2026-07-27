@@ -29,13 +29,12 @@ relevant diagnostic codes through `allow_loss` or repeats `--allow-loss CODE`
 in the CLI.
 
 The concrete pyspssio boundaries are documented in the [SAV profile](sav-profile.md):
-file labels/documents and independent write formats are unobservable;
-variable sets and legacy compatible names are fail-closed on export; only UTF-8
-has a source-encoding fidelity contract; and multi-value custom-attribute
-arrays are hard fail-closed. Scalar custom attributes, multiple-response sets,
-and variable alignment have verified paths. A caller that supplies consent for
-an available loss code receives the machine-readable loss report with the
-export result.
+file labels/documents are unobservable, legacy compatible names are fail-closed
+on export, and only UTF-8 has a source-encoding fidelity contract. Separate
+print/write formats, variable sets, multiple-response sets, alignment, scalar
+attributes, and ordered custom-attribute arrays have verified paths. A caller
+that supplies consent for an available loss code receives the
+machine-readable loss report with the export result.
 
 ## Maintainer checks before tagging
 
