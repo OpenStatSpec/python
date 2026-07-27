@@ -343,13 +343,17 @@ def _write_with_dictionary_bridge(
             temporary_encoding = str(pyspssio.read_metadata(str(temporary_source)).get("encoding") or "UTF-8")
             _require_matching_legacy_encoding(source_encoding, temporary_encoding, legacy_output)
             write_document_lines(temporary_source, documents, encoding=temporary_encoding)
-            document_source = stack.enter_context(pyspssio.Reader(str(temporary_source), mode="r"))
+            document_source = stack.enter_context(
+                pyspssio.Reader(
+                    str(temporary_source), mode="r",
+                    unicode=not legacy_output, locale=legacy_locale,
+                )
+            )
         writer = stack.enter_context(
             pyspssio.Writer(
                 str(destination), mode="w", unicode=not legacy_output, locale=legacy_locale,
             )
         )
-        _require_matching_legacy_encoding(source_encoding, str(writer.file_encoding), legacy_output)
         writer.compression = 2 if destination.suffix.lower() == ".zsav" else 1
         writer.file_label = str(dataset.get("file_label") or "")
         for variable in variables:
@@ -387,6 +391,7 @@ def _write_with_dictionary_bridge(
         if document_source is not None:
             writer.copy_documents_from(document_source)
         writer.commit_header()
+        _require_matching_legacy_encoding(source_encoding, str(writer.file_encoding), legacy_output)
         writer.write_data(frame)
     write_compatible_names(
         destination,

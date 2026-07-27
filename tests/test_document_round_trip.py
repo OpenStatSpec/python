@@ -1,5 +1,7 @@
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
 
 import pandas as pd
 import pyspssio
@@ -86,3 +88,42 @@ def test_document_and_compatible_name_round_trip_to_zsav(tmp_path: Path) -> None
     assert read_document_lines(destination, encoding="UTF-8") == ["Combined dictionary fixture."]
     assert pyspssio.read_metadata(str(destination))["var_compat_names"][source_name] == "ANSWER"
     assert pyspssio.read_sav(str(destination))[0][source_name].tolist() == [7.0]
+
+
+def test_windows_1252_values_and_documents_round_trip_when_locale_is_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    localedef = shutil.which("localedef")
+    charmap = Path("/usr/share/i18n/charmaps/CP1252.gz")
+    source_definition = Path("/usr/share/i18n/locales/en_US")
+    if localedef is None or not charmap.exists() or not source_definition.exists():
+        pytest.skip("CP1252 locale source is unavailable on this host")
+    locale_root = tmp_path / "locales"
+    locale_root.mkdir()
+    locale_name = "en_US.CP1252"
+    subprocess.run(
+        [localedef, "--no-archive", "-i", "en_US", "-f", "CP1252", str(locale_root / locale_name)],
+        check=True,
+    )
+    monkeypatch.setenv("LOCPATH", str(locale_root))
+    source = tmp_path / "source.sav"
+    destination = tmp_path / "destination.zsav"
+    database = f"sqlite:///{tmp_path / 'cp1252.sqlite'}"
+    value = "Müller €"
+    documents = ["Töö €"]
+    pyspssio.write_sav(
+        str(source), pd.DataFrame({"name": [value]}),
+        unicode=False, locale=locale_name,
+    )
+    write_document_lines(source, documents, encoding="CP1252")
+
+    imported = openstatspec.import_sav(source, database_url=database, dataset_id="cp1252")
+    assert {item.code for item in imported.diagnostics} == {"source-encoding-not-preserved"}
+    exported = openstatspec.export_sav(
+        database_url=database, dataset_id="cp1252", destination=destination,
+        legacy_locale=locale_name,
+    )
+    assert exported.diagnostics == ()
+    assert pyspssio.read_metadata(str(destination))["encoding"].casefold() == "windows-1252"
+    assert pyspssio.read_sav(str(destination))[0]["name"].tolist() == [value]
+    assert read_document_lines(destination, encoding="CP1252") == documents
