@@ -10,7 +10,7 @@ from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.wide import create_wide_dataset
 
 
-_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable"]
+_REQUIRED_ENGINE_LOSS = ["documents-unobservable"]
 
 
 def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path) -> None:
@@ -26,7 +26,7 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     connection = sqlite3.connect(database_path)
     assert {row[0] for row in connection.execute("select code from fidelity_event_catalog")} == set(_REQUIRED_ENGINE_LOSS)
 
-    with pytest.raises(UnsupportedOperationError, match="file-label-and-documents-unobservable"):
+    with pytest.raises(UnsupportedOperationError, match="documents-unobservable"):
         openstatspec.export_sav(database_url=database, dataset_id="persisted", destination=blocked)
     assert not blocked.exists()
 

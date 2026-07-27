@@ -178,7 +178,7 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
         "source_name": source_path.name,
         "source_sha256": _sha256(source_path),
         "source_encoding": metadata.get("encoding"),
-        "file_label": "",
+        "file_label": str(metadata.get("file_label") or ""),
         "documents": [],
         "file_attributes": dict(metadata.get("file_attributes") or {}),
         "case_weight_variable": metadata.get("case_weight_var") or None,
@@ -209,7 +209,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         source_format=source_path.suffix[1:].upper(),
         rows=_rows(frame, variables),
         variables=variables,
-        file_label="",  # pyspssio 0.5.x has no public file-label API.
+        file_label=str(metadata.get("file_label") or ""),
         source_encoding=metadata.get("encoding"),
         source_sha256=_sha256(source_path),
         imported_at=datetime.now(UTC).isoformat(),
@@ -289,6 +289,7 @@ def _write_with_dictionary_bridge(
     metadata = _writer_metadata(dataset, variables)
     with pyspssio.Writer(str(destination), mode="w") as writer:
         writer.compression = 2 if destination.suffix.lower() == ".zsav" else 1
+        writer.file_label = str(dataset.get("file_label") or "")
         for variable in variables:
             writer._add_var(  # pylint: disable=protected-access
                 variable["source_name"],
@@ -384,9 +385,9 @@ def _typed_value_labels(variable: dict[str, Any]) -> dict[Any, str]:
 
 def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
     events: dict[str, dict[str, Any]] = {
-        "file-label-and-documents-unobservable": {
-            "code": "file-label-and-documents-unobservable",
-            "detail": "pyspssio 0.5.x exposes neither SAV file label nor document text through its public API.",
+        "documents-unobservable": {
+            "code": "documents-unobservable",
+            "detail": "pyspssio does not expose SAV document text through its public API; the file label is preserved separately.",
         },
     }
     variable_sets = metadata.get("_var_sets")

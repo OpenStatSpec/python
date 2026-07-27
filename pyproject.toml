@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 authors = [{name = "OpenStatSpec"}]
-dependencies = ["SQLAlchemy>=2.0", "pandas>=2.2", "pyspssio>=0.5.1"]
+dependencies = ["SQLAlchemy>=2.0", "pandas>=2.2", "pyspssio @ git+https://github.com/TonisOrmisson/pyspssio.git@0b3f879"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -23,6 +23,9 @@ openstatspec = "openstatspec.cli:main"
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["services: requires a configured PostgreSQL or MySQL/MariaDB service"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openstatspec"]

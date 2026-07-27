@@ -10,11 +10,9 @@ import openstatspec
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 from openstatspec.core import UnsupportedOperationError
 
-
-_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable"]
+_REQUIRED_ENGINE_LOSS = ["documents-unobservable"]
 
 _COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
-
 
 def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"
@@ -54,7 +52,7 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert connection.execute("select source_sha256 from dataset_catalog").fetchone() == (hashlib.sha256(source.read_bytes()).hexdigest(),)
     assert connection.execute("select role, alignment, display_width, attributes from variable_catalog where source_name = 'age'").fetchone() == ("target", "right", 12, json.dumps({"Origin": "fixture"}))
 
-    with pytest.raises(UnsupportedOperationError, match="file-label-and-documents-unobservable"):
+    with pytest.raises(UnsupportedOperationError, match="documents-unobservable"):
         openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
     openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported, allow_loss=_REQUIRED_ENGINE_LOSS)
     frame, meta = pyspssio.read_sav(str(exported), convert_datetimes=False, include_user_missing=True)
@@ -73,6 +71,29 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     assert meta["case_weight_var"] == "age"
 
 
+
+def test_file_label_round_trips_through_sqlite_and_export(tmp_path) -> None:
+    source = tmp_path / "label-source.sav"
+    database_path = tmp_path / "label.sqlite"
+    database = "sqlite:///{}".format(database_path)
+    destination = tmp_path / "label-destination.sav"
+    label = "OpenStatSpec label fixture"
+    pyspssio.write_sav(
+        str(source), pd.DataFrame({"answer": [1.0]}), metadata={"file_label": label}
+    )
+
+    openstatspec.import_sav(source, database_url=database, dataset_id="label")
+    connection = sqlite3.connect(database_path)
+    assert connection.execute(
+        "select file_label from dataset_catalog where dataset_id = ?", ("label",)
+    ).fetchone() == (label,)
+
+    openstatspec.export_sav(
+        database_url=database, dataset_id="label", destination=destination,
+        allow_loss=_REQUIRED_ENGINE_LOSS,
+    )
+    assert pyspssio.read_metadata(str(destination))["file_label"] == label
+
 def test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav(tmp_path, suffix: str = ".sav") -> None:
     source = tmp_path / f"supported{suffix}"
     database_path = tmp_path / f"supported-{suffix[1:]}.sqlite"
@@ -87,11 +108,9 @@ def test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav
     openstatspec.export_sav(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
 
-
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
 def test_pyspssio_preserves_supported_metadata_for_both_formats(tmp_path, suffix: str) -> None:
     test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav(tmp_path, suffix)
-
 
 def test_import_rejects_physical_table_name_collision_without_partial_catalog(tmp_path) -> None:
     source = tmp_path / "fixture.sav"

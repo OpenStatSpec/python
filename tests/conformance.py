@@ -86,10 +86,11 @@ def write_supported_semantics_fixture(destination: str | Path) -> dict[str, Any]
         "var_attributes": {"code": {"Origin": "fixture"}},
         "mrsets": {"$responses": {"label": "Responses", "counted_value": 1, "variable_list": ["resp_a", "resp_b"]}},
         "file_attributes": {"Fixture": "OpenStatSpec"},
+        "file_label": "OpenStatSpec supported fixture",
         "case_weight_var": "code",
     }
     pyspssio.write_sav(str(destination), frame, metadata=metadata)
-    return {"long_text": long_text}
+    return {"long_text": long_text, "file_label": metadata["file_label"]}
 
 
 def sys_float_max() -> float:
@@ -126,7 +127,7 @@ def compare_sav_semantics(source: str | Path, exported: str | Path) -> dict[str,
     except AssertionError:
         failures.append("values-or-case-order")
     for attribute in (
-        "encoding", "case_weight_var", "file_attributes", "mrsets", "var_types", "var_formats",
+        "encoding", "file_label", "case_weight_var", "file_attributes", "mrsets", "var_types", "var_formats",
         "var_labels", "var_alignments", "var_column_widths", "var_measure_levels", "var_roles",
         "var_value_labels", "var_attributes",
     ):

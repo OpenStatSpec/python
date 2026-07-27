@@ -7,8 +7,8 @@ chunks, or creates a cell/EAV representation.
 
 ## SPSS engine
 
-OpenStatSpec Python requires pyspssio 0.5.1 as its sole SPSS engine. There is
-no fallback reader or writer. The engine reads unencrypted .sav and .zsav
+OpenStatSpec Python requires the pinned TonisOrmisson/pyspssio fork declared in
+pyproject.toml as its sole SPSS engine. There is no fallback reader or writer. The engine reads unencrypted .sav and .zsav
 files, and writes both formats through the same implementation.
 
 ## Verified SQL profiles
@@ -35,9 +35,10 @@ The `openstatspec capabilities` command and the
 of this boundary. They deliberately distinguish a supported feature from a
 feature that the underlying engine cannot observe or write faithfully.
 
-| SPSS semantic | pyspssio 0.5.1 status | Behaviour |
+| SPSS semantic | Pinned pyspssio status | Behaviour |
 | --- | --- | --- |
-| File label and document text | Unobservable | The public engine API exposes neither. Import records `file-label-and-documents-unobservable`; export requires that audited loss to be accepted. |
+| File label | Supported through the pinned fork | The adapter persists it in the dataset catalog and writes it through the IBM I/O identifier-string API. |
+| Ordered document text | Unobservable | The engine exposes file-to-file document copying, but not reading or creating document text. Import records documents-unobservable; export requires that audited loss to be accepted. |
 | Print and write formats independently | Supported as raw IBM I/O tuples | The adapter stores both tuples separately and writes them without collapsing either value. |
 | Variable sets | Supported through raw IBM I/O | The adapter stores source sets in the extension catalog and writes them through the raw dictionary setter. Invalid target definitions fail before data are written. |
 | Legacy compatible variable names | Fail-closed on export | A compatible name that differs from the long source name is retained in the catalog, but cannot be set through the public writer. Export requires `compatible-variable-name-not-exportable`. |

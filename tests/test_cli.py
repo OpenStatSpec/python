@@ -19,7 +19,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert inspected["source_format"] == "SAV"
     assert inspected["source_sha256"]
     assert {event["code"] for event in inspected["loss_report"]} == {
-        "file-label-and-documents-unobservable",
+        "documents-unobservable",
     }
     assert imported["case_count"] == 1
 
@@ -31,7 +31,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
     assert openstatspec.cli.main([
         "export", "--database-url", database, "--dataset-id", "fixture", "--output", str(output),
-        "--allow-loss", "file-label-and-documents-unobservable",
+        "--allow-loss", "documents-unobservable",
     ]) == 0
     assert json.loads(capsys.readouterr().out)["destination"] == str(output)
     assert pyspssio.read_sav(str(output), convert_datetimes=False)[0]["answer"].tolist() == [1.0]
@@ -45,8 +45,8 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
         "variable_labels": "supported",
         "value_labels": "supported",
         "print_format": "supported",
-        "write_format": "unobservable",
-        "file_label": "unobservable",
+        "write_format": "supported",
+        "file_label": "supported",
         "documents": "unobservable",
         "source_encoding": {
             "utf8": "supported",
@@ -56,11 +56,11 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
         "user_missing_rules": "supported",
         "multiple_response_sets": "supported",
         "variable_alignment": "supported",
-        "variable_sets": "fail-closed-on-export",
+        "variable_sets": "supported",
         "compatible_variable_names": "fail-closed-on-export",
         "custom_attributes": {
             "scalar_values": "supported",
-            "ordered_value_arrays": "fail-closed",
+            "ordered_value_arrays": "supported",
         },
         "variable_role": "supported",
     }

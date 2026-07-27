@@ -10,7 +10,7 @@ from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.wide import create_wide_dataset, read_wide_dataset
 
 
-_REQUIRED_ENGINE_LOSS = ["file-label-and-documents-unobservable"]
+_REQUIRED_ENGINE_LOSS = ["documents-unobservable"]
 
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])

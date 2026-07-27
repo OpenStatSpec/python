@@ -5,8 +5,8 @@ SPSS engine is a separate third-party distribution:
 
 | Component | Version | Applicable terms |
 | --- | --- | --- |
-| pyspssio | 0.5.1 | MIT for the Python wrapper, except for its IBM I/O Module files |
-| IBM I/O Modules for IBM SPSS Statistics Data Files | 28.0.1.0, bundled by pyspssio | IBM International License Agreement for Non-Warranted Programs and the accompanying License Information / REDIST files |
+| pyspssio | TonisOrmisson/pyspssio pinned commit 0b3f879 | MIT for the Python wrapper, except for its IBM I/O Module files |
+| IBM I/O Modules for IBM SPSS Statistics Data Files | bundled by the pinned pyspssio fork | IBM International License Agreement for Non-Warranted Programs and the accompanying License Information / REDIST files |
 
 pyspssio ships the IBM licence, redistribution list, and third-party notices
 inside its installed distribution, normally under pyspssio/spssio/license/.
@@ -15,7 +15,7 @@ Apache-2.0 licence.
 
 ## Distribution responsibility
 
-OpenStatSpec requires pyspssio==0.5.1; it has no alternate SPSS engine. This
+OpenStatSpec requires the pinned pyspssio fork declared in pyproject.toml; it has no alternate SPSS engine. This
 repository does not vendor, alter, or publish the IBM binaries. Anyone who
 distributes an application bundle containing the installed engine must review
 and comply with the IBM materials supplied with that engine. In particular, the

@@ -2,8 +2,8 @@
 
 **Status:** selected as the required, sole Python SPSS engine.
 
-OpenStatSpec Python uses [pyspssio](https://pypi.org/project/pyspssio/) 0.5.1
-for both SAV and ZSAV import and export. There is no alternate SPSS engine.
+OpenStatSpec Python uses the pinned TonisOrmisson/pyspssio fork, based on
+[pyspssio](https://pypi.org/project/pyspssio/), for both SAV and ZSAV import and export. There is no alternate SPSS engine.
 
 ## Probe result
 
@@ -28,7 +28,7 @@ that require explicit tests or upstream work include:
 
 1. variable-set round trips;
 2. independent print and write formats;
-3. file label and document text;
+3. ordered document text;
 4. legacy code-page files and long-string edge cases.
 
 Until a feature is proved, the adapter must report it as unsupported rather
