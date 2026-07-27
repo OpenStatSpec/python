@@ -737,6 +737,7 @@ def create_wide_dataset(
     multiple_response_sets: str = "{}",
     source_extensions: Mapping[str, Any] | None = None,
     fidelity_events: Iterable[Mapping[str, Any]] = (),
+    operation_details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile = validate_connection_url(database_url)
     engine = create_engine(database_url)
@@ -773,7 +774,7 @@ def create_wide_dataset(
         _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
-            source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables)}, sort_keys=True),
+            source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables), **dict(operation_details or {})}, sort_keys=True),
         ))
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.dataset_id == dataset_id)).first():
             raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
@@ -958,6 +959,7 @@ def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[st
 def record_export_operation(
     *, database_url: str, dataset_id: str, destination: str,
     allowed_fidelity_events: Iterable[Mapping[str, Any]],
+    operation_details: Mapping[str, Any] | None = None,
 ) -> str:
     """Persist a completed export and the fidelity loss explicitly accepted by its caller."""
     engine = create_engine(database_url)
@@ -971,7 +973,7 @@ def record_export_operation(
         connection.execute(insert(operations).values(
             operation_id=operation_id, direction="export", status="succeeded", dataset_id=dataset_id,
             destination=destination, created_at=_now(), completed_at=_now(),
-            details=json.dumps({"allow_loss": [event["code"] for event in events]}, sort_keys=True),
+            details=json.dumps({"allow_loss": [event["code"] for event in events], **dict(operation_details or {})}, sort_keys=True),
         ))
         rows = _event_rows(
             operation_id=operation_id, dataset_id=dataset_id, direction="export",

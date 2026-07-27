@@ -39,6 +39,14 @@ from ..sql.wide import (
 )
 
 _UTF8_ENCODINGS = {"UTF-8", "UTF8"}
+def engine_identity() -> dict[str, str]:
+    """Return the exact pinned SPSS engine identity for audit records."""
+    return {
+        "package": "pyspssio",
+        "distribution": "TonisOrmisson/pyspssio",
+        "pinned_commit": "0b3f879",
+        "installed_version": str(pyspssio.__version__),
+    }
 
 
 def _dictionary(source_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -175,6 +183,7 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
     loss_report = _merge_loss_reports(tuple(loss_report.values()), _compat_name_loss_report(variables))
     return {
         "source_format": source_path.suffix[1:].upper(),
+        "engine": engine_identity(),
         "source_name": source_path.name,
         "source_sha256": _sha256(source_path),
         "source_encoding": metadata.get("encoding"),
@@ -224,6 +233,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
             if metadata.get("_var_sets") else {}
         ),
         fidelity_events=loss_report,
+        operation_details={"engine": engine_identity()},
     )
     return {**result, "loss_report": loss_report}
 
@@ -273,6 +283,7 @@ def export_sav_dataset(
         allowed_fidelity_events=tuple(
             event for event in loss_report if event["code"] in allow_loss
         ),
+        operation_details={"engine": engine_identity()},
     )
     return {
         "dataset_id": dataset_id,

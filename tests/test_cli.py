@@ -17,6 +17,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert openstatspec.cli.main(["inspect", str(source)]) == 0
     inspected = json.loads(capsys.readouterr().out)
     assert inspected["source_format"] == "SAV"
+    assert inspected["engine"]["pinned_commit"] == "0b3f879"
     assert inspected["source_sha256"]
     assert {event["code"] for event in inspected["loss_report"]} == {
         "documents-unobservable",
@@ -39,6 +40,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
+    assert matrix["engine"]["pinned_commit"] == "0b3f879"
 
     assert matrix["spss"] == {
         "values": "supported",

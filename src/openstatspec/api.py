@@ -7,6 +7,7 @@ from typing import Any
 from .core import CapabilityDeclaration
 from .core.results import result
 from .spss import export_dataset, import_dataset, inspect_source
+from .spss.sav import engine_identity
 from .sql import declared_profiles, validate_dataset
 
 
@@ -21,6 +22,7 @@ def capability_matrix() -> Mapping[str, Any]:
     fail-closed feature has no faithful writer route at all.
     """
     return {
+        "engine": engine_identity(),
         "spss": {
             "values": "supported", "variable_labels": "supported",
             "value_labels": "supported",

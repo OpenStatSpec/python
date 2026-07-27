@@ -25,6 +25,8 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     assert {diagnostic.code for diagnostic in imported.diagnostics} == set(_REQUIRED_ENGINE_LOSS)
     connection = sqlite3.connect(database_path)
     assert {row[0] for row in connection.execute("select code from fidelity_event_catalog")} == set(_REQUIRED_ENGINE_LOSS)
+    import_details = json.loads(connection.execute("select details from operation_catalog order by created_at limit 1").fetchone()[0])
+    assert import_details["engine"]["pinned_commit"] == "0b3f879"
 
     with pytest.raises(UnsupportedOperationError, match="documents-unobservable"):
         openstatspec.export_sav(database_url=database, dataset_id="persisted", destination=blocked)
@@ -32,6 +34,8 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
 
     exported = openstatspec.export_sav(database_url=database, dataset_id="persisted", destination=approved, allow_loss=_REQUIRED_ENGINE_LOSS)
     assert approved.exists()
+    export_details = json.loads(connection.execute("select details from operation_catalog where operation_id = ?", (exported["operation_id"],)).fetchone()[0])
+    assert export_details["engine"]["installed_version"] == pyspssio.__version__
     assert {diagnostic.code for diagnostic in exported.diagnostics} == set(_REQUIRED_ENGINE_LOSS)
 
 

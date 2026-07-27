@@ -32,8 +32,7 @@ equivalence of supported values, order, and dictionary metadata.
 
 The `openstatspec capabilities` command and the
 `openstatspec.capability_matrix()` function are the machine-readable declaration
-of this boundary. They deliberately distinguish a supported feature from a
-feature that the underlying engine cannot observe or write faithfully.
+of this boundary. It records the pinned source commit and installed engine version, and the adapter stores the same identity in every import and export operation record. The matrix deliberately distinguishes a supported feature from a feature that the underlying engine cannot observe or write faithfully.
 
 | SPSS semantic | Pinned pyspssio status | Behaviour |
 | --- | --- | --- |
