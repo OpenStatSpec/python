@@ -2,34 +2,35 @@
 
 The Python adapter implements a strict, source-faithful wide-table mapping.
 One SAV or ZSAV dataset becomes one table; every source variable is a physical
-column and `__case_ordinal` preserves case order. The adapter never pivots,
+column and __case_ordinal preserves case order. The adapter never pivots,
 chunks, or creates a cell/EAV representation.
 
-## Verified SQLite path
+## SPSS engine
 
-The SQLite reference path has a round-trip fixture covering numeric and string
-values, system-missing numerics, blank strings, labels, value labels, formats,
-measurement level, user-missing rules, file notes, and source encoding
-metadata. User-missing values remain stored values; their interpretation is
-kept as metadata and is restored to SAV on export.
+OpenStatSpec Python requires pyspssio 0.5.1 as its sole SPSS engine. There is
+no fallback reader or writer. The engine reads unencrypted .sav and .zsav
+files, and writes both formats through the same implementation.
 
 ## Verified SQL profiles
 
 SQLite has a local reference fixture. PostgreSQL, MySQL, and MariaDB have
 separate service-backed conformance checks in GitHub Actions that import,
-validate, and export the same supported fixture. MySQL 8.4 and MariaDB 11.4
-exercise the shared profile contract; this does not claim coverage for every
-server configuration. An import that exceeds a
-target's strict single-table column limit fails before it creates a dataset.
+validate, and export the supported fixture. MySQL 8.4 and MariaDB 11.4 exercise
+the shared profile contract; this does not claim coverage for every server
+configuration. An import that exceeds a target's strict single-table column
+limit fails before it creates a dataset.
 
-## Explicit current boundaries
+## Fidelity contract
 
-- Imports accept unencrypted `.sav` and `.zsav` sources through pyreadstat.
-- Exports write SAV and ZSAV; ZSAV output uses the engine's compressed
-  SAV writer path.
-- The writer restores metadata supported by pyreadstat. SPSS dictionary
-  constructs that pyreadstat does not expose as stable writer inputs—such as
-  multiple-response sets and variable sets—are not silently claimed as
-  round-tripped and require a later profile implementation.
-- Encryption and byte-identical reproduction are out of scope. The contract is
-  semantic equivalence of supported values, order, and dictionary metadata.
+The adapter must preserve and validate only the source semantics that the
+selected engine exposes and that a conformance fixture proves. Unsupported
+semantics fail explicitly; they never silently disappear. Encryption and
+byte-identical reproduction are outside the contract. The contract is semantic
+equivalence of supported values, order, and dictionary metadata.
+
+## Distribution
+
+The required engine includes IBM I/O Module redistributables under terms that
+are separate from OpenStatSpec's Apache-2.0 source licence. See
+[third-party notices](../THIRD_PARTY_NOTICES.md) before distributing a bundled
+application.

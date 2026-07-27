@@ -39,8 +39,10 @@ openstatspec export --database-url postgresql+psycopg://... --dataset-id respons
 
 ## 0.1.0 support status
 
-The adapter supports unencrypted SAV and ZSAV import and SAV/ZSAV export for
-the semantics exposed by its SPSS engine. SQLite is the local reference path.
+The adapter requires pyspssio 0.5.1 as its sole SPSS engine. There is no
+fallback reader or writer. It supports unencrypted SAV and ZSAV import and
+SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
+reference path.
 PostgreSQL, MySQL, and MariaDB are each covered by separate service-backed CI
 conformance checks. Use these explicit SQLAlchemy URLs:
 
@@ -56,3 +58,6 @@ intentional lossy export auditable.
 
 See [the SAV profile](docs/sav-profile.md) for feature boundaries and
 [release readiness](docs/release-readiness.md) for the pre-tag checklist.
+Read [third-party notices](THIRD_PARTY_NOTICES.md) before distributing a
+bundled application: the required engine includes IBM redistributables under
+separate terms.
