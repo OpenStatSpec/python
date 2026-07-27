@@ -39,16 +39,14 @@ feature that the underlying engine cannot observe or write faithfully.
 | --- | --- | --- |
 | File label and document text | Unobservable | The public engine API exposes neither. Import records `file-label-and-documents-unobservable`; export requires that audited loss to be accepted. |
 | Print and write formats independently | Supported as raw IBM I/O tuples | The adapter stores both tuples separately and writes them without collapsing either value. |
-| Variable sets | Fail-closed on export | If a set cannot be inspected, or an inspected set cannot be written faithfully, it is recorded and export stops unless its exact loss is accepted. |
+| Variable sets | Supported through raw IBM I/O | The adapter stores source sets in the extension catalog and writes them through the raw dictionary setter. Invalid target definitions fail before data are written. |
 | Legacy compatible variable names | Fail-closed on export | A compatible name that differs from the long source name is retained in the catalog, but cannot be set through the public writer. Export requires `compatible-variable-name-not-exportable`. |
 | Source encoding | UTF-8 fidelity only | UTF-8 is supported. A legacy code page is retained in metadata, but export requires `source-encoding-not-preserved` because the writer has no legacy-code-page preservation contract. |
 | Custom attributes with one value | Supported | File and variable scalar attributes round trip through the normalized attribute catalog. |
-| Custom-attribute value arrays | Fail-closed | Ordered arrays are preserved in the SQL catalog, but pyspssio accepts only one text value per attribute name. Export stops; it does not stringify, flatten, or silently drop values. |
+| Custom-attribute value arrays | Supported through raw IBM I/O | The adapter represents an array as IBM SPSS `Name[1]`, `Name[2]`, … members and reconstructs the ordered array in the normalized catalog. |
 
-The first four loss codes can be supplied through `allow_loss` only when a
+The remaining loss codes can be supplied through `allow_loss` only when a
 caller intentionally accepts the documented, machine-readable loss report.
-An attribute-value array has no corresponding writer representation, so it
-remains a hard fail rather than a lossy conversion option.
 
 ## Distribution
 
