@@ -29,7 +29,7 @@ that require explicit tests or upstream work include:
 1. variable-set round trips;
 2. independent print and write formats;
 3. ordered document text;
-4. legacy code-page files and long-string edge cases.
+4. legacy code-page files and unusual very-long-string boundaries beyond the covered 340-byte UTF-8 fixture.
 
 Until a feature is proved, the adapter must report it as unsupported rather
 than silently losing it.

@@ -37,6 +37,7 @@ of this boundary. It records the pinned source commit and installed engine versi
 | SPSS semantic | Pinned pyspssio status | Behaviour |
 | --- | --- | --- |
 | File label | Supported through the pinned fork | The adapter persists it in the dataset catalog and writes it through the IBM I/O identifier-string API. |
+| Very-long UTF-8 strings | Supported | The SAV and ZSAV fixture preserves a 340-byte, multi-byte UTF-8 string through the SQL catalog and back. |
 | Ordered document text | Unobservable | The engine exposes file-to-file document copying, but not reading or creating document text. Import records documents-unobservable; export requires that audited loss to be accepted. |
 | Print and write formats independently | Supported as raw IBM I/O tuples | The adapter stores both tuples separately and writes them without collapsing either value. |
 | Variable sets | Supported through raw IBM I/O | The adapter stores source sets in the extension catalog and writes them through the raw dictionary setter. Invalid target definitions fail before data are written. |

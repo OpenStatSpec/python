@@ -179,3 +179,32 @@ def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arr
         assert attribute_values(variable_attribute_pairs(reader, "answer")) == {
             "Array": ["red", "blue"],
         }
+
+
+@pytest.mark.parametrize("suffix", [".sav", ".zsav"])
+def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix: str) -> None:
+    payload = "ü" * 170
+    payload_width = len(payload.encode("utf-8"))
+    source = tmp_path / f"long-source{suffix}"
+    destination = tmp_path / f"long-destination{suffix}"
+    database_path = tmp_path / f"long-{suffix[1:]}.sqlite"
+    database = f"sqlite:///{database_path}"
+    pyspssio.write_sav(
+        str(source), pd.DataFrame({"comment": [payload, "short"]}),
+    )
+    assert pyspssio.read_metadata(str(source))["var_types"]["comment"] == payload_width
+
+    openstatspec.import_sav(source, database_url=database, dataset_id="long")
+    connection = sqlite3.connect(database_path)
+    assert connection.execute(
+        "select string_width from variable_catalog where dataset_id = ? and source_name = ?",
+        ("long", "comment"),
+    ).fetchone() == (payload_width,)
+
+    openstatspec.export_sav(
+        database_url=database, dataset_id="long", destination=destination,
+        allow_loss=_REQUIRED_ENGINE_LOSS,
+    )
+    frame, metadata = pyspssio.read_sav(str(destination), convert_datetimes=False)
+    assert metadata["var_types"]["comment"] == payload_width
+    assert frame["comment"].tolist() == [payload, "short"]
