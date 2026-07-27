@@ -1,4 +1,4 @@
-"""Small, fail-closed helpers for the SPSS type-6 document record.
+"""Small, fail-closed helpers for selected raw SPSS dictionary records.
 
 This is not a second SAV engine: pyspssio still owns values and the normal
 dictionary. IBM I/O exposes copying document records but not their text.
@@ -51,14 +51,155 @@ def write_document_lines(path: str | Path, lines: Iterable[str], *, encoding: st
     if len(documents) > 1:
         raise RawDictionaryError("SAV dictionary contains more than one document record.")
     replacement = _document_record(lines, encoding=encoding, byte_order=byte_order)
+    terminator = next(record for record in records if record.record_type == 999)
     if documents:
         current = documents[0]
-        target.write_bytes(data[: current.start] + replacement + data[current.end :])
+        updated = data[: current.start] + replacement + data[current.end :]
+    else:
+        extension = next((record for record in records if record.record_type == 7), None)
+        insertion = extension.start if extension else terminator.start
+        updated = data[:insertion] + replacement + data[insertion:]
+    target.write_bytes(_shift_zsav_offsets(
+        updated,
+        original_data_start=terminator.end,
+        delta=len(updated) - len(data),
+        byte_order=byte_order,
+    ))
+
+
+def write_compatible_names(
+    path: str | Path, names: dict[str, str], *, encoding: str,
+) -> None:
+    """Set exact legacy short names without changing long source variable names.
+
+    IBM I/O has no compatible-name setter.  The standard long-name extension
+    and the fixed 8-byte variable records contain the complete mapping, so this
+    narrowly rewrites only those two dictionary locations.  Every requested
+    source name must have a long-name record; otherwise the operation fails
+    instead of silently deriving another name.
+    """
+    if not names:
         return
-    extension = next((record for record in records if record.record_type == 7), None)
+    target = Path(path)
+    data = target.read_bytes()
+    byte_order, records = _records(data)
     terminator = next(record for record in records if record.record_type == 999)
-    insertion = extension.start if extension else terminator.start
-    target.write_bytes(data[:insertion] + replacement + data[insertion:])
+    long_names = next(
+        (
+            record for record in records
+            if record.record_type == 7 and _int(data, record.start + 4, byte_order) == 13
+        ),
+        None,
+    )
+    if long_names is None:
+        raise RawDictionaryError("SAV dictionary has no long-variable-name record.")
+    payload_start = long_names.start + 16
+    payload = data[payload_start : long_names.end]
+    pairs = _long_name_pairs(payload, encoding)
+    replacements: dict[str, str] = {}
+    updated_pairs: list[tuple[str, str]] = []
+    unresolved = set(names)
+    for short_name, long_name in pairs:
+        replacement = names.get(long_name)
+        if replacement is None:
+            updated_pairs.append((short_name, long_name))
+            continue
+        replacements[short_name] = _validated_compatible_name(replacement)
+        updated_pairs.append((replacements[short_name], long_name))
+        unresolved.remove(long_name)
+    if unresolved:
+        missing = ", ".join(sorted(unresolved))
+        raise RawDictionaryError(
+            "Compatible-name update requires a long-name record for: " + missing
+        )
+
+    mutable = bytearray(data)
+    for record in records:
+        if record.record_type != 2:
+            continue
+        short_name = bytes(mutable[record.start + 24 : record.start + 32]).decode(encoding).rstrip(" ")
+        replacement = replacements.get(short_name)
+        if replacement is not None:
+            mutable[record.start + 24 : record.start + 32] = replacement.encode("ascii").ljust(8, b" ")
+
+    new_payload = b"	".join(
+        short_name.encode("ascii") + b"=" + long_name.encode(encoding)
+        for short_name, long_name in updated_pairs
+    )
+    header = bytearray(mutable[long_names.start : long_names.start + 16])
+    header[12:16] = _pack(len(new_payload), byte_order)
+    updated = (
+        bytes(mutable[: long_names.start]) + bytes(header) + new_payload
+        + bytes(mutable[long_names.end :])
+    )
+    target.write_bytes(_shift_zsav_offsets(
+        updated,
+        original_data_start=terminator.end,
+        delta=len(updated) - len(data),
+        byte_order=byte_order,
+    ))
+
+
+def _long_name_pairs(payload: bytes, encoding: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for raw_pair in payload.split(b"	"):
+        try:
+            raw_short, raw_long = raw_pair.split(b"=", maxsplit=1)
+            short_name = raw_short.decode("ascii")
+            long_name = raw_long.decode(encoding)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RawDictionaryError("Invalid SAV long-variable-name record.") from error
+        pairs.append((short_name, long_name))
+    return pairs
+
+
+def _validated_compatible_name(value: str) -> str:
+    encoded = str(value).encode("ascii")
+    if not 1 <= len(encoded) <= 8:
+        raise RawDictionaryError("SPSS compatible variable names must contain one to eight ASCII bytes.")
+    first = encoded[:1]
+    rest = encoded[1:]
+    if not (first.isalpha() or first == b"@"):
+        raise RawDictionaryError("SPSS compatible variable names must start with an ASCII letter or @.")
+    if any(character not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.$#"
+           for character in rest):
+        raise RawDictionaryError("SPSS compatible variable name contains an unsupported character.")
+    return encoded.decode("ascii")
+
+
+def _shift_zsav_offsets(
+    data: bytes, *, original_data_start: int, delta: int, byte_order: str,
+) -> bytes:
+    """Shift all absolute ZSAV data offsets after a dictionary-size rewrite."""
+    if not delta or data[:4] != b"$FL3":
+        return data
+    adjusted = bytearray(data)
+    data_start = original_data_start + delta
+    _need(adjusted, data_start, 24)
+    original_zheader = _int64(adjusted, data_start, byte_order)
+    original_ztrailer = _int64(adjusted, data_start + 8, byte_order)
+    trailer_length = _int64(adjusted, data_start + 16, byte_order)
+    if original_zheader != original_data_start:
+        raise RawDictionaryError("Unexpected ZSAV data-header offset.")
+    _set_int64(adjusted, data_start, original_zheader + delta, byte_order)
+    _set_int64(adjusted, data_start + 8, original_ztrailer + delta, byte_order)
+    trailer_start = original_ztrailer + delta
+    if trailer_length < 24:
+        raise RawDictionaryError("Invalid ZSAV data-trailer length.")
+    _need(adjusted, trailer_start, 24)
+    block_count = _int(adjusted, trailer_start + 20, byte_order)
+    if block_count < 0 or trailer_length != 24 + (block_count * 24):
+        raise RawDictionaryError("Invalid ZSAV data-trailer block metadata.")
+    _need(adjusted, trailer_start + 24, block_count * 24)
+    for index in range(block_count):
+        descriptor = trailer_start + 24 + (index * 24)
+        _set_int64(adjusted, descriptor, _int64(adjusted, descriptor, byte_order) + delta, byte_order)
+        _set_int64(
+            adjusted, descriptor + 8,
+            _int64(adjusted, descriptor + 8, byte_order) + delta,
+            byte_order,
+        )
+    return bytes(adjusted)
 
 
 def _document_record(lines: Iterable[str], *, encoding: str, byte_order: str) -> bytes:
@@ -158,6 +299,14 @@ def _pack(value: int, byte_order: str) -> bytes:
 
 def _int(data: bytes, offset: int, byte_order: str) -> int:
     return int.from_bytes(data[offset : offset + 4], byte_order, signed=True)
+
+
+def _int64(data: bytes, offset: int, byte_order: str) -> int:
+    return int.from_bytes(data[offset : offset + 8], byte_order, signed=True)
+
+
+def _set_int64(data: bytearray, offset: int, value: int, byte_order: str) -> None:
+    data[offset : offset + 8] = int(value).to_bytes(8, byte_order, signed=True)
 
 
 def _round4(value: int) -> int:

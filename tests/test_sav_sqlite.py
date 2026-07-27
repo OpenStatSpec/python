@@ -12,7 +12,7 @@ from openstatspec.core import UnsupportedOperationError
 
 _REQUIRED_ENGINE_LOSS = []
 
-_COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
+_COMPAT_NAME_LOSS = _REQUIRED_ENGINE_LOSS
 
 def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"

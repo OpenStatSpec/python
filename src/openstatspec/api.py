@@ -38,7 +38,7 @@ def capability_matrix() -> Mapping[str, Any]:
             "multiple_response_sets": "supported",
             "variable_alignment": "supported",
             "variable_sets": "supported",
-            "compatible_variable_names": "fail-closed-on-export",
+            "compatible_variable_names": "supported",
             "custom_attributes": {
                 "scalar_values": "supported",
                 "ordered_value_arrays": "supported",

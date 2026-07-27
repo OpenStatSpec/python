@@ -18,7 +18,12 @@ from typing import Any
 import pandas as pd
 import pyspssio
 
-from .raw_dictionary import RawDictionaryError, read_document_lines, write_document_lines
+from .raw_dictionary import (
+    RawDictionaryError,
+    read_document_lines,
+    write_compatible_names,
+    write_document_lines,
+)
 from .dictionary import (
     attribute_pairs,
     attribute_values,
@@ -190,7 +195,7 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
     metadata, loss_report = _dictionary(source_path)
     names = list(metadata.get("var_names") or [])
     variables = _variables(metadata, names)
-    loss_report = _merge_loss_reports(tuple(loss_report.values()), _compat_name_loss_report(variables))
+    loss_report = _merge_loss_reports(tuple(loss_report.values()))
     return {
         "source_format": source_path.suffix[1:].upper(),
         "engine": engine_identity(),
@@ -220,7 +225,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     # frame read's values where a future pyspssio version exposes more there.
     metadata = {**dictionary, **metadata}
     variables = _variables(metadata, list(frame.columns))
-    loss_report = _merge_loss_reports(tuple(loss_report.values()), _compat_name_loss_report(variables))
+    loss_report = _merge_loss_reports(tuple(loss_report.values()))
     result = create_wide_dataset(
         database_url=database_url,
         dataset_id=dataset_id,
@@ -364,6 +369,16 @@ def _write_with_dictionary_bridge(
             writer.copy_documents_from(document_source)
         writer.commit_header()
         writer.write_data(frame)
+    write_compatible_names(
+        destination,
+        {
+            str(variable["source_name"]): str(variable["compat_name"])
+            for variable in variables
+            if variable.get("compat_name")
+            and str(variable["compat_name"]).casefold() != str(variable["source_name"]).casefold()
+        },
+        encoding="UTF-8",
+    )
 
 def _catalog_format(variable: dict[str, Any], key: str) -> tuple[int, int, int]:
     encoded = variable.get(key)
@@ -445,37 +460,6 @@ def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return events
 
 
-def _compat_name_loss_report(variables: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
-    """Report legacy SPSS compatible names the writer cannot set explicitly.
-
-    A compatible name is meaningful only when it differs from the long source
-    variable name. ``pyspssio`` exposes these names while reading, but its
-    public writer metadata has no ``var_compat_names`` input. It may derive a
-    name today, but that is not a preservation contract: export must therefore
-    require an explicit, auditable acceptance rather than silently rederive or
-    rename the value.
-    """
-    events: list[dict[str, Any]] = []
-    for variable in variables:
-        source_name = str(variable["source_name"])
-        compat_name = variable.get("compat_name")
-        if compat_name is None or str(compat_name).casefold() == source_name.casefold():
-            continue
-        events.append({
-            "code": "compatible-variable-name-not-exportable",
-            "detail": (
-                "pyspssio exposes the source compatible variable name but its public "
-                "writer API cannot set or guarantee preservation of that name."
-            ),
-            "details": {
-                "source_name": source_name,
-                "compatible_name": str(compat_name),
-                "physical_name": str(variable["physical_name"]),
-            },
-        })
-    return tuple(events)
-
-
 def _export_loss_report(
     dataset: dict[str, Any], variables: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
@@ -486,9 +470,7 @@ def _export_loss_report(
             "detail": "The pyspssio writer has no source-encoding preservation contract for this legacy code page.",
             "details": {"source_encoding": dataset.get("source_encoding")},
         })
-    events.extend(_compat_name_loss_report(variables))
     return tuple(events)
-
 
 def _merge_loss_reports(*reports: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
     events: dict[str, dict[str, Any]] = {}

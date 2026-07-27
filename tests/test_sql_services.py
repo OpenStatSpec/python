@@ -13,7 +13,7 @@ from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 pytestmark = pytest.mark.services
 _REQUIRED_ENGINE_LOSS = []
-_COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-name-not-exportable"]
+_COMPAT_NAME_LOSS = _REQUIRED_ENGINE_LOSS
 
 
 @pytest.fixture
