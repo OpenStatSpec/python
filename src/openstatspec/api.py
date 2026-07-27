@@ -12,16 +12,36 @@ from .sql import declared_profiles, validate_dataset
 
 
 def capability_matrix() -> Mapping[str, Any]:
+    """Return the pyspssio-backed SAV/ZSAV fidelity boundary.
+
+    supported means that the adapter has a tested faithful path.
+    unobservable means that pyspssio's public reader API cannot expose the
+    source semantic. fail-closed-on-export means an imported/catalogued value
+    blocks export unless the documented audited loss route exists; a plain
+    fail-closed feature has no faithful writer route at all.
+    """
     return {
         "spss": {
             "values": "supported", "variable_labels": "supported",
             "value_labels": "supported",
-            "print_format": "supported", "write_format": "unobservable",
-            "source_encoding": "preserved only when UTF-8",
+            "print_format": "supported",
+            "write_format": "unobservable",
+            "file_label": "unobservable",
+            "documents": "unobservable",
+            "source_encoding": {
+                "utf8": "supported",
+                "legacy_code_pages": "fail-closed-on-export",
+            },
             "measurement_level": "supported", "user_missing_rules": "supported",
-            "documents": "unobservable", "multiple_response_sets": "supported",
-            "variable_alignment": "supported", "variable_sets": "fail-closed",
-            "custom_attributes": "supported", "variable_role": "supported",
+            "multiple_response_sets": "supported",
+            "variable_alignment": "supported",
+            "variable_sets": "fail-closed-on-export",
+            "compatible_variable_names": "fail-closed-on-export",
+            "custom_attributes": {
+                "scalar_values": "supported",
+                "ordered_value_arrays": "fail-closed",
+            },
+            "variable_role": "supported",
         },
         "sql_profiles": declared_profiles(),
     }

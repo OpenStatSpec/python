@@ -57,6 +57,11 @@ dictionary semantics cannot be reproduced, it stops until you pass the exact
 diagnostic code with `--allow-loss`. This avoids silent loss while making an
 intentional lossy export auditable.
 
+The matrix is also available to Python callers as
+`openstatspec.capability_matrix()`. It distinguishes supported semantics from
+unobservable and fail-closed paths; see the SAV profile for the exact
+`pyspssio` 0.5.1 boundary.
+
 See [the SAV profile](docs/sav-profile.md) for feature boundaries and
 [release readiness](docs/release-readiness.md) for the pre-tag checklist.
 Read [third-party notices](THIRD_PARTY_NOTICES.md) before distributing a

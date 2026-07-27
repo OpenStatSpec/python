@@ -1,5 +1,6 @@
 import json
 
+import openstatspec
 import openstatspec.cli
 import pandas as pd
 import pyspssio
@@ -34,3 +35,36 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     ]) == 0
     assert json.loads(capsys.readouterr().out)["destination"] == str(output)
     assert pyspssio.read_sav(str(output), convert_datetimes=False)[0]["answer"].tolist() == [1.0]
+
+
+def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
+    matrix = openstatspec.capability_matrix()
+
+    assert matrix["spss"] == {
+        "values": "supported",
+        "variable_labels": "supported",
+        "value_labels": "supported",
+        "print_format": "supported",
+        "write_format": "unobservable",
+        "file_label": "unobservable",
+        "documents": "unobservable",
+        "source_encoding": {
+            "utf8": "supported",
+            "legacy_code_pages": "fail-closed-on-export",
+        },
+        "measurement_level": "supported",
+        "user_missing_rules": "supported",
+        "multiple_response_sets": "supported",
+        "variable_alignment": "supported",
+        "variable_sets": "fail-closed-on-export",
+        "compatible_variable_names": "fail-closed-on-export",
+        "custom_attributes": {
+            "scalar_values": "supported",
+            "ordered_value_arrays": "fail-closed",
+        },
+        "variable_role": "supported",
+    }
+
+    assert openstatspec.cli.main(["capabilities"]) == 0
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered == matrix
