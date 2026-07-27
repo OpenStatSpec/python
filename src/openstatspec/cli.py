@@ -25,13 +25,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     exporter.add_argument("--dataset-id", required=True)
     exporter.add_argument("--output", required=True)
     exporter.add_argument("--allow-loss", action="append", default=[])
+    exporter.add_argument("--legacy-locale", help="OS locale for a non-UTF-8 source encoding")
     args = parser.parse_args(argv)
     if args.command == "capabilities":
         result = capability_matrix()
     elif args.command == "import":
         result = import_sav(args.source, database_url=args.database_url, dataset_id=args.dataset_id)
     elif args.command == "export":
-        result = export_sav(database_url=args.database_url, dataset_id=args.dataset_id, destination=args.output, allow_loss=args.allow_loss)
+        result = export_sav(database_url=args.database_url, dataset_id=args.dataset_id, destination=args.output, allow_loss=args.allow_loss, legacy_locale=args.legacy_locale)
     elif args.command == "inspect":
         result = inspect(args.source)
     else:

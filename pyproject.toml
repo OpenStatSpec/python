@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 authors = [{name = "OpenStatSpec"}]
-dependencies = ["SQLAlchemy>=2.0", "pandas>=2.2", "pyspssio @ git+https://github.com/TonisOrmisson/pyspssio.git@446af0c"]
+dependencies = ["SQLAlchemy>=2.0", "pandas>=2.2", "pyspssio @ git+https://github.com/TonisOrmisson/pyspssio.git@6a0f9fa"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

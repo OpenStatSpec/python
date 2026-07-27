@@ -9,6 +9,7 @@ import openstatspec
 from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.wide import create_wide_dataset
 from openstatspec.spss.raw_dictionary import write_compatible_names
+from openstatspec.spss import sav as sav_module
 
 
 _REQUIRED_ENGINE_LOSS = []
@@ -27,7 +28,7 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     connection = sqlite3.connect(database_path)
     assert {row[0] for row in connection.execute("select code from fidelity_event_catalog")} == set(_REQUIRED_ENGINE_LOSS)
     import_details = json.loads(connection.execute("select details from operation_catalog order by created_at limit 1").fetchone()[0])
-    assert import_details["engine"]["pinned_commit"] == "446af0c"
+    assert import_details["engine"]["pinned_commit"] == "6a0f9fa"
 
     openstatspec.export_sav(database_url=database, dataset_id="persisted", destination=blocked)
     assert blocked.exists()
@@ -74,6 +75,49 @@ def test_non_utf8_source_encoding_is_explicit_export_loss(tmp_path) -> None:
     assert {diagnostic.code for diagnostic in exported.diagnostics} == {"source-encoding-not-preserved"}
     metadata = pyspssio.read_metadata(str(destination))
     assert metadata["encoding"] == "UTF-8"
+
+
+def test_explicit_legacy_locale_selects_the_single_engine_route(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "legacy-locale.sqlite"
+    database = f"sqlite:///{database_path}"
+    destination = tmp_path / "legacy-locale.sav"
+    create_wide_dataset(
+        database_url=database, dataset_id="legacy-locale", source_name="legacy.sav",
+        source_format="SAV", source_encoding="WINDOWS-1252", rows=[{"name": "Muller"}],
+        variables=[{
+            "ordinal": 1, "source_name": "name", "physical_name": "name", "storage_kind": "string",
+            "string_width": 8, "label": "", "format": "A8", "measure": "nominal", "role": None,
+            "alignment": None, "display_width": 8, "attributes": "{}", "compat_name": None,
+            "value_labels": "{}", "missing_ranges": "[]",
+        }],
+        fidelity_events=[{
+            "code": "source-encoding-not-preserved",
+            "detail": "Legacy encoding needs a locale.",
+            "details": {"source_encoding": "WINDOWS-1252"},
+        }],
+    )
+    observed = {}
+
+    def writer(destination_path, frame, dataset, variables, *, legacy_locale=None):
+        observed["locale"] = legacy_locale
+        observed["encoding"] = dataset["source_encoding"]
+        observed["values"] = frame["name"].tolist()
+
+    monkeypatch.setattr(sav_module, "_write_with_dictionary_bridge", writer)
+    result = openstatspec.export_sav(
+        database_url=database, dataset_id="legacy-locale", destination=destination,
+        legacy_locale="en_US.cp1252",
+    )
+    assert result.diagnostics == ()
+    assert observed == {
+        "locale": "en_US.cp1252", "encoding": "WINDOWS-1252", "values": ["Muller"],
+    }
+
+
+def test_legacy_locale_must_emit_the_exact_source_encoding() -> None:
+    sav_module._require_matching_legacy_encoding("WINDOWS-1252", "CP1252", True)
+    with pytest.raises(UnsupportedOperationError, match="instead of required"):
+        sav_module._require_matching_legacy_encoding("WINDOWS-1252", "UTF-8", True)
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
 def test_compatible_variable_name_round_trips_from_current_sql_catalog(tmp_path, suffix: str) -> None:

@@ -42,7 +42,7 @@ of this boundary. It records the pinned source commit and installed engine versi
 | Print and write formats independently | Supported as raw IBM I/O tuples | The adapter stores both tuples separately and writes them without collapsing either value. |
 | Variable sets | Supported through raw IBM I/O | The adapter stores source sets in the extension catalog and writes them through the raw dictionary setter. Invalid target definitions fail before data are written. |
 | Legacy compatible variable names | Supported through the strict dictionary bridge | The adapter stores the short-name mapping and rewrites both the fixed variable record and long-name extension before export. |
-| Source encoding | UTF-8 fidelity only | UTF-8 is supported. A legacy code page is retained in metadata, but export requires `source-encoding-not-preserved` because the writer has no legacy-code-page preservation contract. |
+| Source encoding | UTF-8 by default; legacy code page with an explicit OS locale | The caller supplies legacy_locale and the writer verifies that the emitted encoding matches the stored source encoding. Without it, export fails before output creation. |
 | Custom attributes with one value | Supported | File and variable scalar attributes round trip through the normalized attribute catalog. |
 | Custom-attribute value arrays | Supported through raw IBM I/O | The adapter represents an array as IBM SPSS `Name[1]`, `Name[2]`, … members and reconstructs the ordered array in the normalized catalog. |
 

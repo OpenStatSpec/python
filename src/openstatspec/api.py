@@ -32,7 +32,7 @@ def capability_matrix() -> Mapping[str, Any]:
             "documents": "supported",
             "source_encoding": {
                 "utf8": "supported",
-                "legacy_code_pages": "fail-closed-on-export",
+                "legacy_code_pages": "requires-explicit-legacy-locale",
             },
             "measurement_level": "supported", "user_missing_rules": "supported",
             "multiple_response_sets": "supported",

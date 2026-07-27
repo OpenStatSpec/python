@@ -52,7 +52,7 @@ def engine_identity() -> dict[str, str]:
     return {
         "package": "pyspssio",
         "distribution": "TonisOrmisson/pyspssio",
-        "pinned_commit": "446af0c",
+        "pinned_commit": "6a0f9fa",
         "installed_version": str(pyspssio.__version__),
     }
 
@@ -255,7 +255,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
 
 def export_sav_dataset(
     *, database_url: str, dataset_id: str, destination: str | Path,
-    allow_loss: tuple[str, ...] = (),
+    allow_loss: tuple[str, ...] = (), legacy_locale: str | None = None,
 ) -> dict[str, Any]:
     destination_path = Path(destination)
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
@@ -266,9 +266,15 @@ def export_sav_dataset(
         case_weight_variable=dataset.get("case_weight_variable"),
         multiple_response_sets=dataset.get("multiple_response_sets"),
     )
+    persisted_events = read_fidelity_events(database_url=database_url, dataset_id=dataset_id)
+    if legacy_locale is not None:
+        persisted_events = tuple(
+            event for event in persisted_events
+            if event["code"] != "source-encoding-not-preserved"
+        )
     loss_report = _merge_loss_reports(
-        _export_loss_report(dataset, variables),
-        read_fidelity_events(database_url=database_url, dataset_id=dataset_id),
+        _export_loss_report(dataset, variables, legacy_locale=legacy_locale),
+        persisted_events,
     )
     rejected = [event["code"] for event in loss_report if event["code"] not in allow_loss]
     if rejected:
@@ -287,7 +293,9 @@ def export_sav_dataset(
         columns=[variable["source_name"] for variable in variables],
     )
     try:
-        _write_with_dictionary_bridge(destination_path, frame, dataset, variables)
+        _write_with_dictionary_bridge(
+            destination_path, frame, dataset, variables, legacy_locale=legacy_locale,
+        )
     except Exception:
         destination_path.unlink(missing_ok=True)
         raise
@@ -298,7 +306,7 @@ def export_sav_dataset(
         allowed_fidelity_events=tuple(
             event for event in loss_report if event["code"] in allow_loss
         ),
-        operation_details={"engine": engine_identity()},
+        operation_details={"engine": engine_identity(), "legacy_locale": legacy_locale},
     )
     return {
         "dataset_id": dataset_id,
@@ -310,6 +318,7 @@ def export_sav_dataset(
 
 def _write_with_dictionary_bridge(
     destination: Path, frame: pd.DataFrame, dataset: dict[str, Any], variables: list[dict[str, Any]],
+    *, legacy_locale: str | None = None,
 ) -> None:
     """Write a dictionary through pyspssio and preserve its document record.
 
@@ -320,6 +329,8 @@ def _write_with_dictionary_bridge(
     """
     metadata = _writer_metadata(dataset, variables)
     documents = _json_load(dataset.get("documents"), [])
+    source_encoding = str(dataset.get("source_encoding") or "UTF-8")
+    legacy_output = _is_non_utf8_encoding(source_encoding) and legacy_locale is not None
     with ExitStack() as stack:
         document_source = None
         if documents:
@@ -327,10 +338,18 @@ def _write_with_dictionary_bridge(
             temporary_source = temporary_directory / "documents.sav"
             pyspssio.write_sav(
                 str(temporary_source), pd.DataFrame({"document_source": [0.0]}),
+                unicode=not legacy_output, locale=legacy_locale,
             )
-            write_document_lines(temporary_source, documents, encoding="UTF-8")
+            temporary_encoding = str(pyspssio.read_metadata(str(temporary_source)).get("encoding") or "UTF-8")
+            _require_matching_legacy_encoding(source_encoding, temporary_encoding, legacy_output)
+            write_document_lines(temporary_source, documents, encoding=temporary_encoding)
             document_source = stack.enter_context(pyspssio.Reader(str(temporary_source), mode="r"))
-        writer = stack.enter_context(pyspssio.Writer(str(destination), mode="w"))
+        writer = stack.enter_context(
+            pyspssio.Writer(
+                str(destination), mode="w", unicode=not legacy_output, locale=legacy_locale,
+            )
+        )
+        _require_matching_legacy_encoding(source_encoding, str(writer.file_encoding), legacy_output)
         writer.compression = 2 if destination.suffix.lower() == ".zsav" else 1
         writer.file_label = str(dataset.get("file_label") or "")
         for variable in variables:
@@ -461,16 +480,33 @@ def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _export_loss_report(
-    dataset: dict[str, Any], variables: list[dict[str, Any]],
+    dataset: dict[str, Any], variables: list[dict[str, Any]], *, legacy_locale: str | None,
 ) -> tuple[dict[str, Any], ...]:
     events: list[dict[str, Any]] = []
-    if _is_non_utf8_encoding(dataset.get("source_encoding")):
+    if _is_non_utf8_encoding(dataset.get("source_encoding")) and legacy_locale is None:
         events.append({
             "code": "source-encoding-not-preserved",
-            "detail": "The pyspssio writer has no source-encoding preservation contract for this legacy code page.",
+            "detail": "Export requires an explicit legacy_locale for this non-UTF-8 source encoding.",
             "details": {"source_encoding": dataset.get("source_encoding")},
         })
     return tuple(events)
+
+
+def _require_matching_legacy_encoding(
+    source_encoding: str, emitted_encoding: str, legacy_output: bool,
+) -> None:
+    if legacy_output and _normalize_encoding(source_encoding) != _normalize_encoding(emitted_encoding):
+        raise UnsupportedOperationError(
+            "Configured legacy locale emitted "
+            + emitted_encoding
+            + " instead of required source encoding "
+            + source_encoding
+            + "."
+        )
+
+
+def _normalize_encoding(value: str) -> str:
+    return str(value).strip().replace("_", "-").replace("WINDOWS-", "CP").upper()
 
 def _merge_loss_reports(*reports: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
     events: dict[str, dict[str, Any]] = {}

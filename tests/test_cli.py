@@ -17,7 +17,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert openstatspec.cli.main(["inspect", str(source)]) == 0
     inspected = json.loads(capsys.readouterr().out)
     assert inspected["source_format"] == "SAV"
-    assert inspected["engine"]["pinned_commit"] == "446af0c"
+    assert inspected["engine"]["pinned_commit"] == "6a0f9fa"
     assert inspected["source_sha256"]
     assert inspected["loss_report"] == []
     assert imported["case_count"] == 1
@@ -37,7 +37,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
-    assert matrix["engine"]["pinned_commit"] == "446af0c"
+    assert matrix["engine"]["pinned_commit"] == "6a0f9fa"
 
     assert matrix["spss"] == {
         "values": "supported",
@@ -49,7 +49,7 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
         "documents": "supported",
         "source_encoding": {
             "utf8": "supported",
-            "legacy_code_pages": "fail-closed-on-export",
+            "legacy_code_pages": "requires-explicit-legacy-locale",
         },
         "measurement_level": "supported",
         "user_missing_rules": "supported",

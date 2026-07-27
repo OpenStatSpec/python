@@ -15,4 +15,8 @@ def import_dataset(source: str | Path, *, database_url: Any, dataset_id: str, **
 
 
 def export_dataset(*, database_url: Any, dataset_id: str, destination: str | Path, **options: Any) -> dict[str, Any]:
-    return export_sav_dataset(database_url=str(database_url), dataset_id=dataset_id, destination=destination, allow_loss=tuple(options.get("allow_loss", ())) )
+    return export_sav_dataset(
+        database_url=str(database_url), dataset_id=dataset_id, destination=destination,
+        allow_loss=tuple(options.get("allow_loss", ())),
+        legacy_locale=options.get("legacy_locale"),
+    )
