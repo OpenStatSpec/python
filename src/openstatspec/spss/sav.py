@@ -72,7 +72,7 @@ def _variables(metadata: dict[str, Any], names: list[str]) -> list[dict[str, Any
             "role": roles.get(source_name),
             "alignment": alignments.get(source_name),
             "display_width": displays.get(source_name),
-            "attributes": _json(attributes.get(source_name, {})),
+            "attributes": _json_ordered(attributes.get(source_name, {})),
             "compat_name": compat_names.get(source_name),
             "value_labels": _json(value_labels.get(source_name, {})),
             "missing_ranges": _json(_missing_ranges(missing.get(source_name))),
@@ -187,7 +187,9 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
         source_sha256=_sha256(source_path),
         imported_at=datetime.now(UTC).isoformat(),
         documents="[]",  # pyspssio 0.5.x has no public document-text API.
-        file_attributes=_json(metadata.get("file_attributes") or {}),
+        file_attributes=_json_ordered(metadata.get("file_attributes") or {}),
+        file_attribute_values=dict(metadata.get("file_attributes") or {}),
+        variable_attribute_values=dict(metadata.get("var_attributes") or {}),
         case_weight_variable=metadata.get("case_weight_var") or None,
         multiple_response_sets=_json(metadata.get("mrsets") or {}),
         source_extensions=(
@@ -258,7 +260,9 @@ def export_sav_dataset(
 
 def _writer_metadata(dataset: dict[str, Any], variables: list[dict[str, Any]]) -> dict[str, Any]:
     metadata: dict[str, Any] = {
-        "file_attributes": _json_load(dataset.get("file_attributes"), {}),
+        "file_attributes": _pyspssio_attribute_values(
+            _json_load(dataset.get("file_attributes"), {}), scope="file",
+        ),
         "case_weight_var": dataset.get("case_weight_variable") or None,
         "mrsets": _json_load(dataset.get("multiple_response_sets"), {}),
         "var_types": {
@@ -285,7 +289,9 @@ def _writer_metadata(dataset: dict[str, Any], variables: list[dict[str, Any]]) -
             for item in variables if item.get("display_width") is not None
         },
         "var_attributes": {
-            item["source_name"]: _json_load(item.get("attributes"), {})
+            item["source_name"]: _pyspssio_attribute_values(
+                _json_load(item.get("attributes"), {}), scope=f"variable {item['source_name']!r}",
+            )
             for item in variables if _json_load(item.get("attributes"), {})
         },
         "var_value_labels": {
@@ -299,6 +305,24 @@ def _writer_metadata(dataset: dict[str, Any], variables: list[dict[str, Any]]) -
         },
     }
     return {key: value for key, value in metadata.items() if value not in ({}, None)}
+
+
+def _pyspssio_attribute_values(values: dict[str, Any], *, scope: str) -> dict[str, str]:
+    """Convert canonical scalar attributes for pyspssio without hiding arrays.
+
+    pyspssio 0.5.x exposes SPSS attributes as one text value per name.  The
+    relational catalog preserves a future/source multi-value array, but an
+    export must fail rather than stringify and silently change that array.
+    """
+    result: dict[str, str] = {}
+    for name, value in values.items():
+        if isinstance(value, (list, tuple)):
+            raise UnsupportedOperationError(
+                f"pyspssio cannot faithfully write the multi-value SPSS custom attribute "
+                f"{name!r} on {scope}."
+            )
+        result[str(name)] = "" if value is None else str(value)
+    return result
 
 
 def _typed_value_labels(variable: dict[str, Any]) -> dict[Any, str]:
@@ -362,6 +386,11 @@ def _merge_loss_reports(*reports: tuple[dict[str, Any], ...]) -> tuple[dict[str,
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+
+
+def _json_ordered(value: Any) -> str:
+    """Legacy JSON copy for migration only; retain source insertion order."""
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def _json_load(value: Any, default: Any) -> Any:

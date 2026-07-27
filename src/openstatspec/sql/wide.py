@@ -285,6 +285,85 @@ def missing_rule_catalog(metadata: MetaData) -> Table:
     )
 
 
+def attribute_catalog(metadata: MetaData) -> Table:
+    """Ordered SPSS custom-attribute values for files and variables.
+
+    SPSS custom attributes are text-valued, but one attribute name can carry
+    an ordered array of values. ``scope`` is ``file`` for a file attribute
+    (with ``variable_ordinal == 0``) and ``variable`` for an attribute of one
+    source variable. This table is authoritative whenever it contains rows;
+    the JSON columns on older catalogs remain a migration fallback.
+    """
+    return Table(
+        "attribute_catalog", metadata,
+        Column("dataset_id", String(255), primary_key=True),
+        Column("scope", String(16), primary_key=True),
+        Column("variable_ordinal", Integer, primary_key=True),
+        Column("attribute_ordinal", Integer, primary_key=True),
+        Column("value_ordinal", Integer, primary_key=True),
+        Column("attribute_name", String(255), nullable=False),
+        Column("attribute_value", Text, nullable=False),
+    )
+
+
+def _attribute_values(value: Any) -> list[str]:
+    """Normalize one attribute scalar or ordered array without coercing it."""
+    if isinstance(value, (list, tuple)):
+        return ["" if item is None else str(item) for item in value]
+    return ["" if value is None else str(value)]
+
+
+def attribute_rows(
+    dataset_id: str, variables: Iterable[Mapping[str, Any]], *,
+    file_attributes: Mapping[str, Any] | None = None,
+    variable_attributes: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Encode ordered file and variable attributes into canonical rows."""
+    rows: list[dict[str, Any]] = []
+
+    def append(scope: str, variable_ordinal: int, attributes: Mapping[str, Any] | None) -> None:
+        if not attributes:
+            return
+        for attribute_ordinal, (name, value) in enumerate(attributes.items(), start=1):
+            for value_ordinal, text_value in enumerate(_attribute_values(value), start=1):
+                rows.append({
+                    "dataset_id": dataset_id, "scope": scope,
+                    "variable_ordinal": variable_ordinal,
+                    "attribute_ordinal": attribute_ordinal,
+                    "value_ordinal": value_ordinal,
+                    "attribute_name": str(name), "attribute_value": text_value,
+                })
+
+    append("file", 0, file_attributes)
+    attributes_by_variable = variable_attributes or {}
+    for variable in variables:
+        append("variable", int(variable["ordinal"]),
+               attributes_by_variable.get(str(variable["source_name"])))
+    return rows
+
+
+def attributes_from_rows(
+    rows: Iterable[Mapping[str, Any]], *, variables: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Rebuild ordered attributes; rows, not legacy JSON, are authoritative."""
+    by_ordinal = {int(item["ordinal"]): str(item["source_name"]) for item in variables}
+    grouped: dict[tuple[str, int], dict[str, list[str]]] = {}
+    for row in rows:
+        target = grouped.setdefault((str(row["scope"]), int(row["variable_ordinal"])), {})
+        target.setdefault(str(row["attribute_name"]), []).append(str(row["attribute_value"]))
+
+    def collapse(values: Mapping[str, list[str]]) -> dict[str, Any]:
+        return {name: value[0] if len(value) == 1 else value for name, value in values.items()}
+
+    file_attributes = collapse(grouped.get(("file", 0), {}))
+    variable_attributes = {
+        by_ordinal[ordinal]: collapse(attributes)
+        for (scope, ordinal), attributes in grouped.items()
+        if scope == "variable" and ordinal in by_ordinal
+    }
+    return file_attributes, variable_attributes
+
+
 def _typed_endpoint(value: Any) -> tuple[str, float | None, str | None]:
     """Encode typed values without losing SPSS LOWEST/HIGHEST sentinels.
 
@@ -350,8 +429,11 @@ def missing_rule_rows(dataset_id: str, variables: list[dict[str, Any]]) -> list[
     return rows
 
 
-def normalized_metadata_tables(metadata: MetaData) -> tuple[Table, Table, Table]:
-    return document_catalog(metadata), value_label_catalog(metadata), missing_rule_catalog(metadata)
+def normalized_metadata_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
+    return (
+        document_catalog(metadata), value_label_catalog(metadata), missing_rule_catalog(metadata),
+        attribute_catalog(metadata),
+    )
 
 def _mr_counted_value(definition: Mapping[str, Any]) -> tuple[str | None, float | None, str | None]:
     value = definition.get("counted_value", definition.get("countedvalue"))
@@ -641,6 +723,8 @@ def create_wide_dataset(
     rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
     source_encoding: str | None = None, documents: str = "[]",
     file_attributes: str = "{}", case_weight_variable: str | None = None,
+    file_attribute_values: Mapping[str, Any] | None = None,
+    variable_attribute_values: Mapping[str, Mapping[str, Any]] | None = None,
     source_table_name: str | None = None,
     source_sha256: str = "",
     source_created_at: str | None = None, source_modified_at: str | None = None,
@@ -655,7 +739,7 @@ def create_wide_dataset(
     datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
     source_extensions_catalog = source_extension_catalog(metadata)
-    documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
+    documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog = normalized_metadata_tables(metadata)
     operation_id = str(uuid4())
     try:
         preflight(profile, variables)
@@ -680,7 +764,7 @@ def create_wide_dataset(
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, fidelity_event_catalog, operation_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog, fidelity_event_catalog, operation_catalog])
         _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
@@ -713,6 +797,13 @@ def create_wide_dataset(
         missing_rows = missing_rule_rows(dataset_id, variables)
         if missing_rows:
             connection.execute(insert(missing_rules_catalog), missing_rows)
+        attributes_rows = attribute_rows(
+            dataset_id, variables,
+            file_attributes=file_attribute_values,
+            variable_attributes=variable_attribute_values,
+        )
+        if attributes_rows:
+            connection.execute(insert(attributes_catalog), attributes_rows)
         mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
         if mrset_rows:
             connection.execute(insert(multiple_response_catalog), mrset_rows)
@@ -734,6 +825,7 @@ def create_wide_dataset(
                 connection.execute(delete(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(value_labels_catalog).where(value_labels_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id))
+                connection.execute(delete(attributes_catalog).where(attributes_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(fidelity_event_catalog).where(fidelity_event_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id))
                 connection.execute(delete(datasets).where(datasets.c.dataset_id == dataset_id))
@@ -761,9 +853,9 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
     datasets, variable_catalog, _, _ = catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
     source_extensions_catalog = source_extension_catalog(metadata)
-    documents_catalog, value_labels_catalog, missing_rules_catalog = normalized_metadata_tables(metadata)
+    documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog = normalized_metadata_tables(metadata)
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog])
+        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog])
         _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
         dataset = dict(connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one())
         data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
@@ -785,6 +877,13 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
             select(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id)
             .order_by(missing_rules_catalog.c.variable_ordinal, missing_rules_catalog.c.ordinal)
         ).mappings().all()
+        attribute_rows_result = connection.execute(
+            select(attributes_catalog).where(attributes_catalog.c.dataset_id == dataset_id)
+            .order_by(
+                attributes_catalog.c.scope, attributes_catalog.c.variable_ordinal,
+                attributes_catalog.c.attribute_ordinal, attributes_catalog.c.value_ordinal,
+            )
+        ).mappings().all()
         mrset_rows_result = connection.execute(
             select(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id)
             .order_by(multiple_response_catalog.c.set_name, multiple_response_catalog.c.member_ordinal)
@@ -796,6 +895,15 @@ def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, 
 
     if document_rows_result:
         dataset["documents"] = json.dumps([item["text"] for item in document_rows_result], ensure_ascii=False)
+    if attribute_rows_result:
+        file_attributes, variable_attributes = attributes_from_rows(
+            attribute_rows_result, variables=variables,
+        )
+        dataset["file_attributes"] = json.dumps(file_attributes, ensure_ascii=False)
+        for variable in variables:
+            variable["attributes"] = json.dumps(
+                variable_attributes.get(variable["source_name"], {}), ensure_ascii=False,
+            )
     if mrset_rows_result:
         dataset["multiple_response_sets"] = json.dumps(
             multiple_response_sets_from_rows(mrset_rows_result), ensure_ascii=False, default=str,
