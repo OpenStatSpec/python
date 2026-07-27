@@ -39,7 +39,8 @@ openstatspec export --database-url postgresql+psycopg://... --dataset-id respons
 
 ## 0.1.0 support status
 
-The adapter requires pyspssio 0.5.1 as its sole SPSS engine. There is no
+The adapter requires pyspssio 0.5.1 or a compatible later release as its sole
+SPSS engine. There is no
 fallback reader or writer. It supports unencrypted SAV and ZSAV import and
 SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
 reference path.
