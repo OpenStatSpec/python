@@ -75,6 +75,20 @@ def test_import_catalog_preflight_rejects_invalid_weight_atomically(
     ).fetchone()
     assert code == expected_code
     assert json.loads(details)["reason"] == expected_code
+    assert connection.execute("select count(*) from dataset").fetchone() == (0,)
+    operation = connection.execute(
+        "select operation_kind, status, source_format, started_at, completed_at "
+        "from operation"
+    ).fetchone()
+    assert operation[:3] == ("import", "failed", "SAV")
+    assert operation[3] and operation[4]
+    event = connection.execute(
+        "select dataset_id, direction, severity, event_code, source_item, "
+        "detail_json, created_at from fidelity_event"
+    ).fetchone()
+    assert event[:5] == (None, "import", "error", expected_code, "weight.sav")
+    assert json.loads(event[5])["reason"] == expected_code
+    assert event[6]
 
 
 def _create_valid_dataset(database: str) -> None:

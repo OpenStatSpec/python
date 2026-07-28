@@ -13,6 +13,15 @@ from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, Meta
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from ..core import UnsupportedOperationError
 from .profiles import preflight, validate_connection_url
+from .normative import (
+    catalog as normative_catalog,
+    create as create_normative_catalog,
+    dataset_id_for_name as normative_dataset_id_for_name,
+    finish_operation as finish_normative_operation,
+    record_fidelity_events as record_normative_fidelity_events,
+    record_operation as record_normative_operation,
+    store_imported_dataset as store_normative_dataset,
+)
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -187,8 +196,8 @@ def _event_rows(
 def _record_failed_preflight(
     *, engine: Any, metadata: MetaData, datasets: Table, variable_catalog: Table,
     multiple_response_catalog: Table, fidelity_event_catalog: Table,
-    operation_catalog: Table, operation_id: str, source_name: str,
-    variable_count: int, profile_name: str, error: Exception,
+    operation_catalog: Table, normative: Any, operation_id: str, source_name: str,
+    source_format: str, variable_count: int, profile_name: str, error: Exception,
 ) -> None:
     """Persist a failed preflight without creating any source dataset state."""
     with engine.begin() as connection:
@@ -196,19 +205,33 @@ def _record_failed_preflight(
             datasets, variable_catalog, multiple_response_catalog,
             fidelity_event_catalog, operation_catalog,
         ])
+        create_normative_catalog(connection, normative)
+        failed_at = datetime.now(UTC).replace(tzinfo=None)
+        record_normative_operation(
+            connection, normative, operation_id=operation_id,
+            operation_kind="import", status="failed", source_format=source_format,
+            started_at=failed_at, completed_at=failed_at,
+        )
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="failed", dataset_id=None,
             source=source_name, created_at=_now(), completed_at=_now(),
             details=json.dumps({"reason": "preflight", "variable_count": variable_count,
                 "capability": getattr(error, "details", {})}, sort_keys=True),
         ))
+        failed_events = ({
+            "code": getattr(error, "code", "target-capability-exceeded"),
+            "detail": str(error), "severity": "error", "source_item": source_name,
+            "details": {"variable_count": variable_count, "profile": profile_name,
+                        **getattr(error, "details", {})},
+        },)
         connection.execute(insert(fidelity_event_catalog), _event_rows(
-            operation_id=operation_id, dataset_id=None, direction="import", fidelity_events=({
-                "code": getattr(error, "code", "target-capability-exceeded"), "detail": str(error), "severity": "error",
-                "details": {"variable_count": variable_count, "profile": profile_name,
-                            **getattr(error, "details", {})},
-            },),
+            operation_id=operation_id, dataset_id=None, direction="import",
+            fidelity_events=failed_events,
         ))
+        record_normative_fidelity_events(
+            connection, normative, operation_id=operation_id, dataset_id=None,
+            direction="import", events=failed_events,
+        )
 
 def multiple_response_set_catalog(metadata: MetaData) -> Table:
     return Table(
@@ -743,10 +766,12 @@ def create_wide_dataset(
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
+    normative = normative_catalog(metadata)
     multiple_response_catalog = multiple_response_set_catalog(metadata)
     source_extensions_catalog = source_extension_catalog(metadata)
     documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog = normalized_metadata_tables(metadata)
     operation_id = str(uuid4())
+    fidelity_events = tuple(fidelity_events)
     try:
         preflight(profile, variables)
         validate_spss_catalog(
@@ -759,8 +784,9 @@ def create_wide_dataset(
             engine=engine, metadata=metadata, datasets=datasets,
             variable_catalog=variable_catalog, multiple_response_catalog=multiple_response_catalog,
             fidelity_event_catalog=fidelity_event_catalog, operation_catalog=operation_catalog,
-            operation_id=operation_id, source_name=source_name, variable_count=len(variables),
-            profile_name=profile.name, error=error,
+            operation_id=operation_id, source_name=source_name,
+            source_format=source_format, variable_count=len(variables),
+            profile_name=profile.name, error=error, normative=normative,
         )
         raise
     data_table = Table(
@@ -771,7 +797,12 @@ def create_wide_dataset(
     )
     with engine.begin() as connection:
         metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog, fidelity_event_catalog, operation_catalog])
+        create_normative_catalog(connection, normative)
         _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
+        record_normative_operation(
+            connection, normative, operation_id=operation_id,
+            operation_kind="import", status="started", source_format=source_format,
+        )
         connection.execute(insert(operation_catalog).values(
             operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
             source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables), **dict(operation_details or {})}, sort_keys=True),
@@ -821,6 +852,22 @@ def create_wide_dataset(
         )
         if event_rows:
             connection.execute(insert(fidelity_event_catalog), event_rows)
+        normative_dataset_id = store_normative_dataset(
+            connection, normative, dataset_name=dataset_id,
+            source_format=source_format, physical_table_name=data_table.name,
+            dataset_label=file_label, source_encoding=source_encoding,
+            source_hash=source_sha256, source_case_count=len(materialized),
+            imported_at=imported_at or None, variables=variables,
+            documents=docs_rows, value_labels=labels_rows,
+            missing_rules=missing_rows, attributes=attributes_rows,
+            multiple_response_sets=mrset_rows,
+            source_extensions=source_extensions or {},
+        )
+        record_normative_fidelity_events(
+            connection, normative, operation_id=operation_id,
+            dataset_id=normative_dataset_id, direction="import",
+            events=fidelity_events,
+        )
         if materialized:
             try:
                 connection.execute(insert(data_table), materialized)
@@ -840,6 +887,9 @@ def create_wide_dataset(
         connection.execute(update(operation_catalog).where(operation_catalog.c.operation_id == operation_id).values(
             status="succeeded", completed_at=_now(),
         ))
+        finish_normative_operation(
+            connection, normative, operation_id=operation_id, status="succeeded",
+        )
     return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized), "operation_id": operation_id}
 
 
@@ -965,11 +1015,20 @@ def record_export_operation(
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variables, fidelity_events, operations = catalog(metadata)
+    normative = normative_catalog(metadata)
     multiple_response = multiple_response_set_catalog(metadata)
     operation_id = str(uuid4())
     events = tuple(allowed_fidelity_events)
     with engine.begin() as connection:
         metadata.create_all(connection, tables=[datasets, variables, multiple_response, fidelity_events, operations])
+        create_normative_catalog(connection, normative)
+        normative_dataset_id = normative_dataset_id_for_name(connection, normative, dataset_id)
+        completed_at = datetime.now(UTC).replace(tzinfo=None)
+        record_normative_operation(
+            connection, normative, operation_id=operation_id,
+            operation_kind="export", status="succeeded", source_format=None,
+            started_at=completed_at, completed_at=completed_at,
+        )
         connection.execute(insert(operations).values(
             operation_id=operation_id, direction="export", status="succeeded", dataset_id=dataset_id,
             destination=destination, created_at=_now(), completed_at=_now(),
@@ -983,6 +1042,13 @@ def record_export_operation(
         )
         if rows:
             connection.execute(insert(fidelity_events), rows)
+        record_normative_fidelity_events(
+            connection, normative, operation_id=operation_id,
+            dataset_id=normative_dataset_id, direction="export",
+            events=({**event, "severity": event.get("severity", "warning"),
+                     "details": {**event.get("details", {}), "accepted_by_user": True}}
+                    for event in events),
+        )
     return operation_id
 
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:

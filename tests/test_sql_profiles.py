@@ -5,6 +5,8 @@ from sqlalchemy import Column, MetaData, Table
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.schema import CreateTable
 
+from openstatspec.sql.normative import catalog as normative_catalog
+
 from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.profiles import MYSQL, POSTGRESQL, SQLITE, preflight, profile_for_url
 from openstatspec.sql.wide import binary64_type
@@ -44,3 +46,11 @@ def test_identifier_length_preflight_uses_profile_limit() -> None:
     variables = [{"ordinal": 1, "source_name": "name", "physical_name": "name"}]
     with pytest.raises(UnsupportedOperationError, match="Target capability exceeded"):
         preflight(limited, variables)
+
+
+def test_normative_catalog_compiles_for_every_sql_family() -> None:
+    catalog = normative_catalog(MetaData())
+    for dialect in (sqlite.dialect(), mysql.dialect(), postgresql.dialect()):
+        compiled = [str(CreateTable(table).compile(dialect=dialect)) for table in catalog.all()]
+        assert len(compiled) == 15
+        assert all("CREATE TABLE" in ddl for ddl in compiled)

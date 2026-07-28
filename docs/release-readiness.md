@@ -6,8 +6,11 @@ Creating a version tag remains a separate maintainer action.
 ## Supported workflow
 
 For a supported unencrypted SAV or ZSAV source, the adapter imports one source
-dataset into exactly one dedicated wide data table plus catalog tables. It can
-validate that representation and export it back to SAV or ZSAV.
+dataset into exactly one dedicated wide data table plus the complete singular,
+UUID-keyed normative catalog from the SPSS profile. It can validate that
+representation and export it back to SAV or ZSAV. Historical `*_catalog`
+tables remain private compatibility storage and do not replace the normative
+database contract.
 
 ## SQL profiles
 
@@ -28,11 +31,12 @@ diagnostics. An export with known loss fails unless the caller passes the
 relevant diagnostic codes through `allow_loss` or repeats `--allow-loss CODE`
 in the CLI.
 
-The concrete pyspssio boundaries are documented in the [SAV profile](sav-profile.md):
-document text is unobservable; file labels are preserved by the pinned fork, legacy compatible names are fail-closed
-on export, and only UTF-8 has a source-encoding fidelity contract. Separate
-print/write formats, variable sets, multiple-response sets, alignment, scalar
-attributes, and ordered custom-attribute arrays have verified paths. A caller
+The concrete pyspssio boundaries are documented in the [SAV profile](sav-profile.md).
+The pinned OpenStatSpec fork preserves document text, file labels, legacy
+compatible names, separate print/write formats, variable sets,
+multiple-response sets, alignment, scalar attributes, and ordered
+custom-attribute arrays. Non-UTF-8 output requires an explicit matching locale;
+otherwise the strict export policy reports and blocks the loss. A caller
 that supplies consent for an available loss code receives the
 machine-readable loss report with the export result.
 

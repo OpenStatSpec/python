@@ -8,8 +8,12 @@ The normative model lives in the `OpenStatSpec/specification` repository.
 ## Boundaries
 
 For each supported import, one source dataset becomes one dedicated wide SQL
-table. Cases are rows and source variables are physical SQL columns. Catalog
-metadata is stored separately. The adapter does not reshape data, create EAV
+table. Cases are rows and source variables are physical SQL columns. The
+singular UUID-keyed tables from the specification (`dataset`, `variable`,
+`operation`, `fidelity_event`, and related metadata tables) are the public
+catalog contract. Historical `*_catalog` tables are an internal compatibility
+layer for the current exporter and are not the standard database interface.
+The adapter does not reshape data, create EAV
 or long-form tables, or harmonize studies or waves.
 
 Unsupported source features, SQL targets, or export paths fail explicitly.

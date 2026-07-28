@@ -46,7 +46,16 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
 
     connection = sqlite3.connect(database_path)
     table_names = [row[0] for row in connection.execute("select name from sqlite_master where type = 'table' order by name")]
-    assert table_names == ["attribute_catalog", "data_tiny", "dataset_catalog", "document_catalog", "fidelity_event_catalog", "missing_rule_catalog", "multiple_response_set_catalog", "operation_catalog", "source_extension_catalog", "value_label_catalog", "variable_catalog"]
+    assert {
+        "attribute_catalog", "data_tiny", "dataset_catalog", "document_catalog",
+        "fidelity_event_catalog", "missing_rule_catalog",
+        "multiple_response_set_catalog", "operation_catalog",
+        "source_extension_catalog", "value_label_catalog", "variable_catalog",
+        "dataset", "operation", "variable", "value_label_set", "value_label",
+        "variable_value_label_set", "missing_rule", "dataset_attribute",
+        "variable_attribute", "document", "variable_set", "variable_set_member",
+        "multiple_response_set", "multiple_response_member", "fidelity_event",
+    } <= set(table_names)
     assert connection.execute("select __case_ordinal, age, name from data_tiny order by __case_ordinal").fetchall() == [(1, 34.0, "Ada"), (2, None, "")]
     assert connection.execute("select source_encoding, file_attributes, case_weight_variable from dataset_catalog").fetchone() == ("UTF-8", json.dumps({"Source": "test"}), "age")
     assert connection.execute("select source_sha256 from dataset_catalog").fetchone() == (hashlib.sha256(source.read_bytes()).hexdigest(),)
