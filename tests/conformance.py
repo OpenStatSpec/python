@@ -62,6 +62,7 @@ def write_supported_semantics_fixture(destination: str | Path) -> dict[str, Any]
             "discrete_missing": {3.0: "third", 1.0: "first", 2.0: "second"},
             "code": {3.0: "third", 1.0: "first", 2.0: "second"},
             "status": {"DK": "don't know", "NA": "not answered", "ok": "valid"},
+            "comment": {"coded": "Short code in a very-long string variable"},
         },
         "var_missing_values": {
             "discrete_missing": {"values": [1.0, 2.0, 3.0]},
