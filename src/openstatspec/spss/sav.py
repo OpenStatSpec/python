@@ -53,7 +53,7 @@ def engine_identity() -> dict[str, str]:
         "package": "openstatspec-pyspssio",
         "module": "pyspssio",
         "repository": "TonisOrmisson/pyspssio",
-        "pinned_commit": "baf8958",
+        "pinned_commit": "3122830",
         "installed_version": str(pyspssio.__version__),
     }
 

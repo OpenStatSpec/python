@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: TonisOrmisson/pyspssio
-          ref: baf8958a162aa35e11b4fdc73b807a9e81070eb4
+          ref: 3122830df17c83739e30b5b5bdc7d226f8553a4c
           path: openstatspec-pyspssio
       - uses: actions/setup-python@v7
         with:
@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: TonisOrmisson/pyspssio
-          ref: baf8958a162aa35e11b4fdc73b807a9e81070eb4
+          ref: 3122830df17c83739e30b5b5bdc7d226f8553a4c
           path: openstatspec-pyspssio
       - uses: actions/setup-python@v7
         with:
@@ -117,7 +117,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: TonisOrmisson/pyspssio
-          ref: baf8958a162aa35e11b4fdc73b807a9e81070eb4
+          ref: 3122830df17c83739e30b5b5bdc7d226f8553a4c
           path: openstatspec-pyspssio
       - uses: actions/setup-python@v7
         with:
