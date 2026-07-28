@@ -39,9 +39,9 @@ openstatspec export --database-url postgresql+psycopg://... --dataset-id respons
 
 ## 0.1.0 support status
 
-The adapter requires the pinned TonisOrmisson/pyspssio fork declared in
-pyproject.toml as its sole SPSS engine. There is no
-fallback reader or writer. It supports unencrypted SAV and ZSAV import and
+The adapter requires `openstatspec-pyspssio==0.5.1.post1` as its sole SPSS
+engine. Its import module remains `pyspssio`; the exact source commit is recorded
+in operation metadata. There is no fallback reader or writer. It supports unencrypted SAV and ZSAV import and
 SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
 reference path.
 PostgreSQL, MySQL, and MariaDB are each covered by separate service-backed CI
@@ -60,7 +60,7 @@ intentional lossy export auditable.
 The matrix is also available to Python callers as
 `openstatspec.capability_matrix()`. It distinguishes supported semantics from
 unobservable and fail-closed paths; see the SAV profile for the exact
-the pinned pyspssio fork boundary.
+the openstatspec-pyspssio boundary.
 
 See [the SAV profile](docs/sav-profile.md) for feature boundaries and
 [release readiness](docs/release-readiness.md) for the pre-tag checklist.

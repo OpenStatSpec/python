@@ -7,9 +7,9 @@ chunks, or creates a cell/EAV representation.
 
 ## SPSS engine
 
-OpenStatSpec Python requires the pinned TonisOrmisson/pyspssio fork declared in
-pyproject.toml as its sole SPSS engine. There is no fallback reader or writer. The engine reads unencrypted .sav and .zsav
-files, and writes both formats through the same implementation.
+OpenStatSpec Python requires `openstatspec-pyspssio==0.5.1.post1` as its sole
+SPSS engine. There is no fallback reader or writer. The engine reads
+unencrypted .sav and .zsav files, and writes both formats through the same implementation.
 
 ## Verified SQL profiles
 
@@ -36,7 +36,7 @@ of this boundary. It records the pinned source commit and installed engine versi
 
 | SPSS semantic | Pinned pyspssio status | Behaviour |
 | --- | --- | --- |
-| File label | Supported through the pinned fork | The adapter persists it in the dataset catalog and writes it through the IBM I/O identifier-string API. |
+| File label | Supported through openstatspec-pyspssio | The adapter persists it in the dataset catalog and writes it through the IBM I/O identifier-string API. |
 | Very-long UTF-8 strings | Supported | The SAV and ZSAV fixture preserves a 340-byte, multi-byte UTF-8 string through the SQL catalog and back. |
 | Ordered document text | Supported through a strict type-6 dictionary bridge plus the pinned fork | Import stores normalized document rows; export creates a temporary UTF-8 SAV source and has IBM I/O copy the records into SAV or ZSAV without invalidating ZSAV dictionary offsets. |
 | Print and write formats independently | Supported as raw IBM I/O tuples | The adapter stores both tuples separately and writes them without collapsing either value. |

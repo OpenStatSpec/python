@@ -28,7 +28,8 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     connection = sqlite3.connect(database_path)
     assert {row[0] for row in connection.execute("select code from fidelity_event_catalog")} == set(_REQUIRED_ENGINE_LOSS)
     import_details = json.loads(connection.execute("select details from operation_catalog order by created_at limit 1").fetchone()[0])
-    assert import_details["engine"]["pinned_commit"] == "9c07a02"
+    assert import_details["engine"]["package"] == "openstatspec-pyspssio"
+    assert import_details["engine"]["pinned_commit"] == "baf8958"
 
     openstatspec.export_sav(database_url=database, dataset_id="persisted", destination=blocked)
     assert blocked.exists()

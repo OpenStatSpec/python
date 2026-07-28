@@ -2,8 +2,9 @@
 
 **Status:** selected as the required, sole Python SPSS engine.
 
-OpenStatSpec Python uses the pinned TonisOrmisson/pyspssio fork, based on
-[pyspssio](https://pypi.org/project/pyspssio/), for both SAV and ZSAV import and export. There is no alternate SPSS engine.
+OpenStatSpec Python requires `openstatspec-pyspssio==0.5.1.post1`, built from
+TonisOrmisson/pyspssio commit `baf8958`, for both SAV and ZSAV import and
+export. There is no alternate SPSS engine.
 
 ## Probe result
 

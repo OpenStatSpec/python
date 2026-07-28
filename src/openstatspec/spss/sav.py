@@ -50,9 +50,10 @@ _UTF8_ENCODINGS = {"UTF-8", "UTF8"}
 def engine_identity() -> dict[str, str]:
     """Return the exact pinned SPSS engine identity for audit records."""
     return {
-        "package": "pyspssio",
-        "distribution": "TonisOrmisson/pyspssio",
-        "pinned_commit": "9c07a02",
+        "package": "openstatspec-pyspssio",
+        "module": "pyspssio",
+        "repository": "TonisOrmisson/pyspssio",
+        "pinned_commit": "baf8958",
         "installed_version": str(pyspssio.__version__),
     }
 
