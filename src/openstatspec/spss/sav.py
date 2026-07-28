@@ -52,7 +52,7 @@ def engine_identity() -> dict[str, str]:
     return {
         "package": "pyspssio",
         "distribution": "TonisOrmisson/pyspssio",
-        "pinned_commit": "6a0f9fa",
+        "pinned_commit": "9c07a02",
         "installed_version": str(pyspssio.__version__),
     }
 
