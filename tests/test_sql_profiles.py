@@ -1,4 +1,5 @@
 from dataclasses import replace
+import os
 
 import pytest
 from sqlalchemy import Column, MetaData, Table
@@ -9,7 +10,7 @@ from openstatspec.sql.normative import catalog as normative_catalog
 
 from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.profiles import MYSQL, POSTGRESQL, SQLITE, preflight, profile_for_url
-from openstatspec.sql.capabilities import server_version_supported
+from openstatspec.sql.capabilities import active_connection, server_version_supported
 from openstatspec.sql.wide import binary64_type
 
 
@@ -88,3 +89,24 @@ def test_claimed_server_version_policy_is_explicit(
     profile: str, version: str, supported: bool,
 ) -> None:
     assert server_version_supported(profile, version) is supported
+
+
+@pytest.mark.services
+@pytest.mark.parametrize(
+    ("environment_name", "profile"),
+    [
+        ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
+        ("OPENSTATSPEC_MYSQL_URL", "mysql"),
+        ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
+    ],
+)
+def test_active_server_identity_matches_claimed_ci_profile(
+    environment_name: str, profile: str,
+) -> None:
+    database_url = os.environ.get(environment_name)
+    if not database_url:
+        pytest.skip(f"{environment_name} is not configured")
+    active = active_connection(database_url)
+    assert active["profile"] == profile
+    assert active["claimed_supported"] is True
+    assert active["matched_claim"] is not None
