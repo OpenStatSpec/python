@@ -5,8 +5,11 @@ dictionary. IBM I/O exposes copying document records but not their text.
 """
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Iterable
 
 
@@ -70,13 +73,12 @@ def write_document_lines(path: str | Path, lines: Iterable[str], *, encoding: st
 def write_compatible_names(
     path: str | Path, names: dict[str, str], *, encoding: str,
 ) -> None:
-    """Set exact legacy short names without changing long source variable names.
+    """Set exact legacy short names consistently in type-2/13/14 records.
 
-    IBM I/O has no compatible-name setter.  The standard long-name extension
-    and the fixed 8-byte variable records contain the complete mapping, so this
-    narrowly rewrites only those two dictionary locations.  Every requested
-    source name must have a long-name record; otherwise the operation fails
-    instead of silently deriving another name.
+    IBM I/O has no compatible-name setter. Every requested source name must
+    have a long-name record, and every very-long-string key must agree with the
+    type-2 and subtype-13 records. The fully rebuilt dictionary is reparsed
+    before an atomic replacement is published.
     """
     if not names:
         return
@@ -84,18 +86,18 @@ def write_compatible_names(
     data = target.read_bytes()
     byte_order, records = _records(data)
     terminator = next(record for record in records if record.record_type == 999)
-    long_names = next(
-        (
-            record for record in records
-            if record.record_type == 7 and _int(data, record.start + 4, byte_order) == 13
-        ),
-        None,
-    )
-    if long_names is None:
+    long_name_records = [
+        record for record in records
+        if record.record_type == 7 and _int(data, record.start + 4, byte_order) == 13
+    ]
+    if not long_name_records:
         raise RawDictionaryError("SAV dictionary has no long-variable-name record.")
-    payload_start = long_names.start + 16
-    payload = data[payload_start : long_names.end]
-    pairs = _long_name_pairs(payload, encoding)
+    if len(long_name_records) != 1:
+        raise RawDictionaryError("SAV dictionary has more than one long-variable-name record.")
+    long_names = long_name_records[0]
+    if _int(data, long_names.start + 8, byte_order) != 1:
+        raise RawDictionaryError("Invalid SAV long-variable-name record dimensions.")
+    pairs = _long_name_pairs(data[long_names.start + 16 : long_names.end], encoding)
     replacements: dict[str, str] = {}
     updated_pairs: list[tuple[str, str]] = []
     unresolved = set(names)
@@ -112,6 +114,44 @@ def write_compatible_names(
         raise RawDictionaryError(
             "Compatible-name update requires a long-name record for: " + missing
         )
+    updated_short_names = [short_name.casefold() for short_name, _ in updated_pairs]
+    if len(updated_short_names) != len(set(updated_short_names)):
+        raise RawDictionaryError("Compatible-name update would create duplicate short names.")
+
+    type_2_names = _type_2_names(data, records, byte_order)
+    for short_name in replacements:
+        if type_2_names.count(short_name) != 1:
+            raise RawDictionaryError(
+                f"Expected exactly one type-2 record for compatible name {short_name!r}."
+            )
+
+    long_name_by_short = {short_name: long_name for short_name, long_name in pairs}
+    vls_records = [
+        record for record in records
+        if record.record_type == 7 and _int(data, record.start + 4, byte_order) == 14
+    ]
+    parsed_vls: dict[int, tuple[list[tuple[str, bytes]], bool]] = {}
+    seen_vls: set[str] = set()
+    vls_replacements: dict[str, str] = {}
+    vls_source_names: set[str] = set()
+    for record in vls_records:
+        if _int(data, record.start + 8, byte_order) != 1:
+            raise RawDictionaryError("Invalid SAV very-long-string record dimensions.")
+        entries, trailing_tab = _very_long_string_entries(data[record.start + 16 : record.end])
+        parsed_vls[record.start] = (entries, trailing_tab)
+        for short_name, _ in entries:
+            normalized = short_name.casefold()
+            if normalized in seen_vls:
+                raise RawDictionaryError("Duplicate SAV very-long-string entry.")
+            seen_vls.add(normalized)
+            if short_name not in long_name_by_short or type_2_names.count(short_name) != 1:
+                raise RawDictionaryError(
+                    "SAV type-2/subtype-13/subtype-14 names are inconsistent."
+                )
+            replacement = replacements.get(short_name)
+            if replacement is not None:
+                vls_replacements[short_name] = replacement
+                vls_source_names.add(long_name_by_short[short_name])
 
     mutable = bytearray(data)
     for record in records:
@@ -122,22 +162,50 @@ def write_compatible_names(
         if replacement is not None:
             mutable[record.start + 24 : record.start + 32] = replacement.encode("ascii").ljust(8, b" ")
 
-    new_payload = b"	".join(
+    new_payload = b"\t".join(
         short_name.encode("ascii") + b"=" + long_name.encode(encoding)
         for short_name, long_name in updated_pairs
     )
-    header = bytearray(mutable[long_names.start : long_names.start + 16])
-    header[12:16] = _pack(len(new_payload), byte_order)
-    updated = (
-        bytes(mutable[: long_names.start]) + bytes(header) + new_payload
-        + bytes(mutable[long_names.end :])
-    )
-    target.write_bytes(_shift_zsav_offsets(
+    replacement_records = {
+        long_names.start: _extension_record(
+            mutable, long_names, new_payload, byte_order=byte_order,
+        ),
+    }
+    for record in vls_records:
+        entries, trailing_tab = parsed_vls[record.start]
+        rewritten = [
+            (vls_replacements.get(short_name, short_name), width)
+            for short_name, width in entries
+        ]
+        vls_payload = _very_long_string_payload(rewritten, trailing_tab=trailing_tab)
+        replacement_records[record.start] = _extension_record(
+            mutable, record, vls_payload, byte_order=byte_order,
+        )
+
+    chunks: list[bytes] = []
+    cursor = 0
+    for record in sorted(
+        (record for record in records if record.start in replacement_records),
+        key=lambda item: item.start,
+    ):
+        chunks.append(bytes(mutable[cursor : record.start]))
+        chunks.append(replacement_records[record.start])
+        cursor = record.end
+    chunks.append(bytes(mutable[cursor:]))
+    updated = b"".join(chunks)
+    updated = _shift_zsav_offsets(
         updated,
         original_data_start=terminator.end,
         delta=len(updated) - len(data),
         byte_order=byte_order,
-    ))
+    )
+    _assert_compatible_name_consistency(
+        updated,
+        requested=names,
+        vls_source_names=vls_source_names,
+        encoding=encoding,
+    )
+    _atomic_write_bytes(target, updated)
 
 
 def write_extended_mrset_labels(
@@ -212,16 +280,179 @@ def write_extended_mrset_labels(
 
 
 def _long_name_pairs(payload: bytes, encoding: str) -> list[tuple[str, str]]:
+    if not payload:
+        raise RawDictionaryError("Empty SAV long-variable-name record.")
     pairs: list[tuple[str, str]] = []
-    for raw_pair in payload.split(b"	"):
+    short_names: set[str] = set()
+    long_names: set[str] = set()
+    for raw_pair in payload.split(b"\t"):
         try:
             raw_short, raw_long = raw_pair.split(b"=", maxsplit=1)
-            short_name = raw_short.decode("ascii")
+            short_name = _dictionary_short_name(raw_short)
             long_name = raw_long.decode(encoding)
         except (UnicodeDecodeError, ValueError) as error:
             raise RawDictionaryError("Invalid SAV long-variable-name record.") from error
+        normalized_short = short_name.casefold()
+        normalized_long = long_name.casefold()
+        if not long_name or normalized_short in short_names or normalized_long in long_names:
+            raise RawDictionaryError("Duplicate or empty SAV long-variable-name entry.")
+        short_names.add(normalized_short)
+        long_names.add(normalized_long)
         pairs.append((short_name, long_name))
     return pairs
+
+
+def _very_long_string_entries(payload: bytes) -> tuple[list[tuple[str, bytes]], bool]:
+    """Parse subtype-14 entries without accepting ambiguous separators or widths."""
+    if not payload:
+        raise RawDictionaryError("Empty SAV very-long-string record.")
+    raw_entries = payload.split(b"\t")
+    trailing_tab = raw_entries[-1] == b""
+    if trailing_tab:
+        raw_entries.pop()
+    if not raw_entries or any(not entry for entry in raw_entries):
+        raise RawDictionaryError("Invalid SAV very-long-string separators.")
+    entries: list[tuple[str, bytes]] = []
+    for raw_entry in raw_entries:
+        if not raw_entry.endswith(b"\x00"):
+            raise RawDictionaryError("SAV very-long-string entry is missing its NUL terminator.")
+        try:
+            raw_short, raw_width = raw_entry[:-1].split(b"=", maxsplit=1)
+            short_name = _dictionary_short_name(raw_short)
+            if not raw_width or not raw_width.isdigit():
+                raise ValueError
+            width = int(raw_width.decode("ascii"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RawDictionaryError("Invalid SAV very-long-string entry.") from error
+        if not 256 <= width <= 32767:
+            raise RawDictionaryError("SAV very-long-string width is outside 256..32767.")
+        entries.append((short_name, raw_width))
+    return entries, trailing_tab
+
+
+def _very_long_string_payload(
+    entries: Iterable[tuple[str, bytes]], *, trailing_tab: bool,
+) -> bytes:
+    payload = b"\t".join(
+        short_name.encode("ascii") + b"=" + width + b"\x00"
+        for short_name, width in entries
+    )
+    return payload + (b"\t" if trailing_tab else b"")
+
+
+def _dictionary_short_name(raw_name: bytes) -> str:
+    try:
+        name = raw_name.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise RawDictionaryError("SAV dictionary short name is not ASCII.") from error
+    allowed_first = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@#$"
+    allowed_rest = allowed_first + b"0123456789_."
+    if not 1 <= len(raw_name) <= 8 or raw_name[:1] not in allowed_first:
+        raise RawDictionaryError("Invalid SAV dictionary short name.")
+    if any(character not in allowed_rest for character in raw_name[1:]):
+        raise RawDictionaryError("Invalid SAV dictionary short name.")
+    return name
+
+
+def _type_2_names(data: bytes, records: list[_Record], byte_order: str) -> list[str]:
+    names: list[str] = []
+    for record in records:
+        if record.record_type != 2 or _int(data, record.start + 4, byte_order) < 0:
+            continue
+        raw_name = data[record.start + 24 : record.start + 32].rstrip(b" ")
+        names.append(_dictionary_short_name(raw_name))
+    return names
+
+
+def _extension_record(
+    data: bytes, record: _Record, payload: bytes, *, byte_order: str,
+) -> bytes:
+    header = bytearray(data[record.start : record.start + 16])
+    header[8:12] = _pack(1, byte_order)
+    header[12:16] = _pack(len(payload), byte_order)
+    return bytes(header) + payload
+
+
+def _assert_compatible_name_consistency(
+    data: bytes,
+    *,
+    requested: dict[str, str],
+    vls_source_names: set[str],
+    encoding: str,
+) -> None:
+    byte_order, records = _records(data)
+    type_2_names = _type_2_names(data, records, byte_order)
+    normalized_type_2 = [name.casefold() for name in type_2_names]
+    long_name_records = [
+        record for record in records
+        if record.record_type == 7 and _int(data, record.start + 4, byte_order) == 13
+    ]
+    if len(long_name_records) != 1:
+        raise RawDictionaryError("Rewritten SAV has an inconsistent long-variable-name record.")
+    long_name_record = long_name_records[0]
+    if _int(data, long_name_record.start + 8, byte_order) != 1:
+        raise RawDictionaryError("Rewritten SAV has invalid long-variable-name dimensions.")
+    pairs = _long_name_pairs(
+        data[long_name_record.start + 16 : long_name_record.end], encoding,
+    )
+    pair_by_long = {long_name: short_name for short_name, long_name in pairs}
+    normalized_pair_names = {short_name.casefold() for short_name, _ in pairs}
+    for short_name, _ in pairs:
+        if normalized_type_2.count(short_name.casefold()) != 1:
+            raise RawDictionaryError("Rewritten type-2 and subtype-13 names are inconsistent.")
+
+    vls_names: list[str] = []
+    for record in records:
+        if record.record_type != 7 or _int(data, record.start + 4, byte_order) != 14:
+            continue
+        if _int(data, record.start + 8, byte_order) != 1:
+            raise RawDictionaryError("Rewritten SAV has invalid very-long-string dimensions.")
+        entries, _ = _very_long_string_entries(data[record.start + 16 : record.end])
+        vls_names.extend(short_name for short_name, _ in entries)
+    normalized_vls = [name.casefold() for name in vls_names]
+    if len(normalized_vls) != len(set(normalized_vls)):
+        raise RawDictionaryError("Rewritten SAV has duplicate very-long-string entries.")
+    for short_name in normalized_vls:
+        if short_name not in normalized_pair_names or normalized_type_2.count(short_name) != 1:
+            raise RawDictionaryError(
+                "Rewritten type-2/subtype-13/subtype-14 names are inconsistent."
+            )
+
+    for source_name, requested_name in requested.items():
+        replacement = _validated_compatible_name(requested_name)
+        if pair_by_long.get(source_name) != replacement:
+            raise RawDictionaryError("Requested compatible name is absent after dictionary rewrite.")
+        if normalized_type_2.count(replacement.casefold()) != 1:
+            raise RawDictionaryError("Requested compatible name is inconsistent with type-2 records.")
+        if (
+            source_name in vls_source_names
+            and normalized_vls.count(replacement.casefold()) != 1
+        ):
+            raise RawDictionaryError("Requested compatible name is inconsistent with subtype-14.")
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """Publish validated dictionary bytes without exposing a partial replacement."""
+    mode = stat.S_IMODE(target.stat().st_mode)
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _validated_compatible_name(value: str) -> str:
