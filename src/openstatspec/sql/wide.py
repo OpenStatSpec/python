@@ -17,6 +17,7 @@ from .profiles import preflight, validate_connection_url
 from .normative import (
     catalog as normative_catalog,
     create as create_normative_catalog,
+    delete_dataset_representation as delete_normative_dataset,
     dataset_id_for_name as normative_dataset_id_for_name,
     finish_operation as finish_normative_operation,
     record_fidelity_events as record_normative_fidelity_events,
@@ -38,6 +39,11 @@ class CatalogPreflightError(UnsupportedOperationError):
 
 def _catalog_error(code: str, detail: str, **details: Any) -> CatalogPreflightError:
     return CatalogPreflightError(code, detail, details=details)
+
+
+def string_type(profile: Any) -> Text:
+    """Use Dolt's tested LONGTEXT storage without changing MySQL/MariaDB DDL."""
+    return mysql.LONGTEXT() if profile.name == "dolt" else Text()
 
 
 def binary64_type() -> Float:
@@ -202,11 +208,11 @@ def _record_failed_preflight(
 ) -> None:
     """Persist a failed preflight without creating any source dataset state."""
     with engine.begin() as connection:
+        create_normative_catalog(connection, normative)
         metadata.create_all(connection, tables=[
             datasets, variable_catalog, multiple_response_catalog,
             fidelity_event_catalog, operation_catalog,
         ])
-        create_normative_catalog(connection, normative)
         failed_at = datetime.now(UTC).replace(tzinfo=None)
         record_normative_operation(
             connection, normative, operation_id=operation_id,
@@ -787,109 +793,246 @@ def create_wide_dataset(
     data_table = Table(
         data_table_name(dataset_id), metadata,
         Column("__case_ordinal", BigInteger, primary_key=True, nullable=False),
-        *(Column(item["physical_name"], binary64_type() if item["storage_kind"] == "numeric" else Text(),
+        *(Column(item["physical_name"], binary64_type() if item["storage_kind"] == "numeric" else string_type(profile),
                  nullable=item["storage_kind"] == "numeric") for item in variables),
     )
-    with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog, fidelity_event_catalog, operation_catalog])
-        create_normative_catalog(connection, normative)
-        _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
-        record_normative_operation(
-            connection, normative, operation_id=operation_id,
-            operation_kind="import", status="started", source_format=source_format,
-        )
-        connection.execute(insert(operation_catalog).values(
-            operation_id=operation_id, direction="import", status="running", dataset_id=dataset_id,
-            source=source_name, created_at=_now(), details=json.dumps({"variable_count": len(variables), **dict(operation_details or {})}, sort_keys=True),
-        ))
-        if connection.execute(select(datasets.c.dataset_id).where(datasets.c.dataset_id == dataset_id)).first():
-            raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
-        if connection.execute(select(datasets.c.dataset_id).where(datasets.c.data_table == data_table.name)).first():
-            raise ValueError(f"Dataset ID {dataset_id!r} collides with an existing physical data-table name; import was not started.")
-        data_table.create(connection)
-        materialized = [
-            {"__case_ordinal": ordinal, **row}
-            for ordinal, row in enumerate(source_rows, start=1)
-        ]
-        connection.execute(insert(datasets).values(
-            dataset_id=dataset_id, data_table=data_table.name, source_format=source_format,
-            source_name=source_name, source_encoding=source_encoding, case_count=len(materialized),
-            source_table_name=source_table_name,
-            source_sha256=source_sha256,
-            source_created_at=source_created_at, source_modified_at=source_modified_at,
-            imported_at=imported_at,
-            file_label=file_label, documents=documents,
-            file_attributes=file_attributes, case_weight_variable=case_weight_variable,
-            multiple_response_sets=multiple_response_sets,
-        ))
-        connection.execute(insert(variable_catalog), [dict(dataset_id=dataset_id, **item) for item in variables])
-        docs_rows = document_rows(dataset_id, documents)
-        if docs_rows:
-            connection.execute(insert(documents_catalog), docs_rows)
-        labels_rows = value_label_rows(dataset_id, variables)
-        if labels_rows:
-            connection.execute(insert(value_labels_catalog), labels_rows)
-        missing_rows = missing_rule_rows(dataset_id, variables)
-        if missing_rows:
-            connection.execute(insert(missing_rules_catalog), missing_rows)
-        attributes_rows = attribute_rows(
-            dataset_id, variables,
-            file_attributes=file_attribute_values,
-            variable_attributes=variable_attribute_values,
-        )
-        if attributes_rows:
-            connection.execute(insert(attributes_catalog), attributes_rows)
-        mrset_rows = multiple_response_set_rows(dataset_id, multiple_response_sets)
-        if mrset_rows:
-            connection.execute(insert(multiple_response_catalog), mrset_rows)
-        extension_rows = source_extension_rows(dataset_id, source_extensions or {})
-        if extension_rows:
-            connection.execute(insert(source_extensions_catalog), extension_rows)
-        event_rows = _event_rows(
-            operation_id=operation_id, dataset_id=dataset_id, direction="import", fidelity_events=fidelity_events,
-        )
-        if event_rows:
-            connection.execute(insert(fidelity_event_catalog), event_rows)
-        normative_dataset_id = store_normative_dataset(
-            connection, normative, dataset_name=dataset_id,
-            source_format=source_format, physical_table_name=data_table.name,
-            dataset_label=file_label, source_encoding=source_encoding,
-            source_hash=source_sha256, source_case_count=len(materialized),
-            imported_at=imported_at or None, variables=variables,
-            documents=docs_rows, value_labels=labels_rows,
-            missing_rules=missing_rows, attributes=attributes_rows,
-            multiple_response_sets=mrset_rows,
-            source_extensions=source_extensions or {},
-            case_weight_variable=case_weight_variable,
-        )
-        record_normative_fidelity_events(
-            connection, normative, operation_id=operation_id,
-            dataset_id=normative_dataset_id, direction="import",
-            events=fidelity_events,
-        )
-        if materialized:
-            try:
+    materialized = [
+        {"__case_ordinal": ordinal, **row}
+        for ordinal, row in enumerate(source_rows, start=1)
+    ]
+    normative_dataset_id = str(uuid4())
+    namespace_owned = False
+    data_table_was_absent = False
+    try:
+        with engine.begin() as connection:
+            create_normative_catalog(connection, normative)
+            namespace_owned = True
+            metadata.create_all(connection, tables=[
+                datasets, variable_catalog, multiple_response_catalog,
+                source_extensions_catalog, documents_catalog, value_labels_catalog,
+                missing_rules_catalog, attributes_catalog, fidelity_event_catalog,
+                operation_catalog,
+            ])
+            _migrate_catalog_columns(
+                connection, datasets, variable_catalog, multiple_response_catalog,
+            )
+            if connection.execute(
+                select(datasets.c.dataset_id).where(
+                    datasets.c.dataset_id == dataset_id
+                )
+            ).first():
+                raise ValueError(
+                    f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset."
+                )
+            if connection.execute(
+                select(datasets.c.dataset_id).where(
+                    datasets.c.data_table == data_table.name
+                )
+            ).first():
+                raise ValueError(
+                    f"Dataset ID {dataset_id!r} collides with an existing physical "
+                    "data-table name; import was not started."
+                )
+            if inspect(connection).has_table(data_table.name):
+                raise ValueError(
+                    f"Physical data-table name {data_table.name!r} is already occupied."
+                )
+            data_table_was_absent = True
+            record_normative_operation(
+                connection, normative, operation_id=operation_id,
+                operation_kind="import", status="started",
+                source_format=source_format,
+            )
+            connection.execute(insert(operation_catalog).values(
+                operation_id=operation_id, direction="import", status="running",
+                dataset_id=dataset_id, source=source_name, created_at=_now(),
+                details=json.dumps({
+                    "variable_count": len(variables),
+                    **dict(operation_details or {}),
+                }, sort_keys=True),
+            ))
+            data_table.create(connection)
+            connection.execute(insert(datasets).values(
+                dataset_id=dataset_id, data_table=data_table.name,
+                source_format=source_format, source_name=source_name,
+                source_encoding=source_encoding, case_count=len(materialized),
+                source_table_name=source_table_name, source_sha256=source_sha256,
+                source_created_at=source_created_at,
+                source_modified_at=source_modified_at, imported_at=imported_at,
+                file_label=file_label, documents=documents,
+                file_attributes=file_attributes,
+                case_weight_variable=case_weight_variable,
+                multiple_response_sets=multiple_response_sets,
+            ))
+            connection.execute(
+                insert(variable_catalog),
+                [dict(dataset_id=dataset_id, **item) for item in variables],
+            )
+            docs_rows = document_rows(dataset_id, documents)
+            if docs_rows:
+                connection.execute(insert(documents_catalog), docs_rows)
+            labels_rows = value_label_rows(dataset_id, variables)
+            if labels_rows:
+                connection.execute(insert(value_labels_catalog), labels_rows)
+            missing_rows = missing_rule_rows(dataset_id, variables)
+            if missing_rows:
+                connection.execute(insert(missing_rules_catalog), missing_rows)
+            attributes_rows = attribute_rows(
+                dataset_id, variables,
+                file_attributes=file_attribute_values,
+                variable_attributes=variable_attribute_values,
+            )
+            if attributes_rows:
+                connection.execute(insert(attributes_catalog), attributes_rows)
+            mrset_rows = multiple_response_set_rows(
+                dataset_id, multiple_response_sets,
+            )
+            if mrset_rows:
+                connection.execute(insert(multiple_response_catalog), mrset_rows)
+            extension_rows = source_extension_rows(
+                dataset_id, source_extensions or {},
+            )
+            if extension_rows:
+                connection.execute(insert(source_extensions_catalog), extension_rows)
+            event_rows = _event_rows(
+                operation_id=operation_id, dataset_id=dataset_id,
+                direction="import", fidelity_events=fidelity_events,
+            )
+            if event_rows:
+                connection.execute(insert(fidelity_event_catalog), event_rows)
+            store_normative_dataset(
+                connection, normative, dataset_name=dataset_id,
+                source_format=source_format, physical_table_name=data_table.name,
+                dataset_label=file_label, source_encoding=source_encoding,
+                source_hash=source_sha256, source_case_count=len(materialized),
+                imported_at=imported_at or None, variables=variables,
+                documents=docs_rows, value_labels=labels_rows,
+                missing_rules=missing_rows, attributes=attributes_rows,
+                multiple_response_sets=mrset_rows,
+                source_extensions=source_extensions or {},
+                case_weight_variable=case_weight_variable,
+                dataset_id=normative_dataset_id,
+            )
+            record_normative_fidelity_events(
+                connection, normative, operation_id=operation_id,
+                dataset_id=normative_dataset_id, direction="import",
+                events=fidelity_events,
+            )
+            if materialized:
                 connection.execute(insert(data_table), materialized)
-            except Exception:
-                data_table.drop(connection, checkfirst=True)
-                connection.execute(delete(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(source_extensions_catalog).where(source_extensions_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(value_labels_catalog).where(value_labels_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(attributes_catalog).where(attributes_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(fidelity_event_catalog).where(fidelity_event_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id))
-                connection.execute(delete(datasets).where(datasets.c.dataset_id == dataset_id))
-                connection.commit()
-                raise
-        connection.execute(update(operation_catalog).where(operation_catalog.c.operation_id == operation_id).values(
-            status="succeeded", completed_at=_now(),
-        ))
-        finish_normative_operation(
-            connection, normative, operation_id=operation_id, status="succeeded",
-        )
-    return {"dataset_id": dataset_id, "data_table": data_table.name, "case_count": len(materialized), "operation_id": operation_id}
+            connection.execute(update(operation_catalog).where(
+                operation_catalog.c.operation_id == operation_id
+            ).values(status="succeeded", completed_at=_now()))
+            finish_normative_operation(
+                connection, normative, operation_id=operation_id,
+                status="succeeded",
+            )
+    except Exception as error:
+        if (
+            profile.name in {"mysql", "mariadb", "dolt"}
+            and namespace_owned
+            and data_table_was_absent
+        ):
+            try:
+                with engine.begin() as cleanup:
+                    delete_normative_dataset(
+                        cleanup, normative, normative_dataset_id,
+                    )
+                    cleanup_inspector = inspect(cleanup)
+                    for table in (
+                        multiple_response_catalog, source_extensions_catalog,
+                        documents_catalog, value_labels_catalog,
+                        missing_rules_catalog, attributes_catalog,
+                        fidelity_event_catalog, variable_catalog,
+                    ):
+                        if cleanup_inspector.has_table(table.name):
+                            cleanup.execute(
+                                delete(table).where(table.c.dataset_id == dataset_id)
+                            )
+                    if cleanup_inspector.has_table(datasets.name):
+                        cleanup.execute(
+                            delete(datasets).where(datasets.c.dataset_id == dataset_id)
+                        )
+                    data_table.drop(cleanup, checkfirst=True)
+                    metadata.create_all(cleanup, tables=[
+                        datasets, variable_catalog, multiple_response_catalog,
+                        source_extensions_catalog, documents_catalog,
+                        value_labels_catalog, missing_rules_catalog,
+                        attributes_catalog, fidelity_event_catalog,
+                        operation_catalog,
+                    ])
+                    failed_event = ({
+                        "code": "import_failed",
+                        "detail": str(error),
+                        "severity": "error",
+                        "source_item": source_name,
+                        "details": {
+                            "profile": profile.name,
+                            "phase": "post_ddl",
+                            "cleanup": "complete",
+                            "error_type": type(error).__name__,
+                        },
+                    },)
+                    normative_operation_exists = cleanup.execute(select(
+                        normative.operation.c.operation_id
+                    ).where(
+                        normative.operation.c.operation_id == operation_id
+                    )).first()
+                    if normative_operation_exists:
+                        finish_normative_operation(
+                            cleanup, normative, operation_id=operation_id,
+                            status="failed",
+                        )
+                    else:
+                        failed_at = datetime.now(UTC).replace(tzinfo=None)
+                        record_normative_operation(
+                            cleanup, normative, operation_id=operation_id,
+                            operation_kind="import", status="failed",
+                            source_format=source_format, started_at=failed_at,
+                            completed_at=failed_at,
+                        )
+                    mirror_operation_exists = cleanup.execute(select(
+                        operation_catalog.c.operation_id
+                    ).where(
+                        operation_catalog.c.operation_id == operation_id
+                    )).first()
+                    if mirror_operation_exists:
+                        cleanup.execute(update(operation_catalog).where(
+                            operation_catalog.c.operation_id == operation_id
+                        ).values(
+                            status="failed", dataset_id=None, completed_at=_now(),
+                        ))
+                    else:
+                        cleanup.execute(insert(operation_catalog).values(
+                            operation_id=operation_id, direction="import",
+                            status="failed", dataset_id=None, source=source_name,
+                            created_at=_now(), completed_at=_now(),
+                            details=json.dumps({
+                                "reason": "post_ddl",
+                                "variable_count": len(variables),
+                            }, sort_keys=True),
+                        ))
+                    cleanup.execute(
+                        insert(fidelity_event_catalog),
+                        _event_rows(
+                            operation_id=operation_id, dataset_id=None,
+                            direction="import", fidelity_events=failed_event,
+                        ),
+                    )
+                    record_normative_fidelity_events(
+                        cleanup, normative, operation_id=operation_id,
+                        dataset_id=None, direction="import",
+                        events=failed_event,
+                    )
+            except Exception as cleanup_error:
+                raise RuntimeError(
+                    f"OpenStatSpec compensating cleanup failed: {cleanup_error}"
+                ) from cleanup_error
+        raise
+    return {
+        "dataset_id": dataset_id, "data_table": data_table.name,
+        "case_count": len(materialized), "operation_id": operation_id,
+    }
 
 
 def _endpoint_from_row(row: Mapping[str, Any], *, prefix: str) -> Any:
@@ -901,8 +1044,12 @@ def _endpoint_from_row(row: Mapping[str, Any], *, prefix: str) -> Any:
     return row[f"{prefix}_numeric"] if endpoint_type == "numeric" else row[f"{prefix}_text"]
 
 
-def read_wide_dataset(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Read a strict dataset, preferring normalized metadata with JSON compatibility fallback."""
+def read_wide_dataset(
+    *, database_url: str, dataset_id: str, profile: Any | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read a strict dataset only after resolving the active server profile."""
+    if profile is None:
+        profile, _active = effective_profile(database_url)
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog, _, _ = catalog(metadata)
@@ -1051,9 +1198,11 @@ def record_export_operation(
     return operation_id
 
 def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
-    dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
-    profile = validate_connection_url(database_url)
-    preflight(profile, variables)
+    profile, _active = effective_profile(database_url)
+    dataset, variables, rows = read_wide_dataset(
+        database_url=database_url, dataset_id=dataset_id, profile=profile,
+    )
+    preflight(profile, variables, rows=rows)
     validate_spss_catalog(
         variables,
         case_weight_variable=dataset.get("case_weight_variable"),
@@ -1079,6 +1228,11 @@ def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, An
         if item["storage_kind"] == "numeric":
             if not isinstance(column.type, Float) or not column.nullable:
                 raise ValueError(f"Numeric variable {item['source_name']!r} must be a nullable binary64 column.")
+        elif profile.name == "dolt":
+            if not isinstance(column.type, mysql.LONGTEXT) or column.nullable:
+                raise ValueError(
+                    f"String variable {item['source_name']!r} must be a non-null LONGTEXT column."
+                )
         elif not isinstance(column.type, Text) or column.nullable:
             raise ValueError(f"String variable {item['source_name']!r} must be a non-null text column.")
     if [row["__case_ordinal"] for row in rows] != list(range(1, len(rows) + 1)):

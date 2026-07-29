@@ -53,7 +53,13 @@ MYSQL = SqlProfile(
     "mysql", ("mysql", "mariadb"), 1_016, 64, True, True,
     4_294_967_295, 65_535, True, ("PyMySQL",),
 )
-PROFILES = (SQLITE, POSTGRESQL, MYSQL)
+DOLT = SqlProfile(
+    "dolt", (), 305, 64, True, True,
+    4_294_967_295, 65_504, True, ("PyMySQL",),
+)
+# Dolt deliberately has no URL scheme. It is selected only after the server
+# reached through the MySQL wire family positively identifies itself as Dolt.
+PROFILES = (SQLITE, POSTGRESQL, MYSQL, DOLT)
 
 
 def profile_for_url(database_url: str) -> SqlProfile:

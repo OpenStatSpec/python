@@ -14,8 +14,9 @@ SPSS profile.
 - Export of supported dataset semantics to SAV and ZSAV.
 - Consistent legacy compatible-name rewriting across type-2, subtype-13, and
   VLS subtype-14 records, with fail-closed SAV/ZSAV validation.
-- SQLite, PostgreSQL, MySQL, and MariaDB profiles, including service-backed
-  PostgreSQL 17/18, MySQL 8.4/9.7, and MariaDB 11.4/11.8/12.3 CI coverage.
+- SQLite, PostgreSQL, MySQL, MariaDB, and independent Dolt profiles, including
+  service-backed PostgreSQL 17/18, MySQL 8.4/9.7, MariaDB 11.4/11.8/12.3, and
+  pinned Dolt 2.2.2 CI coverage. Dolt Transformation Workflow support is not claimed.
 - Preflight checks for target profile limits, atomic imports, validation, a
   command-line interface, and machine-readable capability and loss reports.
 

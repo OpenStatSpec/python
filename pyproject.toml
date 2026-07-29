@@ -22,7 +22,7 @@ openstatspec = "openstatspec.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["services: requires a configured PostgreSQL or MySQL/MariaDB service"]
+markers = ["services: requires a configured PostgreSQL, MySQL, MariaDB, or Dolt service"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openstatspec"]
