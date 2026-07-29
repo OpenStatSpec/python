@@ -18,7 +18,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     inspected = json.loads(capsys.readouterr().out)
     assert inspected["source_format"] == "SAV"
     assert inspected["engine"]["package"] == "openstatspec-pyspssio"
-    assert inspected["engine"]["pinned_commit"] == "e069adf"
+    assert inspected["engine"]["pinned_commit"] == "e069adf33c70bcd9e8e6ee495106479463a84fa2"
     assert inspected["source_sha256"]
     assert inspected["loss_report"] == []
     assert imported["case_count"] == 1
@@ -44,7 +44,7 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
     assert matrix["directions"] == ["import", "export", "semantic_round_trip"]
     assert matrix["active_connection"] is None
     assert matrix["engine"]["package"] == "openstatspec-pyspssio"
-    assert matrix["engine"]["pinned_commit"] == "e069adf"
+    assert matrix["engine"]["pinned_commit"] == "e069adf33c70bcd9e8e6ee495106479463a84fa2"
 
     assert matrix["spss"] == {
         "values": "supported",
