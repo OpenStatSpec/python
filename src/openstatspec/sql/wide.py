@@ -219,7 +219,7 @@ def _record_failed_preflight(
                 "capability": getattr(error, "details", {})}, sort_keys=True),
         ))
         failed_events = ({
-            "code": getattr(error, "code", "target-capability-exceeded"),
+            "code": getattr(error, "code", "target_capability_exceeded"),
             "detail": str(error), "severity": "error", "source_item": source_name,
             "details": {"variable_count": variable_count, "profile": profile_name,
                         **getattr(error, "details", {})},

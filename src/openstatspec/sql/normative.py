@@ -400,7 +400,11 @@ def store_imported_dataset(
         for row in rows:
             connection.execute(insert(tables.value_label).values(
                 value_label_id=str(uuid4()), value_label_set_id=set_id,
-                ordinal=int(row["ordinal"]), code_kind=str(row["value_type"]),
+                ordinal=int(row["ordinal"]),
+                code_kind=(
+                    "string" if str(row["value_type"]) == "text"
+                    else str(row["value_type"])
+                ),
                 numeric_code=row.get("numeric_value"), string_code=row.get("text_value"),
                 label=str(row["label"]),
             ))
@@ -408,6 +412,8 @@ def store_imported_dataset(
         variable_id = variable_ids[int(row["variable_ordinal"])]
         discrete = str(row["kind"]) == "discrete"
         code_kind = str(row["lower_type"]) if discrete else None
+        if code_kind == "text":
+            code_kind = "string"
         connection.execute(insert(tables.missing_rule).values(
             missing_rule_id=str(uuid4()), variable_id=variable_id,
             ordinal=int(row["ordinal"]), rule_kind="discrete" if discrete else "numeric_range",

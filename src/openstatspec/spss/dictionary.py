@@ -119,8 +119,8 @@ def attribute_values(pairs: Iterable[AttributePair]) -> dict[str, Any]:
     scalar: dict[str, Any] = {}
     arrays: dict[str, list[tuple[int, str]]] = {}
     for name, value in pairs:
-        match = re.fullmatch(r"(.+)\[([1-9]\d*)\]", name)
-        if match:
+        match = re.fullmatch(r"(.+)\[(\d+)\]", name)
+        if match and int(match.group(2)) > 0:
             arrays.setdefault(match.group(1), []).append((int(match.group(2)), value))
         else:
             scalar[name] = value

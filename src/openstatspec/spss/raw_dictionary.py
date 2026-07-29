@@ -140,6 +140,77 @@ def write_compatible_names(
     ))
 
 
+def write_extended_mrset_labels(
+    path: str | Path, labels: dict[str, str], *, encoding: str,
+) -> None:
+    """Restore explicit labels that IBM I/O drops from extended MR sets.
+
+    When an extended dichotomy set uses the first variable label, the IBM
+    writer can emit a zero-length set label even if the source dictionary
+    carried both pieces of metadata.  Rewrite only subtype-19 label fields;
+    all flags, counted values, member names, and case data remain untouched.
+    """
+    if not labels:
+        return
+    target = Path(path)
+    data = target.read_bytes()
+    byte_order, records = _records(data)
+    terminator = next(record for record in records if record.record_type == 999)
+    extensions = [
+        record for record in records
+        if record.record_type == 7 and _int(data, record.start + 4, byte_order) == 19
+    ]
+    if len(extensions) != 1:
+        raise RawDictionaryError("Expected exactly one extended multiple-response record.")
+    record = extensions[0]
+    payload = data[record.start + 16 : record.end]
+    unresolved = set(labels)
+    output: list[bytes] = []
+    for line in payload.rstrip(b"\x00\n").splitlines():
+        raw_name, raw_definition = line.split(b"=", 1)
+        name = raw_name.decode(encoding)
+        label = labels.get(name)
+        if label is None:
+            output.append(line)
+            continue
+        fields = raw_definition.split(b" ", 5)
+        if len(fields) != 6 or fields[0] != b"E":
+            raise RawDictionaryError(
+                f"Multiple-response set {name!r} is not an extended subtype-19 definition."
+            )
+        try:
+            old_length = int(fields[4].decode("ascii"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RawDictionaryError("Invalid extended multiple-response label length.") from error
+        remainder = fields[5][old_length:]
+        if remainder.startswith(b" "):
+            remainder = remainder[1:]
+        encoded = label.encode(encoding)
+        definition = b" ".join([
+            fields[0], fields[1], fields[2], fields[3],
+            str(len(encoded)).encode("ascii"), encoded,
+        ])
+        if remainder:
+            definition += b" " + remainder
+        output.append(raw_name + b"=" + definition)
+        unresolved.remove(name)
+    if unresolved:
+        raise RawDictionaryError(
+            "Extended multiple-response labels not found: " + ", ".join(sorted(unresolved))
+        )
+    new_payload = b"\n".join(output) + b"\n"
+    header = bytearray(data[record.start : record.start + 16])
+    header[8:12] = _pack(1, byte_order)
+    header[12:16] = _pack(len(new_payload), byte_order)
+    updated = data[: record.start] + bytes(header) + new_payload + data[record.end :]
+    target.write_bytes(_shift_zsav_offsets(
+        updated,
+        original_data_start=terminator.end,
+        delta=len(updated) - len(data),
+        byte_order=byte_order,
+    ))
+
+
 def _long_name_pairs(payload: bytes, encoding: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for raw_pair in payload.split(b"	"):

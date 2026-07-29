@@ -55,7 +55,7 @@ def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path) 
     direction, severity, code, details = connection.execute(
         "select direction, severity, code, details from fidelity_event_catalog"
     ).fetchone()
-    assert (direction, severity, code) == ("import", "error", "target-capability-exceeded")
+    assert (direction, severity, code) == ("import", "error", "target_capability_exceeded")
     assert '"variable_count": 2001' in details
 
 

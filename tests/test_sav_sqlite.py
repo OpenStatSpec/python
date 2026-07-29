@@ -155,7 +155,7 @@ def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arr
         set_format_tuples(
             writer, name="comment", print_format=(1, 12, 0), write_format=(1, 12, 0),
         )
-        set_file_attribute_pairs(writer, [("Array[1]", "one"), ("Array[2]", "two")])
+        set_file_attribute_pairs(writer, [("Array[01]", "one"), ("Array[02]", "two")])
         set_variable_attribute_pairs(
             writer, "answer", [("Array[1]", "red"), ("Array[2]", "blue")],
         )

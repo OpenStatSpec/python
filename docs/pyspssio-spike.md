@@ -2,8 +2,8 @@
 
 **Status:** selected as the required, sole Python SPSS engine.
 
-OpenStatSpec Python requires `openstatspec-pyspssio==0.5.1.post1`, built from
-TonisOrmisson/pyspssio commit `3122830`, for both SAV and ZSAV import and
+OpenStatSpec Python requires `openstatspec-pyspssio==0.5.1.post2`, built from
+TonisOrmisson/pyspssio commit `e069adf`, for both SAV and ZSAV import and
 export. There is no alternate SPSS engine.
 
 ## Probe result

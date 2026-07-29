@@ -22,6 +22,14 @@ def capability_matrix() -> Mapping[str, Any]:
     fail-closed feature has no faithful writer route at all.
     """
     return {
+        "required_capabilities": [
+            "sav_read", "sav_write", "zsav_read", "zsav_write",
+            "file_label", "documents", "source_encoding", "attributes",
+            "variable_dictionary", "value_labels", "missing_rules",
+            "lowest_highest_missing", "long_utf8_strings", "weight_variable",
+            "variable_sets", "multiple_response_sets",
+            "multiple_response_string_counted_value",
+        ],
         "engine": engine_identity(),
         "spss": {
             "values": "supported", "variable_labels": "supported",

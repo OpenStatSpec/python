@@ -23,6 +23,7 @@ from .raw_dictionary import (
     read_document_lines,
     write_compatible_names,
     write_document_lines,
+    write_extended_mrset_labels,
 )
 from .dictionary import (
     attribute_pairs,
@@ -53,7 +54,7 @@ def engine_identity() -> dict[str, str]:
         "package": "openstatspec-pyspssio",
         "module": "pyspssio",
         "repository": "TonisOrmisson/pyspssio",
-        "pinned_commit": "3122830",
+        "pinned_commit": "e069adf",
         "installed_version": str(pyspssio.__version__),
     }
 
@@ -224,7 +225,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     dictionary, loss_report = _dictionary(source_path)
     # read_sav and read_metadata expose the same header fields; retain the
     # frame read's values where a future pyspssio version exposes more there.
-    metadata = {**dictionary, **metadata}
+    metadata = {**metadata, **dictionary}
     variables = _variables(metadata, list(frame.columns))
     loss_report = _merge_loss_reports(tuple(loss_report.values()))
     result = create_wide_dataset(
@@ -403,6 +404,17 @@ def _write_with_dictionary_bridge(
             and str(variable["compat_name"]).casefold() != str(variable["source_name"]).casefold()
         },
         encoding="UTF-8",
+    )
+    extended_labels = {
+        str(name): str(definition["label"])
+        for name, definition in _json_load(dataset.get("multiple_response_sets"), {}).items()
+        if isinstance(definition, dict)
+        and definition.get("use_category_labels")
+        and definition.get("use_first_var_label")
+        and definition.get("label")
+    }
+    write_extended_mrset_labels(
+        destination, extended_labels, encoding=source_encoding,
     )
 
 def _catalog_format(variable: dict[str, Any], key: str) -> tuple[int, int, int]:

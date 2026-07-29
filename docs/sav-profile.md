@@ -7,7 +7,7 @@ chunks, or creates a cell/EAV representation.
 
 ## SPSS engine
 
-OpenStatSpec Python requires `openstatspec-pyspssio==0.5.1.post1` as its sole
+OpenStatSpec Python requires `openstatspec-pyspssio==0.5.1.post2` as its sole
 SPSS engine. There is no fallback reader or writer. The engine reads
 unencrypted .sav and .zsav files, and writes both formats through the same implementation.
 
