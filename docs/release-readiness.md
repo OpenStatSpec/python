@@ -16,12 +16,16 @@ database contract.
 
 | Profile | Connection URL | Verification |
 | --- | --- | --- |
-| SQLite | `sqlite:///dataset.sqlite` | Local reference fixture |
-| PostgreSQL | `postgresql+psycopg://…` | GitHub Actions PostgreSQL service |
-| MySQL/MariaDB | `mysql+pymysql://…` | GitHub Actions MySQL service |
+| SQLite | `sqlite:///dataset.sqlite` | Python 3.11–3.14 local reference jobs |
+| PostgreSQL | `postgresql+psycopg://…` | PostgreSQL 17 and 18 service jobs |
+| MySQL | `mysql+pymysql://…` | MySQL 8.4 and 9.7 service jobs |
+| MariaDB | `mysql+pymysql://…` | MariaDB 11.4, 11.8, and 12.3 service jobs |
 
-Separate MySQL 8.4 and MariaDB 11.4 services test the shared MySQL/MariaDB
-profile contract. This does not claim coverage for every server configuration.
+Separate service matrices test the shared MySQL/MariaDB profile contract while
+retaining distinct active-server identities and version claims. This does not
+claim coverage for every server configuration. The machine-readable capability
+declaration reports both the theoretical profile boundaries and effective
+limits observed from the active connection.
 
 ## Export-loss policy
 
@@ -43,9 +47,13 @@ machine-readable loss report with the export result.
 ## Maintainer checks before tagging
 
 1. Run `python -m pytest`.
-2. Run the service-backed profile checks with configured PostgreSQL, MySQL, and
-   MariaDB URLs, or confirm the GitHub Actions SQL-services job is green.
+2. Confirm the GitHub Actions matrix is green for PostgreSQL 17/18, MySQL
+   8.4/9.7, and MariaDB 11.4/11.8/12.3.
 3. Build with `python -m build` and install the generated wheel in a clean
    environment.
 4. Confirm `openstatspec capabilities` reflects the intended support boundary.
 5. Review this document, the README, and CHANGELOG for accurate scope.
+
+The tag-triggered release workflow repeats the non-service test suite, builds
+the distributions, and installs the wheel with the exact required SPSS engine
+in a clean environment before it can reach the protected `pypi` environment.
