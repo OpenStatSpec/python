@@ -61,7 +61,7 @@ class NormativeTables:
 def catalog(metadata: MetaData) -> NormativeTables:
     catalog_identity = Table(
         "catalog_identity", metadata,
-        Column("catalog_identity_key", Integer, primary_key=True),
+        Column("catalog_identity_key", Integer, primary_key=True, autoincrement=False),
         Column("contract_id", String(128), nullable=False, unique=True),
         Column("schema_version", Integer, nullable=False),
         Column("created_at", DateTime, nullable=False),

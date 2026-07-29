@@ -7,6 +7,8 @@ import pytest
 from openstatspec.sql.wide import create_wide_dataset, record_export_operation
 from openstatspec.sql.normative import catalog as normative_catalog, create as create_normative
 from sqlalchemy import MetaData, create_engine
+from sqlalchemy.dialects.mysql import dialect as mysql_dialect
+from sqlalchemy.schema import CreateTable
 
 
 NORMATIVE_TABLES = {
@@ -16,6 +18,14 @@ NORMATIVE_TABLES = {
     "variable_attribute", "document", "variable_set", "variable_set_member",
     "multiple_response_set", "multiple_response_member", "fidelity_event",
 }
+
+
+def test_catalog_identity_key_is_not_auto_incremented_in_mysql_family():
+    tables = normative_catalog(MetaData())
+    ddl = str(CreateTable(tables.catalog_identity).compile(dialect=mysql_dialect()))
+
+    assert "AUTO_INCREMENT" not in ddl
+    assert "CHECK (catalog_identity_key = 1)" in ddl
 
 
 def test_catalog_creation_refuses_unowned_logical_relation(tmp_path):
