@@ -6,7 +6,8 @@ from openstatspec.sql.wide import create_wide_dataset, record_export_operation
 
 
 NORMATIVE_TABLES = {
-    "dataset", "operation", "variable", "value_label_set", "value_label",
+    "catalog_identity", "dataset", "operation", "variable",
+    "dataset_weight_variable", "value_label_set", "value_label",
     "variable_value_label_set", "missing_rule", "dataset_attribute",
     "variable_attribute", "document", "variable_set", "variable_set_member",
     "multiple_response_set", "multiple_response_member", "fidelity_event",
@@ -53,6 +54,7 @@ def test_import_writes_complete_normative_catalog(tmp_path):
             "$answers": {"counted_value": 1.0, "variable_list": ["answer"]},
         }),
         source_extensions={"spss.variable_sets": {"Analysis": ["answer", "comment"]}},
+        case_weight_variable="answer",
         fidelity_events=[{
             "code": "fixture-warning", "detail": "Synthetic diagnostic",
             "source_item": "answer", "details": {"test": True},
@@ -65,6 +67,9 @@ def test_import_writes_complete_normative_catalog(tmp_path):
         )
     }
     assert NORMATIVE_TABLES <= table_names
+    assert connection.execute(
+        "select catalog_identity_key, contract_id, schema_version from catalog_identity"
+    ).fetchall() == [(1, "openstatspec-strict-wide-table-v1", 1)]
 
     dataset = connection.execute(
         "select dataset_id, spec_version, source_format, physical_table_name, "
@@ -93,10 +98,18 @@ def test_import_writes_complete_normative_catalog(tmp_path):
     assert connection.execute("select attribute_name, array_ordinal, attribute_value from dataset_attribute order by array_ordinal").fetchall() == [("Source", 1, "one"), ("Source", 2, "two")]
     assert connection.execute("select attribute_name, array_ordinal, attribute_value from variable_attribute").fetchall() == [("Origin", 1, "fixture")]
     assert connection.execute("select source_ordinal, document_text from document").fetchall() == [(1, "first document")]
-    assert connection.execute("select set_name from variable_set").fetchall() == [("Analysis",)]
+    assert connection.execute("select source_ordinal, set_name from variable_set").fetchall() == [(1, "Analysis")]
     assert connection.execute("select source_ordinal from variable_set_member order by source_ordinal").fetchall() == [(1,), (2,)]
-    assert connection.execute("select set_name, set_kind, counted_numeric_value from multiple_response_set").fetchall() == [("$answers", "MD", 1.0)]
+    assert connection.execute(
+        "select source_ordinal, set_name, set_kind, counted_value_kind, "
+        "counted_numeric_value, counted_string_value, category_label_behavior, "
+        "label_source from multiple_response_set"
+    ).fetchall() == [(1, "$answers", "MD", "numeric", 1.0, None, "variable_labels", "set_label")]
     assert connection.execute("select source_ordinal from multiple_response_member").fetchall() == [(1,)]
+    assert connection.execute(
+        "select v.source_name from dataset_weight_variable w "
+        "join variable v on v.variable_id = w.variable_id"
+    ).fetchall() == [("answer",)]
     assert connection.execute(
         "select operation_kind, status, source_format, started_at is not null, completed_at is not null "
         "from operation where operation_id = ?", (result["operation_id"],),

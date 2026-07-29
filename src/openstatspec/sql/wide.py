@@ -537,14 +537,6 @@ def validate_spss_catalog(
                 case_weight_variable=case_weight_variable,
                 storage_kind=weight.get("storage_kind"),
             )
-        if str(weight.get("measure") or "").lower() != "scale":
-            raise _catalog_error(
-                "case-weight-variable-not-scale",
-                "The case-weight variable must have SPSS scale measurement level.",
-                case_weight_variable=case_weight_variable,
-                measurement_level=weight.get("measure"),
-            )
-
     for set_name, definition in _multiple_response_definitions(multiple_response_sets).items():
         if not isinstance(set_name, str) or not set_name:
             raise _catalog_error(
@@ -862,6 +854,7 @@ def create_wide_dataset(
             missing_rules=missing_rows, attributes=attributes_rows,
             multiple_response_sets=mrset_rows,
             source_extensions=source_extensions or {},
+            case_weight_variable=case_weight_variable,
         )
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,

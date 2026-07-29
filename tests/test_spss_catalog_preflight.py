@@ -36,13 +36,6 @@ def _variables() -> list[dict[str, object]]:
     [
         ("missing", lambda _variables: None, "case-weight-variable-not-found"),
         ("text", lambda _variables: None, "case-weight-variable-not-numeric"),
-        (
-            "answer",
-            lambda variables: variables.__setitem__(
-                1, {**variables[1], "measure": "nominal"}
-            ),
-            "case-weight-variable-not-scale",
-        ),
     ],
 )
 def test_import_catalog_preflight_rejects_invalid_weight_atomically(
@@ -89,6 +82,18 @@ def test_import_catalog_preflight_rejects_invalid_weight_atomically(
     assert event[:5] == (None, "import", "error", expected_code, "weight.sav")
     assert json.loads(event[5])["reason"] == expected_code
     assert event[6]
+
+
+def test_numeric_weight_does_not_require_scale_measurement_level(tmp_path) -> None:
+    variables = _variables()
+    variables[1] = {**variables[1], "measure": "nominal"}
+    result = create_wide_dataset(
+        database_url=f"sqlite:///{tmp_path / 'weight-nominal.sqlite'}",
+        dataset_id="weight_nominal", source_name="weight.sav", source_format="SAV",
+        rows=[{"weight": 1.0, "answer": 2.0, "text": "ok"}],
+        variables=variables, case_weight_variable="answer",
+    )
+    assert result["case_count"] == 1
 
 
 def _create_valid_dataset(database: str) -> None:

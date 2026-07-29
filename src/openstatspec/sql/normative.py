@@ -13,12 +13,14 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from sqlalchemy import (
-    BigInteger, Column, DateTime, Float, ForeignKey, Integer, MetaData, String,
-    Table, Text, UniqueConstraint, insert, select, update,
+    BigInteger, CheckConstraint, Column, DateTime, Float, ForeignKey, Integer,
+    MetaData, String, Table, Text, UniqueConstraint, insert, select, update,
 )
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 
 SPEC_VERSION = "1.0"
+CATALOG_CONTRACT_ID = "openstatspec-strict-wide-table-v1"
+CATALOG_SCHEMA_VERSION = 1
 FORMAT = re.compile(r"^([A-Za-z]+)([0-9]+)(?:[.]([0-9]+))?$")
 
 
@@ -34,9 +36,11 @@ def binary64_type() -> Float:
 
 @dataclass(frozen=True)
 class NormativeTables:
+    catalog_identity: Table
     dataset: Table
     operation: Table
     variable: Table
+    dataset_weight_variable: Table
     value_label_set: Table
     value_label: Table
     variable_value_label_set: Table
@@ -55,6 +59,15 @@ class NormativeTables:
 
 
 def catalog(metadata: MetaData) -> NormativeTables:
+    catalog_identity = Table(
+        "catalog_identity", metadata,
+        Column("catalog_identity_key", Integer, primary_key=True),
+        Column("contract_id", String(128), nullable=False, unique=True),
+        Column("schema_version", Integer, nullable=False),
+        Column("created_at", DateTime, nullable=False),
+        CheckConstraint("catalog_identity_key = 1"),
+        CheckConstraint(f"contract_id = '{CATALOG_CONTRACT_ID}'"),
+    )
     dataset = Table(
         "dataset", metadata,
         Column("dataset_id", String(36), primary_key=True),
@@ -101,6 +114,11 @@ def catalog(metadata: MetaData) -> NormativeTables:
         UniqueConstraint("dataset_id", "source_ordinal"),
         UniqueConstraint("dataset_id", "source_name"),
         UniqueConstraint("dataset_id", "physical_name"),
+    )
+    dataset_weight_variable = Table(
+        "dataset_weight_variable", metadata,
+        Column("dataset_id", String(36), ForeignKey("dataset.dataset_id"), primary_key=True),
+        Column("variable_id", String(36), ForeignKey("variable.variable_id"), nullable=False, unique=True),
     )
     value_label_set = Table(
         "value_label_set", metadata,
@@ -169,7 +187,9 @@ def catalog(metadata: MetaData) -> NormativeTables:
         "variable_set", metadata,
         Column("variable_set_id", String(36), primary_key=True),
         Column("dataset_id", String(36), ForeignKey("dataset.dataset_id"), nullable=False),
+        Column("source_ordinal", Integer, nullable=False),
         Column("set_name", String(255), nullable=False),
+        UniqueConstraint("dataset_id", "source_ordinal"),
         UniqueConstraint("dataset_id", "set_name"),
     )
     variable_set_member = Table(
@@ -183,11 +203,16 @@ def catalog(metadata: MetaData) -> NormativeTables:
         "multiple_response_set", metadata,
         Column("multiple_response_set_id", String(36), primary_key=True),
         Column("dataset_id", String(36), ForeignKey("dataset.dataset_id"), nullable=False),
+        Column("source_ordinal", Integer, nullable=False),
         Column("set_name", String(255), nullable=False),
         Column("set_label", Text),
         Column("set_kind", String(4), nullable=False),
+        Column("counted_value_kind", String(16)),
         Column("counted_numeric_value", binary64_type()),
+        Column("counted_string_value", Text),
         Column("category_label_behavior", Text),
+        Column("label_source", Text),
+        UniqueConstraint("dataset_id", "source_ordinal"),
         UniqueConstraint("dataset_id", "set_name"),
     )
     multiple_response_member = Table(
@@ -210,7 +235,8 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("created_at", DateTime, nullable=False),
     )
     return NormativeTables(
-        dataset, operation, variable, value_label_set, value_label,
+        catalog_identity, dataset, operation, variable, dataset_weight_variable,
+        value_label_set, value_label,
         variable_value_label_set, missing_rule, dataset_attribute,
         variable_attribute, document, variable_set, variable_set_member,
         multiple_response_set, multiple_response_member, fidelity_event,
@@ -231,6 +257,20 @@ def timestamp(value: str | datetime | None = None) -> datetime:
 
 def create(connection: Any, tables: NormativeTables) -> None:
     tables.dataset.metadata.create_all(connection, tables=list(tables.all()))
+    identity = connection.execute(select(tables.catalog_identity)).mappings().first()
+    if identity is None:
+        connection.execute(insert(tables.catalog_identity).values(
+            catalog_identity_key=1,
+            contract_id=CATALOG_CONTRACT_ID,
+            schema_version=CATALOG_SCHEMA_VERSION,
+            created_at=now(),
+        ))
+    elif (
+        identity["catalog_identity_key"] != 1
+        or identity["contract_id"] != CATALOG_CONTRACT_ID
+        or identity["schema_version"] != CATALOG_SCHEMA_VERSION
+    ):
+        raise RuntimeError("The selected catalog namespace belongs to an incompatible contract.")
 
 
 def record_operation(
@@ -308,6 +348,7 @@ def store_imported_dataset(
     documents: Iterable[Mapping[str, Any]], value_labels: Iterable[Mapping[str, Any]],
     missing_rules: Iterable[Mapping[str, Any]], attributes: Iterable[Mapping[str, Any]],
     multiple_response_sets: Iterable[Mapping[str, Any]], source_extensions: Mapping[str, Any],
+    case_weight_variable: str | None = None,
 ) -> str:
     dataset_id = str(uuid4())
     connection.execute(insert(tables.dataset).values(
@@ -339,6 +380,11 @@ def store_imported_dataset(
             measurement_level=variable.get("measure"), variable_role=variable.get("role"),
             display_width=variable.get("display_width"),
             display_alignment=variable.get("alignment"),
+        ))
+    if case_weight_variable is not None:
+        connection.execute(insert(tables.dataset_weight_variable).values(
+            dataset_id=dataset_id,
+            variable_id=ids_by_name[case_weight_variable],
         ))
     labels_by_variable: dict[int, list[Mapping[str, Any]]] = {}
     for row in value_labels:
@@ -396,10 +442,11 @@ def store_imported_dataset(
         ))
     variable_sets = source_extensions.get("spss.variable_sets")
     if isinstance(variable_sets, Mapping):
-        for set_name, raw_members in variable_sets.items():
+        for set_ordinal, (set_name, raw_members) in enumerate(variable_sets.items(), start=1):
             set_id = str(uuid4())
             connection.execute(insert(tables.variable_set).values(
-                variable_set_id=set_id, dataset_id=dataset_id, set_name=str(set_name),
+                variable_set_id=set_id, dataset_id=dataset_id,
+                source_ordinal=set_ordinal, set_name=str(set_name),
             ))
             for ordinal, member in enumerate(member_names(raw_members), start=1):
                 if member not in ids_by_name:
@@ -411,18 +458,22 @@ def store_imported_dataset(
     mr_by_name: dict[str, list[Mapping[str, Any]]] = {}
     for row in multiple_response_sets:
         mr_by_name.setdefault(str(row["set_name"]), []).append(row)
-    for set_name, rows in mr_by_name.items():
+    for set_ordinal, (set_name, rows) in enumerate(mr_by_name.items(), start=1):
         first = rows[0]
         set_id = str(uuid4())
-        behavior = (
-            "category_labels" if first.get("use_category_labels")
-            else "first_variable_label" if first.get("use_first_var_label") else None
-        )
+        behavior = "counted_values" if first.get("use_category_labels") else "variable_labels"
+        label_source = "variable_label" if first.get("use_first_var_label") else "set_label"
+        counted_kind = first.get("counted_value_type")
+        if counted_kind == "text":
+            counted_kind = "string"
         connection.execute(insert(tables.multiple_response_set).values(
             multiple_response_set_id=set_id, dataset_id=dataset_id,
-            set_name=set_name, set_label=first.get("label"),
-            set_kind=str(first["kind"]), counted_numeric_value=first.get("counted_numeric"),
-            category_label_behavior=behavior,
+            source_ordinal=set_ordinal, set_name=set_name,
+            set_label=first.get("label"), set_kind=str(first["kind"]),
+            counted_value_kind=counted_kind,
+            counted_numeric_value=first.get("counted_numeric"),
+            counted_string_value=first.get("counted_text"),
+            category_label_behavior=behavior, label_source=label_source,
         ))
         for row in rows:
             member = row.get("variable_name")
