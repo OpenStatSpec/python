@@ -46,14 +46,19 @@ machine-readable loss report with the export result.
 
 ## Maintainer checks before tagging
 
-1. Run `python -m pytest`.
-2. Confirm the GitHub Actions matrix is green for PostgreSQL 17/18, MySQL
+1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
+   first and confirm that a clean environment can download it from PyPI. The
+   main package has no fallback SPSS engine.
+2. Run `python -m pytest`.
+3. Confirm the GitHub Actions matrix is green for PostgreSQL 17/18, MySQL
    8.4/9.7, and MariaDB 11.4/11.8/12.3.
-3. Build with `python -m build` and install the generated wheel in a clean
+4. Build with `python -m build` and install the generated wheel in a clean
    environment.
-4. Confirm `openstatspec capabilities` reflects the intended support boundary.
-5. Review this document, the README, and CHANGELOG for accurate scope.
+5. Confirm `openstatspec capabilities` reflects the intended support boundary.
+6. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds
 the distributions, and installs the wheel with the exact required SPSS engine
 in a clean environment before it can reach the protected `pypi` environment.
+It fails closed if that exact engine version is not already downloadable from
+PyPI, preventing publication of an uninstallable OpenStatSpec release.
