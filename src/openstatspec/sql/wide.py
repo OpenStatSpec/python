@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from ..core import UnsupportedOperationError
+from .capabilities import effective_profile
 from .profiles import preflight, validate_connection_url
 from .normative import (
     catalog as normative_catalog,
@@ -754,7 +755,8 @@ def create_wide_dataset(
     fidelity_events: Iterable[Mapping[str, Any]] = (),
     operation_details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    profile = validate_connection_url(database_url)
+    validate_connection_url(database_url)
+    profile, _active_connection = effective_profile(database_url)
     engine = create_engine(database_url)
     metadata = MetaData()
     datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
@@ -764,8 +766,9 @@ def create_wide_dataset(
     documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog = normalized_metadata_tables(metadata)
     operation_id = str(uuid4())
     fidelity_events = tuple(fidelity_events)
+    source_rows = list(rows)
     try:
-        preflight(profile, variables)
+        preflight(profile, variables, rows=source_rows)
         validate_spss_catalog(
             variables,
             case_weight_variable=case_weight_variable,
@@ -804,7 +807,10 @@ def create_wide_dataset(
         if connection.execute(select(datasets.c.dataset_id).where(datasets.c.data_table == data_table.name)).first():
             raise ValueError(f"Dataset ID {dataset_id!r} collides with an existing physical data-table name; import was not started.")
         data_table.create(connection)
-        materialized = [{"__case_ordinal": ordinal, **row} for ordinal, row in enumerate(rows, start=1)]
+        materialized = [
+            {"__case_ordinal": ordinal, **row}
+            for ordinal, row in enumerate(source_rows, start=1)
+        ]
         connection.execute(insert(datasets).values(
             dataset_id=dataset_id, data_table=data_table.name, source_format=source_format,
             source_name=source_name, source_encoding=source_encoding, case_count=len(materialized),

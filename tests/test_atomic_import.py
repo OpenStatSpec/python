@@ -86,7 +86,8 @@ def test_declared_string_width_preflight_is_atomic_and_diagnostic(tmp_path, monk
     database_path = tmp_path / "string-width.sqlite"
     database = f"sqlite:///{database_path}"
     monkeypatch.setattr(
-        wide, "validate_connection_url", lambda _url: replace(SQLITE, max_text_value_bytes=3)
+        wide, "effective_profile",
+        lambda _url: (replace(SQLITE, max_text_value_bytes=3), {}),
     )
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "name",

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger, CheckConstraint, Column, DateTime, Float, ForeignKey, Integer,
-    MetaData, String, Table, Text, UniqueConstraint, insert, select, update,
+    MetaData, String, Table, Text, UniqueConstraint, insert, inspect, select, update,
 )
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 
@@ -256,21 +256,34 @@ def timestamp(value: str | datetime | None = None) -> datetime:
 
 
 def create(connection: Any, tables: NormativeTables) -> None:
-    tables.dataset.metadata.create_all(connection, tables=list(tables.all()))
-    identity = connection.execute(select(tables.catalog_identity)).mappings().first()
-    if identity is None:
+    expected = {table.name for table in tables.all()}
+    existing = set(inspect(connection).get_table_names(schema=tables.dataset.schema))
+    if tables.catalog_identity.name not in existing:
+        conflicts = sorted(existing & expected)
+        if conflicts:
+            raise RuntimeError(
+                "The selected catalog namespace contains unowned OpenStatSpec relation names: "
+                + ", ".join(conflicts)
+            )
+        tables.dataset.metadata.create_all(connection, tables=list(tables.all()))
         connection.execute(insert(tables.catalog_identity).values(
             catalog_identity_key=1,
             contract_id=CATALOG_CONTRACT_ID,
             schema_version=CATALOG_SCHEMA_VERSION,
             created_at=now(),
         ))
-    elif (
+        return
+    identities = connection.execute(select(tables.catalog_identity)).mappings().all()
+    if len(identities) != 1:
+        raise RuntimeError("The selected catalog must contain exactly one identity marker.")
+    identity = identities[0]
+    if (
         identity["catalog_identity_key"] != 1
         or identity["contract_id"] != CATALOG_CONTRACT_ID
         or identity["schema_version"] != CATALOG_SCHEMA_VERSION
     ):
         raise RuntimeError("The selected catalog namespace belongs to an incompatible contract.")
+    tables.dataset.metadata.create_all(connection, tables=list(tables.all()))
 
 
 def record_operation(

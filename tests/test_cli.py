@@ -38,6 +38,11 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
+    assert matrix["specification_status"] == "release_candidate"
+    assert matrix["specification_release"] is None
+    assert matrix["specification_commit"] == "6b9d1fc38f2f083c0ac5cf1c64874a6d07b95045"
+    assert matrix["directions"] == ["import", "export", "semantic_round_trip"]
+    assert matrix["active_connection"] is None
     assert matrix["engine"]["package"] == "openstatspec-pyspssio"
     assert matrix["engine"]["pinned_commit"] == "e069adf"
 
@@ -69,3 +74,22 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
     assert openstatspec.cli.main(["capabilities"]) == 0
     rendered = json.loads(capsys.readouterr().out)
     assert rendered == matrix
+
+
+def test_capability_matrix_reports_active_sqlite_limits(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'capabilities.sqlite'}"
+    matrix = openstatspec.capability_matrix(database_url=database_url)
+    active = matrix["active_connection"]
+    assert active["profile"] == "sqlite"
+    assert active["claimed_supported"] is True
+    assert active["catalog_binding"]["mode"] == "dedicated_database_file"
+    assert active["catalog_binding"]["namespace"].endswith("capabilities.sqlite")
+    profile = matrix["sql_profiles"]["sqlite"]
+    assert profile["effective_limits"] is not None
+    assert profile["effective_limits"]["maximum_source_variables"] <= 1999
+    assert profile["theoretical_limits"]["identifier_limit"] == {
+        "value": 255,
+        "unit": "bytes",
+        "source": "OpenStatSpec profile boundary; SQLite has no fixed native identifier limit",
+        "repertoire": "generated ASCII [a-z0-9_] identifiers",
+    }

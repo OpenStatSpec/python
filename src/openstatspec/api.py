@@ -4,15 +4,17 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .core import CapabilityDeclaration
 from .core.results import result
 from .spss import export_dataset, import_dataset, inspect_source
 from .spss.sav import engine_identity
 from .sql import declared_profiles, validate_dataset
+from .sql.capabilities import (
+    SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, active_connection, catalog_binding,
+)
 
 
 
-def capability_matrix() -> Mapping[str, Any]:
+def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
     """Return the pyspssio-backed SAV/ZSAV fidelity boundary.
 
     supported means that the adapter has a tested faithful path.
@@ -21,7 +23,13 @@ def capability_matrix() -> Mapping[str, Any]:
     blocks export unless the documented audited loss route exists; a plain
     fail-closed feature has no faithful writer route at all.
     """
-    return {
+    declaration = {
+        "specification": "OpenStatSpec",
+        "specification_status": "release_candidate",
+        "specification_release": SPECIFICATION_RELEASE,
+        "specification_commit": SPECIFICATION_COMMIT,
+        "profile": "SPSS SAV/ZSAV 1.0",
+        "directions": ["import", "export", "semantic_round_trip"],
         "required_capabilities": [
             "sav_read", "sav_write", "zsav_read", "zsav_write",
             "file_label", "documents", "source_encoding", "attributes",
@@ -53,15 +61,20 @@ def capability_matrix() -> Mapping[str, Any]:
             },
             "variable_role": "supported",
         },
-        "sql_profiles": declared_profiles(),
+        "resource_behavior": {
+            "streaming_import": False, "streaming_export": False,
+            "buffering": "fully_buffered", "maximum_cases": None,
+            "maximum_source_file_bytes": None,
+            "limit_basis": "runtime memory and active SQL connection limits",
+        },
+        "active_connection": active_connection(database_url) if database_url else None,
+        "catalog_binding": catalog_binding(database_url) if database_url else None,
+        "sql_profiles": declared_profiles(database_url),
     }
+    return declaration
 
-def capabilities() -> Mapping[str, Any]:
-    return CapabilityDeclaration(
-        specification="OpenStatSpec strict wide-table SPSS profile (initial)",
-        formats={"SAV": {"import": True, "export": True}, "ZSAV": {"import": True, "export": True}},
-        database_profiles=declared_profiles(),
-    ).as_dict()
+def capabilities(database_url: str | None = None) -> Mapping[str, Any]:
+    return capability_matrix(database_url)
 
 
 def inspect(source: str | Path, /, **options: Any) -> Mapping[str, Any]:

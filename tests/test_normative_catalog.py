@@ -2,7 +2,11 @@ import json
 import sqlite3
 from uuid import UUID
 
+import pytest
+
 from openstatspec.sql.wide import create_wide_dataset, record_export_operation
+from openstatspec.sql.normative import catalog as normative_catalog, create as create_normative
+from sqlalchemy import MetaData, create_engine
 
 
 NORMATIVE_TABLES = {
@@ -12,6 +16,23 @@ NORMATIVE_TABLES = {
     "variable_attribute", "document", "variable_set", "variable_set_member",
     "multiple_response_set", "multiple_response_member", "fidelity_event",
 }
+
+
+def test_catalog_creation_refuses_unowned_logical_relation(tmp_path):
+    database_path = tmp_path / "occupied.sqlite"
+    connection = sqlite3.connect(database_path)
+    connection.execute("create table dataset (foreign_id integer primary key)")
+    connection.commit()
+    connection.close()
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.begin() as sql_connection:
+        with pytest.raises(RuntimeError, match="unowned OpenStatSpec relation"):
+            create_normative(sql_connection, normative_catalog(MetaData()))
+    check = sqlite3.connect(database_path)
+    assert check.execute(
+        "select count(*) from sqlite_master where type = 'table' and name = 'catalog_identity'"
+    ).fetchone() == (0,)
 
 
 def variables():

@@ -10,7 +10,8 @@ from .api import capability_matrix, export_sav, import_sav, inspect, validate
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="openstatspec")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("capabilities", help="show supported and lossy feature matrix")
+    capability_parser = commands.add_parser("capabilities", help="show supported and lossy feature matrix")
+    capability_parser.add_argument("--database-url", help="include active connection limits")
     importer = commands.add_parser("import", help="import one SAV/ZSAV file")
     importer.add_argument("source")
     importer.add_argument("--database-url", required=True)
@@ -28,7 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     exporter.add_argument("--legacy-locale", help="OS locale for a non-UTF-8 source encoding")
     args = parser.parse_args(argv)
     if args.command == "capabilities":
-        result = capability_matrix()
+        result = capability_matrix(database_url=args.database_url)
     elif args.command == "import":
         result = import_sav(args.source, database_url=args.database_url, dataset_id=args.dataset_id)
     elif args.command == "export":

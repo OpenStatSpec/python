@@ -21,6 +21,7 @@ class SqlProfile:
     binary64_numeric: bool
     lossless_text: bool
     max_text_value_bytes: int
+    max_row_bytes: int
     tested_reference: bool = False
     driver_packages: tuple[str, ...] = ()
 
@@ -31,6 +32,7 @@ class SqlProfile:
             "binary64_numeric": self.binary64_numeric,
             "lossless_text": self.lossless_text,
             "max_text_value_bytes": self.max_text_value_bytes,
+            "max_row_bytes": self.max_row_bytes,
             "tested_reference": self.tested_reference,
             "driver_packages": list(self.driver_packages),
         }
@@ -38,18 +40,18 @@ class SqlProfile:
 
 SQLITE = SqlProfile(
     "sqlite", ("sqlite",), 1_999, 255, True, True,
-    1_000_000_000, True,
+    1_000_000_000, 1_000_000_000, True,
 )
 POSTGRESQL = SqlProfile(
     "postgresql", ("postgresql", "postgres"), 1_599, 63, True, True,
-    1_073_741_824, True, ("psycopg",),
+    1_073_741_823, 1_073_741_823, True, ("psycopg",),
 )
 # SQLAlchemy's generic Text column compiles to MySQL TEXT, not MEDIUMTEXT.
 # The contract therefore declares TEXT's 64 KiB payload limit rather than
 # promising an unimplemented wider physical type.
 MYSQL = SqlProfile(
     "mysql", ("mysql", "mariadb"), 1_016, 64, True, True,
-    65_535, True, ("PyMySQL or mariadb",),
+    4_294_967_295, 65_535, True, ("PyMySQL",),
 )
 PROFILES = (SQLITE, POSTGRESQL, MYSQL)
 
@@ -89,7 +91,12 @@ def _exceeded(reason: str, message: str, **details: Any) -> TargetCapabilityExce
     )
 
 
-def preflight(profile: SqlProfile, variables_or_count: int | Iterable[Mapping[str, Any]]) -> None:
+def preflight(
+    profile: SqlProfile,
+    variables_or_count: int | Iterable[Mapping[str, Any]],
+    *,
+    rows: Iterable[Mapping[str, Any]] | None = None,
+) -> None:
     """Validate strict target capabilities before any source dataset is created."""
     variables = None if isinstance(variables_or_count, int) else list(variables_or_count)
     variable_count = variables_or_count if isinstance(variables_or_count, int) else len(variables)
@@ -151,6 +158,48 @@ def preflight(profile: SqlProfile, variables_or_count: int | Iterable[Mapping[st
                     source_name=source_name, string_width=declared_width,
                     maximum=profile.max_text_value_bytes,
                 )
+    declared_row_bytes = 8 + sum(_row_storage_bytes(profile, variable) for variable in variables)
+    if declared_row_bytes > profile.max_row_bytes:
+        raise _exceeded(
+            "declared_row_size_limit",
+            f"the declared SQL row requires {declared_row_bytes} bytes; "
+            f"{profile.name} permits {profile.max_row_bytes}.",
+            declared_row_bytes=declared_row_bytes, maximum=profile.max_row_bytes,
+        )
+    for row_ordinal, row in enumerate(rows or (), start=1):
+        row_bytes = 8
+        for variable in variables:
+            if variable.get("storage_kind") != "string":
+                row_bytes += 8
+                continue
+            value = row.get(str(variable["physical_name"]), "")
+            encoded_bytes = len(str(value).encode("utf-8"))
+            if encoded_bytes > profile.max_text_value_bytes:
+                raise _exceeded(
+                    "text_value_limit",
+                    f"row {row_ordinal} value for {variable['source_name']!r} is "
+                    f"{encoded_bytes} UTF-8 bytes; {profile.name} permits "
+                    f"{profile.max_text_value_bytes}.",
+                    row_ordinal=row_ordinal, source_name=variable["source_name"],
+                    encoded_bytes=encoded_bytes, maximum=profile.max_text_value_bytes,
+                )
+            row_bytes += 20 if profile.name in {"mysql", "mariadb"} else encoded_bytes
+        if row_bytes > profile.max_row_bytes:
+            raise _exceeded(
+                "row_size_limit",
+                f"row {row_ordinal} requires {row_bytes} bytes; "
+                f"{profile.name} permits {profile.max_row_bytes}.",
+                row_ordinal=row_ordinal, row_bytes=row_bytes,
+                maximum=profile.max_row_bytes,
+            )
+
+
+def _row_storage_bytes(profile: SqlProfile, variable: Mapping[str, Any]) -> int:
+    if variable.get("storage_kind") == "numeric":
+        return 8
+    if profile.name in {"mysql", "mariadb"}:
+        return 20
+    return int(variable.get("string_width") or 0)
 
 
 
