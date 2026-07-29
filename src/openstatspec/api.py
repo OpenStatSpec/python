@@ -8,6 +8,18 @@ from .core.results import result
 from .spss import export_dataset, import_dataset, inspect_source
 from .spss.sav import engine_identity
 from .sql import declared_profiles, validate_dataset
+from .sql.catalog_api import catalog_dataset as _catalog_dataset, catalog_datasets as _catalog_datasets
+from .sql.workflow import (
+    derive_dataset as _derive_dataset,
+    execute_transformation as _execute_transformation,
+    reconcile_started_runs as _reconcile_started_runs,
+    register_transformation as _register_transformation,
+    validate_derived_dataset as _validate_derived_dataset,
+    transformation_capabilities,
+    reconcile_physical_removals as _reconcile_physical_removals,
+    remove_derived_relation as _remove_derived_relation,
+    retire_derived_dataset as _retire_derived_dataset,
+)
 from .sql.capabilities import (
     SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, active_connection, catalog_binding,
 )
@@ -70,6 +82,9 @@ def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
         "active_connection": active_connection(database_url) if database_url else None,
         "catalog_binding": catalog_binding(database_url) if database_url else None,
         "sql_profiles": declared_profiles(database_url),
+        "optional_profiles": {
+            "sql_transformation_workflow": transformation_capabilities(database_url),
+        },
     }
     return declaration
 
@@ -93,3 +108,51 @@ def export_sav(*, database_url: Any, dataset_id: str, destination: str | Path, *
 
 def validate(*, database_url: Any, dataset_id: str, **options: Any) -> Mapping[str, Any]:
     return result(validate_dataset(database_url=database_url, dataset_id=dataset_id, **options))
+
+
+def list_datasets(*, database_url: Any, kind: str | None = None) -> Mapping[str, Any]:
+    return result(_catalog_datasets(database_url=str(database_url), kind=kind))
+
+
+def get_dataset(*, database_url: Any, dataset_id: str, kind: str) -> Mapping[str, Any]:
+    return result(_catalog_dataset(database_url=str(database_url), dataset_id=dataset_id, kind=kind))
+
+
+def register_sql_transformation(*, database_url: Any, **options: Any) -> Mapping[str, Any]:
+    return result(_register_transformation(database_url=str(database_url), **options))
+
+
+def execute_sql_transformation(*, database_url: Any, **options: Any) -> Mapping[str, Any]:
+    return result(_execute_transformation(database_url=str(database_url), **options))
+
+
+def derive_sql_dataset(*, database_url: Any, **options: Any) -> Mapping[str, Any]:
+    return result(_derive_dataset(database_url=str(database_url), **options))
+
+
+def validate_derived(*, database_url: Any, derived_dataset_id: str) -> Mapping[str, Any]:
+    return result(_validate_derived_dataset(
+        database_url=str(database_url), derived_dataset_id=derived_dataset_id,
+    ))
+
+
+def retire_derived(*, database_url: Any, **options: Any) -> Mapping[str, Any]:
+    return result(_retire_derived_dataset(database_url=str(database_url), **options))
+
+
+def remove_derived_physical_relation(
+    *, database_url: Any, **options: Any,
+) -> Mapping[str, Any]:
+    return result(_remove_derived_relation(database_url=str(database_url), **options))
+
+
+def reconcile_derived_removals(
+    *, database_url: Any, **options: Any,
+) -> Mapping[str, Any]:
+    return result(_reconcile_physical_removals(database_url=str(database_url), **options))
+
+
+def reconcile_sql_transformation_runs(
+    *, database_url: Any, **options: Any,
+) -> Mapping[str, Any]:
+    return result(_reconcile_started_runs(database_url=str(database_url), **options))

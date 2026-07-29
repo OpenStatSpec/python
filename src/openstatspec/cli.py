@@ -1,10 +1,23 @@
 """Command-line entry points for the database-connected workflow."""
-import json
-
 import argparse
+import json
 from collections.abc import Sequence
 
-from .api import capability_matrix, export_sav, import_sav, inspect, validate
+from .api import (
+    capability_matrix, derive_sql_dataset, execute_sql_transformation,
+    export_sav, get_dataset, import_sav, inspect, list_datasets,
+    register_sql_transformation, validate, validate_derived,
+)
+
+
+def _json(value: str | None, fallback):
+    return fallback if value is None else json.loads(value)
+
+
+def _add_parent(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--database-url", required=True)
+    parser.add_argument("--parent-dataset-id", required=True)
+    parser.add_argument("--parent-kind", choices=["core", "derived"], default="core")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -27,16 +40,91 @@ def main(argv: Sequence[str] | None = None) -> int:
     exporter.add_argument("--output", required=True)
     exporter.add_argument("--allow-loss", action="append", default=[])
     exporter.add_argument("--legacy-locale", help="OS locale for a non-UTF-8 source encoding")
+
+    catalog_list = commands.add_parser("catalog-list", help="list public catalog datasets")
+    catalog_list.add_argument("--database-url", required=True)
+    catalog_list.add_argument("--kind", choices=["core", "derived"])
+    catalog_show = commands.add_parser("catalog-show", help="show one public catalog dataset")
+    catalog_show.add_argument("--database-url", required=True)
+    catalog_show.add_argument("--dataset-id", required=True)
+    catalog_show.add_argument("--kind", choices=["core", "derived"], required=True)
+
+    register = commands.add_parser("transform-register", help="register immutable SELECT SQL")
+    _add_parent(register)
+    register.add_argument("--sql", required=True)
+    register.add_argument("--columns-json", required=True)
+    register.add_argument("--mode", choices=["materialized"], default="materialized")
+    register.add_argument("--name")
+
+    run = commands.add_parser("transform-run", help="execute a registered SQL version")
+    _add_parent(run)
+    run.add_argument("--transformation-version-id", required=True)
+    run.add_argument("--parameters-json")
+    run.add_argument("--dataset-name")
+    run.add_argument("--weight-variable")
+
+    derive = commands.add_parser("derive", help="register and execute SELECT SQL")
+    _add_parent(derive)
+    derive.add_argument("--sql", required=True)
+    derive.add_argument("--columns-json", required=True)
+    derive.add_argument("--parameters-json")
+    derive.add_argument("--mode", choices=["materialized"], default="materialized")
+    derive.add_argument("--name")
+    derive.add_argument("--dataset-name")
+    derive.add_argument("--weight-variable")
+
+    derived_validator = commands.add_parser("validate-derived", help="validate a derived dataset")
+    derived_validator.add_argument("--database-url", required=True)
+    derived_validator.add_argument("--derived-dataset-id", required=True)
+
     args = parser.parse_args(argv)
     if args.command == "capabilities":
-        result = capability_matrix(database_url=args.database_url)
+        output = capability_matrix(database_url=args.database_url)
     elif args.command == "import":
-        result = import_sav(args.source, database_url=args.database_url, dataset_id=args.dataset_id)
+        output = import_sav(args.source, database_url=args.database_url, dataset_id=args.dataset_id)
     elif args.command == "export":
-        result = export_sav(database_url=args.database_url, dataset_id=args.dataset_id, destination=args.output, allow_loss=args.allow_loss, legacy_locale=args.legacy_locale)
+        output = export_sav(
+            database_url=args.database_url, dataset_id=args.dataset_id,
+            destination=args.output, allow_loss=args.allow_loss,
+            legacy_locale=args.legacy_locale,
+        )
     elif args.command == "inspect":
-        result = inspect(args.source)
+        output = inspect(args.source)
+    elif args.command == "validate":
+        output = validate(database_url=args.database_url, dataset_id=args.dataset_id)
+    elif args.command == "catalog-list":
+        output = list_datasets(database_url=args.database_url, kind=args.kind)
+    elif args.command == "catalog-show":
+        output = get_dataset(
+            database_url=args.database_url, dataset_id=args.dataset_id, kind=args.kind,
+        )
+    elif args.command == "transform-register":
+        output = register_sql_transformation(
+            database_url=args.database_url, parent_dataset_id=args.parent_dataset_id,
+            parent_kind=args.parent_kind, query_sql=args.sql,
+            columns=_json(args.columns_json, []), output_mode=args.mode,
+            transformation_name=args.name,
+        )
+    elif args.command == "transform-run":
+        output = execute_sql_transformation(
+            database_url=args.database_url,
+            transformation_version_id=args.transformation_version_id,
+            parent_dataset_id=args.parent_dataset_id, parent_kind=args.parent_kind,
+            parameters=_json(args.parameters_json, {}), dataset_name=args.dataset_name,
+            weight_variable=args.weight_variable,
+        )
+    elif args.command == "derive":
+        output = derive_sql_dataset(
+            database_url=args.database_url, parent_dataset_id=args.parent_dataset_id,
+            parent_kind=args.parent_kind, query_sql=args.sql,
+            columns=_json(args.columns_json, []),
+            parameters=_json(args.parameters_json, {}), output_mode=args.mode,
+            transformation_name=args.name, dataset_name=args.dataset_name,
+            weight_variable=args.weight_variable,
+        )
     else:
-        result = validate(database_url=args.database_url, dataset_id=args.dataset_id)
-    print(json.dumps(result.as_dict() if hasattr(result, "as_dict") else result, default=str, sort_keys=True))
+        output = validate_derived(
+            database_url=args.database_url, derived_dataset_id=args.derived_dataset_id,
+        )
+    print(json.dumps(output.as_dict() if hasattr(output, "as_dict") else output, default=str, sort_keys=True))
     return 0
