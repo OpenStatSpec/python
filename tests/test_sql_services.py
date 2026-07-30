@@ -200,6 +200,57 @@ def test_live_dolt_post_ddl_fault_has_complete_compensating_cleanup(
     assert f"data_{dataset_id}" not in inspect_database(engine).get_table_names()
 
 
+def test_live_dolt_adapter_value_boundary_is_atomic() -> None:
+    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
+    if not database_url:
+        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+    token = uuid4().hex[:8]
+    accepted_id = f"dolt_value_accepted_{token}"
+    rejected_id = f"dolt_value_rejected_{token}"
+    accepted_value = "é" * 32_752
+    rejected_value = accepted_value + "x"
+    assert len(accepted_value.encode("utf-8")) == 65_504
+    assert len(rejected_value.encode("utf-8")) == 65_505
+    variables = [{
+        "ordinal": 1, "source_name": "value", "physical_name": "value",
+        "storage_kind": "string", "string_width": 65_504, "label": "",
+        "format": "A65504", "measure": "nominal", "alignment": "left",
+        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+
+    imported = wide.create_wide_dataset(
+        database_url=database_url, dataset_id=accepted_id,
+        source_name="accepted.sav", source_format="SAV",
+        rows=[{"value": accepted_value}], variables=variables,
+    )
+    assert imported["case_count"] == 1
+
+    with pytest.raises(UnsupportedOperationError) as caught:
+        wide.create_wide_dataset(
+            database_url=database_url, dataset_id=rejected_id,
+            source_name="rejected.sav", source_format="SAV",
+            rows=[{"value": rejected_value}], variables=variables,
+        )
+    assert caught.value.details["reason"] == "text_value_limit"
+
+    engine = create_engine(database_url)
+    accepted_table = wide.data_table_name(accepted_id)
+    rejected_table = wide.data_table_name(rejected_id)
+    quote = engine.dialect.identifier_preparer.quote
+    with engine.connect() as connection:
+        assert connection.execute(text(
+            f"SELECT OCTET_LENGTH(value) FROM {quote(accepted_table)}"
+        )).scalar_one() == 65_504
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM dataset_catalog WHERE dataset_id = :dataset_id"
+        ), {"dataset_id": rejected_id}).scalar_one() == 0
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM dataset WHERE dataset_name = :dataset_id"
+        ), {"dataset_id": rejected_id}).scalar_one() == 0
+    assert rejected_table not in inspect_database(engine).get_table_names()
+    engine.dispose()
+
+
 def test_live_dolt_published_storage_and_identifier_evidence() -> None:
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:

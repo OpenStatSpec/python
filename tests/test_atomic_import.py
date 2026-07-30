@@ -209,6 +209,43 @@ def test_occupied_foreign_namespace_fails_without_modification(tmp_path) -> None
     assert connection.execute("select value from foreign_data").fetchall() == [("keep",)]
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_dolt_nonfinite_preflight_creates_no_dataset_or_physical_table(
+    tmp_path, monkeypatch, value,
+) -> None:
+    database_path = tmp_path / "dolt-nonfinite.sqlite"
+    database = f"sqlite:///{database_path}"
+    monkeypatch.setattr(wide, "effective_profile", lambda _url: (DOLT, {}))
+    variables = [{
+        "ordinal": 1, "source_name": "value", "physical_name": "value",
+        "storage_kind": "numeric", "string_width": None, "label": "",
+        "format": "F8.2", "measure": "scale", "alignment": "right",
+        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+
+    with pytest.raises(Exception, match="Target capability exceeded"):
+        create_wide_dataset(
+            database_url=database, dataset_id="nonfinite",
+            source_name="nonfinite.sav", source_format="SAV",
+            rows=[{"value": value}], variables=variables,
+        )
+
+    connection = sqlite3.connect(database_path)
+    assert "data_nonfinite" not in {
+        row[0] for row in connection.execute(
+            "select name from sqlite_master where type = 'table'"
+        )
+    }
+    assert connection.execute("select count(*) from dataset").fetchone() == (0,)
+    assert connection.execute("select count(*) from variable").fetchone() == (0,)
+    assert connection.execute(
+        "select status from operation"
+    ).fetchall() == [("failed",)]
+    assert connection.execute(
+        "select dataset_id, event_code from fidelity_event"
+    ).fetchall() == [(None, "target_capability_exceeded")]
+
+
 def test_empty_namespace_dolt_width_failure_initializes_identity_and_one_audit(
     tmp_path, monkeypatch,
 ) -> None:

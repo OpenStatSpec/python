@@ -83,7 +83,9 @@ def test_normative_catalog_compiles_for_every_sql_family() -> None:
     [
         ("mysql", "8.4.6", True), ("mysql", "9.7.0", True),
         ("mysql", "8.0.44", False),
-        ("dolt", "2.2.2", True), ("dolt", "2.2.3", False),
+        ("dolt", "2.2.2", True), ("dolt", " 2.2.2 ", True),
+        ("dolt", "2.2.3", False), ("dolt", "2.2.2-rc1", False),
+        ("dolt", "2.2.2+build.1", False), ("dolt", "garbage", False),
         ("mariadb", "11.4.8-MariaDB", True),
         ("mariadb", "11.8.3-MariaDB", True),
         ("mariadb", "12.3.1-MariaDB", True),
@@ -223,6 +225,25 @@ def test_dolt_comment_requires_a_nonempty_product_version(monkeypatch) -> None:
         active_connection("mysql+pymysql://user@host/database")
 
 
+@pytest.mark.parametrize(
+    "product_version",
+    ["2.2.2-rc1", "2.2.2+build.1", "v2.2.2", "garbage"],
+)
+def test_dolt_identity_rejects_nonexact_product_versions(
+    monkeypatch, product_version,
+) -> None:
+    connection = _mock_mysql_probes(
+        monkeypatch, **{"select DOLT_VERSION()": product_version},
+    )
+
+    with pytest.raises(UnsupportedOperationError, match="exactly 2.2.2"):
+        active_connection("mysql+pymysql://user@host/database")
+
+    assert connection.calls == [
+        "select @@version", "select @@version_comment", "select DOLT_VERSION()",
+    ]
+
+
 def test_unknown_mysql_wire_product_fails_closed_without_dolt_probe(monkeypatch) -> None:
     connection = _mock_mysql_probes(
         monkeypatch,
@@ -268,6 +289,7 @@ def test_effective_profile_selects_dolt_without_changing_url_profile(monkeypatch
     assert profile.name == "dolt"
     assert profile.url_schemes == ()
     assert profile.max_physical_variables == 305
+    assert profile.max_text_value_bytes == 65_504
     assert profile.max_row_bytes == 65_504
     assert observed is active
 
@@ -281,15 +303,19 @@ def test_dolt_declaration_labels_conservative_envelopes() -> None:
     assert declaration["ci_tested_server_versions"] == ["Dolt 2.2.2"]
     assert declaration["proposed_adapter_limits"]["maximum_physical_columns"] == 306
     assert declaration["proposed_adapter_limits"]["maximum_source_variables"] == 305
+    assert declaration["proposed_adapter_limits"]["maximum_value_bytes"] == 65_504
     assert declaration["proposed_adapter_limits"]["maximum_row_bytes"] == 65_504
+    assert declaration["theoretical_limits"]["maximum_value_bytes"] == 4_294_967_295
     assert declaration["observed_limits"]["minimum_observed_physical_columns"] == 307
     assert declaration["observed_limits"]["identifier_limit"]["value"] == 64
     assert declaration["observed_limits"]["rejected_identifier_bytes"] == 65
     assert set(declaration["proposed_adapter_limits"]) == {
-        "maximum_physical_columns", "maximum_source_variables", "maximum_row_bytes",
+        "maximum_physical_columns", "maximum_source_variables",
+        "maximum_value_bytes", "maximum_row_bytes",
     }
     assert declaration["limit_bases"]["maximum_physical_columns"] == "proposed_adapter_envelope"
     assert declaration["limit_bases"]["identifier_limit"] == "observed_exact_version"
+    assert declaration["limit_bases"]["maximum_value_bytes"] == "observed_exact_version"
     assert declaration["limit_bases"]["maximum_statement_bytes"] == "active_connection_observation"
     assert declaration["effective_limits"] is None
     assert declaration["text_type"] == "LONGTEXT"
@@ -297,6 +323,12 @@ def test_dolt_declaration_labels_conservative_envelopes() -> None:
     assert capabilities.profile_declarations()["mariadb"]["text_type"] == "LONGTEXT"
     assert declaration["ddl_atomic"] is False
     assert declaration["failure_cleanup"] == "compensating_cleanup"
+    assert declaration["numeric_value_policy"] == {
+        "finite_binary64": "supported",
+        "nan": "rejected_before_ddl",
+        "positive_infinity": "rejected_before_ddl",
+        "negative_infinity": "rejected_before_ddl",
+    }
     assert declaration["storage_evidence"]["binary64"]["maximum_finite_round_trip_exact"] is True
     assert declaration["storage_evidence"]["binary64"]["source"]
     assert declaration["storage_evidence"]["binary64"]["version"] == "2.2.2"
@@ -320,13 +352,30 @@ def test_dolt_uses_longtext_without_changing_mysql_storage() -> None:
 def test_dolt_row_preflight_counts_utf8_values_against_adapter_envelope() -> None:
     variables = [{
         "ordinal": 1, "source_name": "value", "physical_name": "value",
-        "storage_kind": "string", "string_width": 65_496,
+        "storage_kind": "string", "string_width": 65_504,
     }]
-    preflight(DOLT, variables, rows=[{"value": "x" * 65_496}])
+    preflight(DOLT, variables, rows=[{"value": "x" * 65_504}])
 
     with pytest.raises(UnsupportedOperationError) as error:
-        preflight(DOLT, variables, rows=[{"value": "x" * 65_497}])
-    assert error.value.details["reason"] == "row_size_limit"
+        preflight(DOLT, variables, rows=[{"value": "x" * 65_505}])
+    assert error.value.details["reason"] == "text_value_limit"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_dolt_numeric_preflight_rejects_nonfinite_values(value) -> None:
+    variables = [{
+        "ordinal": 1, "source_name": "value", "physical_name": "value",
+        "storage_kind": "numeric", "string_width": None,
+    }]
+
+    with pytest.raises(UnsupportedOperationError) as error:
+        preflight(DOLT, variables, rows=[{"value": value}])
+
+    assert error.value.details == {
+        "reason": "nonfinite_numeric_value",
+        "row_ordinal": 1,
+        "source_name": "value",
+    }
 
 
 def test_validate_identity_failure_happens_before_catalog_access(monkeypatch) -> None:

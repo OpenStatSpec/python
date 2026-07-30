@@ -115,6 +115,10 @@ def active_connection(database_url: str) -> dict[str, Any]:
                 raw_product_version = _required_text_probe(
                     connection, "select DOLT_VERSION()", "DOLT_VERSION()",
                 )
+                if raw_product_version.strip() != "2.2.2":
+                    raise UnsupportedOperationError(
+                        "The active Dolt product version must be exactly 2.2.2."
+                    )
                 identity_source = "SELECT @@version, @@version_comment, DOLT_VERSION()"
             elif "mariadb" in identity_text:
                 profile_name = "mariadb"
@@ -236,13 +240,14 @@ def _profile(
         "maximum_row_bytes": profile.max_row_bytes,
     }
     theoretical = (
-        {"maximum_value_bytes": profile.max_text_value_bytes}
+        {"maximum_value_bytes": 4_294_967_295}
         if name == "dolt" else declared
     )
     proposed = (
         {
             "maximum_physical_columns": declared["maximum_physical_columns"],
             "maximum_source_variables": declared["maximum_source_variables"],
+            "maximum_value_bytes": declared["maximum_value_bytes"],
             "maximum_row_bytes": declared["maximum_row_bytes"],
         }
         if name == "dolt" else None
@@ -264,7 +269,7 @@ def _profile(
                 "maximum_source_variables": "proposed Dolt adapter envelope",
                 "maximum_physical_columns": "proposed Dolt adapter envelope",
                 "identifier_limit": "observed on exact Dolt 2.2.2",
-                "maximum_value_bytes": "Dolt LONGTEXT theoretical type ceiling",
+                "maximum_value_bytes": "observed Dolt adapter value envelope",
                 "maximum_row_bytes": "proposed Dolt adapter envelope",
             }
             if name == "dolt"
@@ -302,7 +307,11 @@ def _profile(
             packet = int(observed["max_allowed_packet"])
             payload = max(0, (packet - 131_072) // 2)
             effective["maximum_value_bytes"] = min(
-                theoretical["maximum_value_bytes"], payload,
+                (
+                    declared["maximum_value_bytes"]
+                    if name == "dolt" else theoretical["maximum_value_bytes"]
+                ),
+                payload,
             )
             effective["maximum_statement_bytes"] = payload
             sources["maximum_value_bytes"] = "active @@max_allowed_packet worst-case payload"
@@ -329,6 +338,12 @@ def _profile(
         "effective_limits": effective,
         "effective_limits_status": status,
         "numeric_type": "DOUBLE PRECISION" if name == "postgresql" else "DOUBLE" if name in {"mysql", "mariadb", "dolt"} else "REAL",
+        "numeric_value_policy": {
+            "finite_binary64": "supported",
+            "nan": "rejected_before_ddl",
+            "positive_infinity": "rejected_before_ddl",
+            "negative_infinity": "rejected_before_ddl",
+        },
         "text_type": "LONGTEXT" if name in {"mysql", "mariadb", "dolt"} else "TEXT",
         "ddl_atomic": name not in {"mysql", "mariadb", "dolt"},
         "failure_cleanup": "compensating_cleanup" if name in {"mysql", "mariadb", "dolt"} else "transaction_rollback",
@@ -340,7 +355,9 @@ def _profile(
                 "proposed_adapter_envelope" if name == "dolt" else "theoretical_engine_limit"
             ),
             "identifier_limit": "observed_exact_version" if name == "dolt" else "theoretical_engine_limit",
-            "maximum_value_bytes": "theoretical_engine_limit",
+            "maximum_value_bytes": (
+                "observed_exact_version" if name == "dolt" else "theoretical_engine_limit"
+            ),
             "maximum_row_bytes": (
                 "proposed_adapter_envelope" if name == "dolt" else "theoretical_engine_limit"
             ),
@@ -373,11 +390,11 @@ def _profile(
 
 
 def server_version_supported(profile: str, raw_version: str) -> bool:
+    if profile == "dolt":
+        return raw_version.strip() == "2.2.2"
     version = _version_tuple(raw_version)
     if profile == "sqlite":
         return (3, 24) <= version[:2] < (4, 0)
-    if profile == "dolt":
-        return version == (2, 2, 2)
     allowed = {
         "postgresql": {(17,), (18,)},
         "mysql": {(8, 4), (9, 7)},
