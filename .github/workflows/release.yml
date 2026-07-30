@@ -23,10 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release_ref || github.ref }}
+          ref: refs/tags/${{ inputs.release_ref || github.ref_name }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
+      - name: Verify release tag exists and targets this package version
+        env:
+          RELEASE_TAG: ${{ inputs.release_ref || github.ref_name }}
+        run: |
+          set -eu
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          python .github/verify_release_ref.py
       - run: python -m pip install --upgrade pip build
       - name: Verify required SPSS engine is publicly installable
         run: >-

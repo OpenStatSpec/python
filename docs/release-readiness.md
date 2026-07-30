@@ -1,4 +1,4 @@
-# 0.1.0 release readiness
+# 0.2.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
@@ -20,9 +20,12 @@ database contract.
 | PostgreSQL | `postgresql+psycopg://…` | PostgreSQL 17 and 18 service jobs |
 | MySQL | `mysql+pymysql://…` | MySQL 8.4 and 9.7 service jobs |
 | MariaDB | `mysql+pymysql://…` | MariaDB 11.4, 11.8, and 12.3 service jobs |
+| Dolt | `mysql+pymysql://…` | Exact Dolt 2.2.2 service job |
 
 Separate service matrices test the shared MySQL/MariaDB profile contract while
-retaining distinct active-server identities and version claims. This does not
+retaining distinct active-server identities and version claims. Dolt is an
+independent core profile that fails closed unless the product version is exactly
+2.2.2; the optional Transformation Workflow remains SQLite-only. This does not
 claim coverage for every server configuration. The machine-readable capability
 declaration reports both the theoretical profile boundaries and effective
 limits observed from the active connection.
@@ -49,13 +52,16 @@ machine-readable loss report with the export result.
 1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
    first and confirm that a clean environment can download it from PyPI. The
    main package has no fallback SPSS engine.
-2. Run `python -m pytest`.
+2. Run `python -m pytest -m "not services"`.
 3. Confirm the GitHub Actions matrix is green for PostgreSQL 17/18, MySQL
-   8.4/9.7, and MariaDB 11.4/11.8/12.3.
+   8.4/9.7, MariaDB 11.4/11.8/12.3, and exact Dolt 2.2.2.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
-6. Review this document, the README, and CHANGELOG for accurate scope.
+6. Confirm the `v0.2.0` tag matches package version `0.2.0`, and that CI and
+   release fixtures use specification commit
+   `34141dda023d9e0217c37c232e39f436edfb0746`.
+7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds
 the distributions, and installs the wheel with the exact required SPSS engine

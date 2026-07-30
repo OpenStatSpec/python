@@ -55,7 +55,7 @@ See [the SQL transformation workflow](docs/sql-transformation-workflow.md) for
 Python and CLI examples, migration behavior, hashing, atomicity, and the exact
 implemented capability boundary.
 
-## 0.1.0 support status
+## 0.2.0 support status
 
 The adapter requires `openstatspec-pyspssio==0.5.1.post2` as its sole SPSS
 engine. Its import module remains `pyspssio`; the exact source commit is recorded
