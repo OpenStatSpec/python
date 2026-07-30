@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import rfc8785
@@ -19,6 +20,28 @@ from openstatspec.sql.workflow import (
     transformation_capabilities, workflow_catalog,
 )
 from openstatspec.sql.wide import create_wide_dataset
+
+
+def _workflow_conformance_manifest() -> Path:
+    configured = os.environ.get("OPENSTATSPEC_SPECIFICATION_DIR")
+    candidates = [
+        (
+            Path(configured)
+            / "conformance/sql-transformation-workflow-0.1.json"
+            if configured else None
+        ),
+        Path(__file__).resolve().parents[1]
+        / "openstatspec-specification/conformance/sql-transformation-workflow-0.1.json",
+        Path(__file__).resolve().parents[2]
+        / "specification/conformance/sql-transformation-workflow-0.1.json",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return candidate
+    raise RuntimeError(
+        "The SQL transformation conformance fixture is required; "
+        "set OPENSTATSPEC_SPECIFICATION_DIR."
+    )
 
 
 def _variables():
@@ -541,10 +564,9 @@ def test_scope_aware_ctes_merge_with_parent_and_shadowing_fails(catalog):
 
 
 def test_definition_hash_matches_every_normative_conformance_vector():
-    manifest = json.loads((
-        Path(__file__).resolve().parents[2]
-        / "specification/conformance/sql-transformation-workflow-0.1.json"
-    ).read_text(encoding="utf-8"))
+    manifest = json.loads(
+        _workflow_conformance_manifest().read_text(encoding="utf-8")
+    )
     for case in manifest["cases"]:
         actual = _definition_hash(
             transformation_id=case["transformation_id"],

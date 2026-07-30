@@ -15,7 +15,7 @@ from .profiles import MYSQL, POSTGRESQL, SQLITE, SqlProfile
 from .profiles import profile_for_url
 from ..core import UnsupportedOperationError
 
-SPECIFICATION_COMMIT = "6b9d1fc38f2f083c0ac5cf1c64874a6d07b95045"
+SPECIFICATION_COMMIT = "7edcad38470fffebfe2306f22fdecb6892f8eece"
 SPECIFICATION_RELEASE: str | None = None
 
 SERVER_POLICIES = {
