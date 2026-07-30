@@ -12,6 +12,8 @@ SPSS profile.
 - Import of unencrypted SAV and ZSAV sources into one dedicated wide SQL table
   and its metadata catalog.
 - Export of supported dataset semantics to SAV and ZSAV.
+- Consistent legacy compatible-name rewriting across type-2, subtype-13, and
+  VLS subtype-14 records, with fail-closed SAV/ZSAV validation.
 - SQLite, PostgreSQL, MySQL, and MariaDB profiles, including service-backed
   PostgreSQL 17/18, MySQL 8.4/9.7, and MariaDB 11.4/11.8/12.3 CI coverage.
 - Preflight checks for target profile limits, atomic imports, validation, a
