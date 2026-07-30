@@ -41,6 +41,20 @@ openstatspec import responses.sav --database-url postgresql+psycopg://... --data
 openstatspec export --database-url postgresql+psycopg://... --dataset-id responses-2026 --output responses-roundtrip.sav
 ```
 
+## Optional database-first SQL workflow
+
+Imported datasets remain immutable source records. The optional SQL
+transformation profile can register versioned, parameterized SQLite SELECT queries,
+materialize results, record lineage and weights, and expose
+derived datasets through a public catalog API. It uses a separate profile
+catalog and never presents SQL output as an imported source dataset.
+Workflow operations support SQLite only in this milestone and fail closed on
+PostgreSQL/MySQL/MariaDB; core import/export database support is unchanged.
+
+See [the SQL transformation workflow](docs/sql-transformation-workflow.md) for
+Python and CLI examples, migration behavior, hashing, atomicity, and the exact
+implemented capability boundary.
+
 ## 0.1.0 support status
 
 The adapter requires `openstatspec-pyspssio==0.5.1.post2` as its sole SPSS
