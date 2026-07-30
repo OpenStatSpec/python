@@ -25,6 +25,14 @@ def test_profile_detection_tracks_supported_dialect_urls() -> None:
     assert profile_for_url("mariadb+mariadbconnector://user@host/database") is MYSQL
     assert profile_for_url("mysql+pymysql://user@host/dolt_database") is MYSQL
 
+def test_profile_declarations_publish_specification_rc_provenance() -> None:
+    for declaration in capabilities.profile_declarations().values():
+        assert declaration["specification_status"] == "release_candidate"
+        assert declaration["specification_release"] == "v1.0.0-rc.1"
+        assert (
+            declaration["specification_commit"]
+            == "fef0dc6f4b17ff7141dad3f49d0524c63efbfed5"
+        )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:
     with pytest.raises(UnsupportedOperationError, match="Target capability exceeded"):

@@ -15,8 +15,8 @@ from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, SqlProfile
 from .profiles import profile_for_url, validate_connection_url
 from ..core import UnsupportedOperationError
 
-SPECIFICATION_COMMIT = "34141dda023d9e0217c37c232e39f436edfb0746"
-SPECIFICATION_RELEASE: str | None = None
+SPECIFICATION_COMMIT = "fef0dc6f4b17ff7141dad3f49d0524c63efbfed5"
+SPECIFICATION_RELEASE: str | None = "v1.0.0-rc.1"
 
 SERVER_POLICIES = {
     "sqlite": {

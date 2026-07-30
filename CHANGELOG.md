@@ -29,8 +29,9 @@ datasets immutable and all unsupported paths fail-closed.
 
 ### Specification basis
 
-- CI and release validation are pinned to OpenStatSpec specification commit
-  `34141dda023d9e0217c37c232e39f436edfb0746`; no specification tag is claimed.
+- CI and release validation are pinned to OpenStatSpec specification release
+  `v1.0.0-rc.1` at exact commit
+  `fef0dc6f4b17ff7141dad3f49d0524c63efbfed5`.
 
 ## 0.1.0 — 2026-07-29
 
