@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import rfc8785
@@ -8,16 +9,19 @@ import sqlite3
 from uuid import UUID
 
 import pytest
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData, insert, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateTable
 
 import openstatspec
+import openstatspec.sql.workflow as workflow
 import openstatspec.cli
 from openstatspec.sql.workflow import (
     PROFILE_ID, PROFILE_SCHEMA_VERSION, TransformationError, _definition_hash,
-    _assert_sqlite_server_version, _workflow_engine,
-    transformation_capabilities, workflow_catalog,
+    _assert_sqlite_server_version, _create_workflow_triggers,
+    _workflow_engine, create_workflow_catalog, transformation_capabilities,
+    workflow_catalog,
 )
 from openstatspec.sql.wide import create_wide_dataset
 
@@ -138,7 +142,8 @@ def test_materialized_sql_workflow_is_immutable_audited_and_queryable(catalog):
         PROFILE_ID, "openstatspec-strict-wide-table-v1",
     )
     run_row = connection.execute(
-        "select status, parameters_hash, input_set_hash from transformation_run"
+        "select status, parameters_hash, input_set_hash, staging_relation_key "
+        "from transformation_run"
     ).fetchone()
     assert run_row[0] == "succeeded"
     envelope = connection.execute(
@@ -161,6 +166,11 @@ def test_materialized_sql_workflow_is_immutable_audited_and_queryable(catalog):
         rfc8785.dumps(parameters_document)
     ).hexdigest()
     assert len(run_row[2]) == 64
+    assert run_row[3].startswith("sqlite:main.__openstatspec_staging_")
+    assert connection.execute(
+        "select count(*) from sqlite_master where name = ?",
+        (run_row[3].removeprefix("sqlite:main."),),
+    ).fetchone() == (0,)
     relation = result["physical_relation_name"]
     assert connection.execute(
         f'select __row_ordinal, score, grp from "{relation}" order by __row_ordinal'
@@ -737,7 +747,7 @@ def test_declared_non_null_output_is_enforced_and_audit_is_redacted(catalog):
     assert "SELECT" not in event[2]
 
 
-def test_started_run_and_reserved_staging_are_reconciled(catalog):
+def test_started_run_and_recorded_staging_are_reconciled(catalog):
     url, path, parent_id = catalog
     registered = openstatspec.register_sql_transformation(
         database_url=url, parent_dataset_id=parent_id,
@@ -747,20 +757,26 @@ def test_started_run_and_reserved_staging_are_reconciled(catalog):
         }], transformation_name="interrupted",
     )
     run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    staging_name = "__openstatspec_staging_crash_case"
+    staging_key = f"sqlite:main.{staging_name}"
     connection = sqlite3.connect(path)
     connection.execute("pragma foreign_keys = on")
     connection.execute(
-        "insert into transformation_run values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "insert into transformation_run ("
+        "transformation_run_id, transformation_version_id, status, "
+        "executor_identity, correlation_id, staging_relation_key, engine_name, "
+        "engine_version, dialect_profile, capability_snapshot_json, "
+        "specification_commit, definition_hash, parameters_hash, input_set_hash, "
+        "started_at, completed_at"
+        ") values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             run_id, registered["transformation_version_id"], "started", "test",
-            run_id, "sqlite", "test", "sqlite", "{}", "test",
+            run_id, staging_key, "sqlite", "test", "sqlite", "{}", "test",
             registered["definition_hash"], "0" * 64, "1" * 64,
             "2000-01-01 00:00:00", None,
         ),
     )
-    connection.execute(
-        'create table "__oss_stage_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa" (x integer)'
-    )
+    connection.execute(f'create table "{staging_name}" (x integer)')
     connection.commit()
     reconciled = openstatspec.reconcile_sql_transformation_runs(database_url=url)
     assert reconciled["reconciled"] == 1
@@ -768,8 +784,13 @@ def test_started_run_and_reserved_staging_are_reconciled(catalog):
         "select status from transformation_run where transformation_run_id = ?", (run_id,)
     ).fetchone() == ("failed",)
     assert connection.execute(
-        "select count(*) from sqlite_master where name like '__oss_stage_%'"
+        "select count(*) from sqlite_master where name = ?", (staging_name,)
     ).fetchone() == (0,)
+    assert connection.execute(
+        "select event_ordinal, event_code, execution_phase "
+        "from transformation_event where transformation_run_id = ?",
+        (run_id,),
+    ).fetchall() == [(1, "interrupted_run", "reconciliation")]
 
 
 def test_weight_propagation_requires_verified_identity_and_safe_rows(catalog):
@@ -1352,3 +1373,365 @@ def test_column_aggregate_with_aggregate_semantics_succeeds(catalog):
         row_semantics="aggregate", transformation_name="column_aggregate_valid",
     )
     assert registered["version_number"] == 1
+
+
+def _insert_started_run(connection, registered, run_id, staging_key):
+    connection.execute(
+        "insert into transformation_run ("
+        "transformation_run_id, transformation_version_id, status, "
+        "executor_identity, correlation_id, staging_relation_key, engine_name, "
+        "engine_version, dialect_profile, capability_snapshot_json, "
+        "specification_commit, definition_hash, parameters_hash, input_set_hash, "
+        "started_at, completed_at"
+        ") values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id, registered["transformation_version_id"], "started", "test",
+            run_id, staging_key, "sqlite", "test", "sqlite", "{}", "test",
+            registered["definition_hash"], "0" * 64, "1" * 64,
+            "2000-01-01 00:00:00", None,
+        ),
+    )
+
+
+def _create_legacy_workflow_catalog(url, *, with_started_run=False):
+    engine = _workflow_engine(url, "sqlite")
+    legacy = workflow_catalog(
+        MetaData(), _include_staging_relation_key=False
+    )
+    run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    stage_name = "__oss_stage_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb"
+    with engine.begin() as connection:
+        legacy.transformation_profile_identity.metadata.create_all(
+            connection, tables=list(legacy.all())
+        )
+        connection.execute(insert(
+            legacy.transformation_profile_identity
+        ).values(
+            profile_identity_key=1, contract_id=PROFILE_ID,
+            schema_version=PROFILE_SCHEMA_VERSION,
+            core_contract_id="openstatspec-strict-wide-table-v1",
+            created_at=datetime.now(UTC),
+        ))
+        _create_workflow_triggers(connection, legacy)
+        if with_started_run:
+            transformation_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            version_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            definition_hash = "a" * 64
+            connection.execute(insert(
+                legacy.transformation_definition
+            ).values(
+                transformation_id=transformation_id,
+                stable_name="legacy_interrupted", title="Legacy interrupted",
+                created_at=datetime.now(UTC),
+            ))
+            connection.execute(insert(
+                legacy.transformation_version
+            ).values(
+                transformation_version_id=version_id,
+                transformation_id=transformation_id, version_number=1,
+                query_sql="SELECT 1", dialect_family="sqlite",
+                server_version_constraint="supported-profile",
+                output_mode="materialized", row_semantics="one_to_one",
+                metadata_policy="declared", deterministic_order_json="[]",
+                output_schema_json='{"variables":[]}',
+                definition_hash=definition_hash,
+                published_at=datetime.now(UTC),
+            ))
+            connection.execute(insert(legacy.transformation_run).values(
+                transformation_run_id=run_id,
+                transformation_version_id=version_id, status="started",
+                executor_identity="legacy", correlation_id=run_id,
+                engine_name="sqlite", engine_version="legacy",
+                dialect_profile="sqlite", capability_snapshot_json="{}",
+                specification_commit="legacy", definition_hash=definition_hash,
+                parameters_hash="0" * 64, input_set_hash="1" * 64,
+                started_at=datetime(2000, 1, 1, tzinfo=UTC),
+            ))
+            connection.exec_driver_sql(
+                f'CREATE TABLE "{stage_name}" (sentinel INTEGER)'
+            )
+    return engine, run_id, stage_name
+
+
+def test_spec_recovery_cases_are_the_exact_runtime_contract():
+    manifest = json.loads(
+        _workflow_conformance_manifest().read_text(encoding="utf-8")
+    )
+    if "recovery_cases" not in manifest:
+        pytest.skip("Recovery cases land with the pending specification PR.")
+    invariants = [
+        "no_derived_dataset",
+        "no_published_output",
+        "quarantined_staging_not_exposed",
+        "run_remains_started_while_staging_exists",
+        "reconciliation_required",
+        "remove_only_recorded_profile_owned_staging",
+        "success_forbidden",
+    ]
+    assert manifest["recovery_cases"] == [
+        {
+            "id": "cleanup-failure-quarantines-staging",
+            "trigger": "cleanup_failed",
+            "initial_status": "started",
+            "staging_relation_key":
+                "sqlite:main.__openstatspec_staging_cleanup_case",
+            "event": {"code": "cleanup_failed", "phase": "cleanup"},
+            "invariants": invariants,
+            "terminal_status_after_reconciliation": "failed",
+        },
+        {
+            "id": "crash-leaves-quarantined-staging",
+            "trigger": "process_crash",
+            "initial_status": "started",
+            "staging_relation_key":
+                "sqlite:main.__openstatspec_staging_crash_case",
+            "event": None,
+            "invariants": invariants,
+            "terminal_status_after_reconciliation": "failed",
+        },
+    ]
+
+
+def test_cleanup_failure_quarantines_then_reconciles_exact_recorded_staging(
+    catalog, monkeypatch,
+):
+    url, path, parent_id = catalog
+    registered = openstatspec.register_sql_transformation(
+        database_url=url, parent_dataset_id=parent_id,
+        query_sql="SELECT score FROM parent ORDER BY score ASC NULLS LAST",
+        columns=[{
+            "name": "score", "storage_kind": "numeric", "source": "score",
+        }],
+        transformation_name="cleanup_failure",
+    )
+    real_validate = workflow._validate_order_key
+    calls = 0
+
+    def fail_after_staging(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise TransformationError(
+                "output_validation_failed", "Injected staging validation failure."
+            )
+        return real_validate(*args, **kwargs)
+
+    def leave_recorded_staging(_engine, _tables, run_id):
+        connection = sqlite3.connect(path)
+        key = connection.execute(
+            "select staging_relation_key from transformation_run "
+            "where transformation_run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+        stage_name = key.removeprefix("sqlite:main.")
+        connection.execute(f'create table "{stage_name}" (sentinel integer)')
+        connection.commit()
+        connection.close()
+        raise RuntimeError("injected cleanup failure")
+
+    monkeypatch.setattr(workflow, "_validate_order_key", fail_after_staging)
+    monkeypatch.setattr(
+        workflow, "_cleanup_execution_relations", leave_recorded_staging
+    )
+    with pytest.raises(TransformationError) as caught:
+        openstatspec.execute_sql_transformation(
+            database_url=url, parent_dataset_id=parent_id,
+            transformation_version_id=registered["transformation_version_id"],
+        )
+    assert caught.value.code == "cleanup_failed"
+
+    connection = sqlite3.connect(path)
+    run = connection.execute(
+        "select transformation_run_id, status, completed_at, "
+        "staging_relation_key from transformation_run"
+    ).fetchone()
+    assert run[1:3] == ("started", None)
+    staging_name = run[3].removeprefix("sqlite:main.")
+    assert connection.execute(
+        "select count(*) from sqlite_master where name = ?", (staging_name,)
+    ).fetchone() == (1,)
+    assert connection.execute(
+        "select event_ordinal, event_code, execution_phase "
+        "from transformation_event"
+    ).fetchall() == [(1, "cleanup_failed", "cleanup")]
+    assert connection.execute(
+        "select count(*) from derived_dataset"
+    ).fetchone() == (0,)
+
+    reconciled = openstatspec.reconcile_sql_transformation_runs(database_url=url)
+    assert reconciled["transformation_run_ids"] == [run[0]]
+    assert connection.execute(
+        "select status from transformation_run"
+    ).fetchone() == ("failed",)
+    assert connection.execute(
+        "select count(*) from sqlite_master where name = ?", (staging_name,)
+    ).fetchone() == (0,)
+    assert connection.execute(
+        "select event_ordinal, event_code, execution_phase "
+        "from transformation_event order by event_ordinal"
+    ).fetchall() == [
+        (1, "cleanup_failed", "cleanup"),
+        (2, "interrupted_run", "reconciliation"),
+    ]
+
+
+def test_reconciliation_refuses_unowned_recorded_key(catalog):
+    url, path, parent_id = catalog
+    registered = openstatspec.register_sql_transformation(
+        database_url=url, parent_dataset_id=parent_id,
+        query_sql="SELECT score FROM parent ORDER BY score ASC NULLS LAST",
+        columns=[{
+            "name": "score", "storage_kind": "numeric", "source": "score",
+        }],
+        transformation_name="ambiguous_recovery",
+    )
+    connection = sqlite3.connect(path)
+    connection.execute("pragma foreign_keys = on")
+    unowned_id = "11111111-1111-4111-8111-111111111111"
+    _insert_started_run(
+        connection, registered, unowned_id, "sqlite:main.foreign_table"
+    )
+    connection.execute('create table "foreign_table" (sentinel integer)')
+    connection.commit()
+    with pytest.raises(TransformationError) as unowned:
+        openstatspec.reconcile_sql_transformation_runs(database_url=url)
+    assert unowned.value.code == "reconciliation_ownership_unverified"
+    assert connection.execute(
+        "select status from transformation_run where transformation_run_id = ?",
+        (unowned_id,),
+    ).fetchone() == ("started",)
+    assert connection.execute(
+        "select count(*) from sqlite_master where name = 'foreign_table'"
+    ).fetchone() == (1,)
+
+def test_reconciliation_refuses_duplicate_recorded_keys(catalog):
+    url, path, parent_id = catalog
+    registered = openstatspec.register_sql_transformation(
+        database_url=url, parent_dataset_id=parent_id,
+        query_sql="SELECT score FROM parent ORDER BY score ASC NULLS LAST",
+        columns=[{
+            "name": "score", "storage_kind": "numeric", "source": "score",
+        }],
+        transformation_name="duplicate_recovery",
+    )
+    connection = sqlite3.connect(path)
+    connection.execute("pragma foreign_keys = on")
+    shared_name = "__openstatspec_staging_shared"
+    shared_key = f"sqlite:main.{shared_name}"
+    first_id = "22222222-2222-4222-8222-222222222222"
+    second_id = "33333333-3333-4333-8333-333333333333"
+    _insert_started_run(connection, registered, first_id, shared_key)
+    _insert_started_run(connection, registered, second_id, shared_key)
+    connection.execute(f'create table "{shared_name}" (sentinel integer)')
+    connection.commit()
+    with pytest.raises(TransformationError) as duplicate:
+        openstatspec.reconcile_sql_transformation_runs(database_url=url)
+    assert duplicate.value.code == "reconciliation_ownership_unverified"
+    assert connection.execute(
+        "select status from transformation_run "
+        "where transformation_run_id in (?, ?) order by transformation_run_id",
+        (first_id, second_id),
+    ).fetchall() == [("started",), ("started",)]
+    assert connection.execute(
+        "select count(*) from sqlite_master where name = ?", (shared_name,)
+    ).fetchone() == (1,)
+
+
+def test_cleanup_never_drops_preexisting_deterministic_final_name(
+    catalog, monkeypatch,
+):
+    url, path, parent_id = catalog
+    registered = openstatspec.register_sql_transformation(
+        database_url=url, parent_dataset_id=parent_id,
+        query_sql="SELECT score FROM parent ORDER BY score ASC NULLS LAST",
+        columns=[{
+            "name": "score", "storage_kind": "numeric", "source": "score",
+        }],
+        transformation_name="final_name_collision",
+    )
+    collision_id = UUID("44444444-4444-4444-8444-444444444444")
+    relation_name = "derived_" + collision_id.hex
+    connection = sqlite3.connect(path)
+    connection.execute(
+        f'create table "{relation_name}" (sentinel text)'
+    )
+    connection.execute(
+        f'insert into "{relation_name}" values ("preserve me")'
+    )
+    connection.commit()
+    monkeypatch.setattr(workflow, "uuid5", lambda *_args: collision_id)
+
+    with pytest.raises(OperationalError):
+        openstatspec.execute_sql_transformation(
+            database_url=url, parent_dataset_id=parent_id,
+            transformation_version_id=registered["transformation_version_id"],
+        )
+    assert connection.execute(
+        f'select sentinel from "{relation_name}"'
+    ).fetchall() == [("preserve me",)]
+    assert connection.execute(
+        "select status from transformation_run"
+    ).fetchone() == ("failed",)
+    assert connection.execute(
+        "select count(*) from derived_dataset"
+    ).fetchone() == (0,)
+
+
+def test_pre_recovery_v2_migration_is_nullable_and_fail_closed(catalog):
+    url, path, _ = catalog
+    engine, run_id, stage_name = _create_legacy_workflow_catalog(
+        url, with_started_run=True
+    )
+    current = workflow_catalog(MetaData())
+    with engine.begin() as connection:
+        create_workflow_catalog(connection, current)
+    columns = {
+        row[1]: row for row in sqlite3.connect(path).execute(
+            "pragma table_info(transformation_run)"
+        )
+    }
+    assert columns["staging_relation_key"][3] == 0
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select staging_relation_key from transformation_run "
+        "where transformation_run_id = ?",
+        (run_id,),
+    ).fetchone() == (None,)
+    with pytest.raises(TransformationError) as caught:
+        openstatspec.reconcile_sql_transformation_runs(database_url=url)
+    assert caught.value.code == "reconciliation_ownership_unverified"
+    assert connection.execute(
+        "select status from transformation_run where transformation_run_id = ?",
+        (run_id,),
+    ).fetchone() == ("started",)
+    assert connection.execute(
+        "select count(*) from sqlite_master where name = ?", (stage_name,)
+    ).fetchone() == (1,)
+
+
+def test_pre_recovery_v2_migration_rolls_back_on_trigger_failure(
+    catalog, monkeypatch,
+):
+    url, path, _ = catalog
+    engine, _, _ = _create_legacy_workflow_catalog(url)
+    current = workflow_catalog(MetaData())
+
+    def fail_trigger_creation(_connection, _tables):
+        raise RuntimeError("injected trigger creation failure")
+
+    monkeypatch.setattr(
+        workflow, "_create_workflow_triggers", fail_trigger_creation
+    )
+    with pytest.raises(RuntimeError, match="injected trigger creation failure"):
+        with engine.begin() as connection:
+            create_workflow_catalog(connection, current)
+    connection = sqlite3.connect(path)
+    assert "staging_relation_key" not in {
+        row[1] for row in connection.execute(
+            "pragma table_info(transformation_run)"
+        )
+    }
+    assert connection.execute(
+        "select count(*) from sqlite_master "
+        "where type = 'trigger' and name = 'oss_transformation_run_update_guard'"
+    ).fetchone() == (1,)

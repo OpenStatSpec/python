@@ -43,6 +43,7 @@ SQLITE_SERVER_VERSION_CONSTRAINT = "supported-profile"
 _SQLITE_MINIMUM_VERSION = (3, 35, 0)
 _SQLITE_MAXIMUM_VERSION = (4, 0, 0)
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_STAGING_PREFIX = "__openstatspec_staging_"
 _FORBIDDEN = {
     "ALTER", "ANALYZE", "ATTACH", "CALL", "COPY", "CREATE", "DELETE",
     "DETACH", "DROP", "EXEC", "EXECUTE", "GRANT", "INSERT", "LOAD",
@@ -81,7 +82,9 @@ class WorkflowTables:
         return tuple(getattr(self, item.name) for item in fields(self))
 
 
-def workflow_catalog(metadata: MetaData) -> WorkflowTables:
+def workflow_catalog(
+    metadata: MetaData, *, _include_staging_relation_key: bool = True,
+) -> WorkflowTables:
     core_catalog(metadata)
     identity = Table(
         "transformation_profile_identity", metadata,
@@ -138,6 +141,10 @@ def workflow_catalog(metadata: MetaData) -> WorkflowTables:
         Column("status", String(16), nullable=False),
         Column("executor_identity", String(128), nullable=False),
         Column("correlation_id", String(36), nullable=False),
+        *(
+            [Column("staging_relation_key", String(512))]
+            if _include_staging_relation_key else []
+        ),
         Column("engine_name", String(64), nullable=False),
         Column("engine_version", String(128), nullable=False),
         Column("dialect_profile", String(32), nullable=False),
@@ -583,6 +590,78 @@ def _validate_workflow_schema(connection: Any, tables: WorkflowTables) -> None:
     )
 
 
+def _staging_relation_key(relation_name: str) -> str:
+    return f"sqlite:main.{relation_name}"
+
+
+def _owned_staging_relation_name(value: Any) -> str:
+    prefix = "sqlite:main."
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise TransformationError(
+            "reconciliation_ownership_unverified",
+            "The recorded staging relation key is missing or is not a SQLite main relation.",
+        )
+    relation_name = value[len(prefix):]
+    if (
+        _TOKEN.fullmatch(relation_name) is None
+        or not relation_name.startswith(_STAGING_PREFIX)
+    ):
+        raise TransformationError(
+            "reconciliation_ownership_unverified",
+            "The recorded staging relation is outside the profile-owned staging namespace.",
+        )
+    return relation_name
+
+
+def _migrate_staging_relation_key(
+    connection: Any, tables: WorkflowTables,
+) -> None:
+    """Upgrade pre-recovery v2 without claiming unrecorded staging objects."""
+    legacy_tables = workflow_catalog(
+        MetaData(), _include_staging_relation_key=False
+    )
+    _validate_workflow_schema(connection, legacy_tables)
+    quote = connection.dialect.identifier_preparer.quote
+    for trigger_name in _workflow_trigger_sql(
+        connection, legacy_tables
+    ):
+        connection.exec_driver_sql(
+            f"DROP TRIGGER {quote(trigger_name)}"
+        )
+
+    migration_name = "__oss_migrating_transformation_run"
+    migration_metadata = MetaData()
+    tables.transformation_version.to_metadata(migration_metadata)
+    migration_run = tables.transformation_run.to_metadata(
+        migration_metadata, name=migration_name
+    )
+    migration_run.create(connection)
+    target_columns = [column.name for column in tables.transformation_run.columns]
+    target_sql = ", ".join(quote(name) for name in target_columns)
+    source_sql = ", ".join(
+        "NULL" if name == "staging_relation_key" else quote(name)
+        for name in target_columns
+    )
+    connection.exec_driver_sql(
+        f"INSERT INTO {quote(migration_name)} ({target_sql}) "
+        f"SELECT {source_sql} FROM {quote(tables.transformation_run.name)}"
+    )
+    connection.exec_driver_sql("PRAGMA defer_foreign_keys = ON")
+    connection.exec_driver_sql(
+        f"DROP TABLE {quote(tables.transformation_run.name)}"
+    )
+    connection.exec_driver_sql(
+        f"ALTER TABLE {quote(migration_name)} "
+        f"RENAME TO {quote(tables.transformation_run.name)}"
+    )
+    if connection.exec_driver_sql("PRAGMA foreign_key_check").first() is not None:
+        raise TransformationError(
+            "profile_incompatible",
+            "Workflow migration would violate a foreign-key ownership invariant.",
+        )
+    _create_workflow_triggers(connection, tables)
+
+
 def create_workflow_catalog(connection: Any, tables: WorkflowTables) -> None:
     """Create or validate the additive optional-profile catalog."""
     if connection.dialect.name != "sqlite":
@@ -616,6 +695,13 @@ def create_workflow_catalog(connection: Any, tables: WorkflowTables) -> None:
     identity = dict(rows[0])
     if identity["contract_id"] != PROFILE_ID or identity["core_contract_id"] != CATALOG_CONTRACT_ID or identity["schema_version"] != PROFILE_SCHEMA_VERSION:
         raise TransformationError("profile_incompatible", "The workflow profile identity is incompatible.")
+    run_columns = {
+        str(column["name"]) for column in inspect(connection).get_columns(
+            tables.transformation_run.name
+        )
+    }
+    if "staging_relation_key" not in run_columns:
+        _migrate_staging_relation_key(connection, tables)
     _validate_workflow_schema(connection, tables)
 
 
@@ -1478,6 +1564,32 @@ def _validated_parameters(
     return values, _sha(_canonical_json(hash_envelope)), encoded_by_name
 
 
+def _next_run_event_ordinal(
+    connection: Any, tables: WorkflowTables, run_id: str,
+) -> int:
+    ordinals = connection.execute(
+        select(tables.transformation_event.c.event_ordinal)
+        .where(tables.transformation_event.c.transformation_run_id == run_id)
+    ).scalars().all()
+    return max((int(value) for value in ordinals), default=0) + 1
+
+
+def _append_run_event(
+    connection: Any, tables: WorkflowTables, *, run_id: str,
+    code: str, phase: str,
+) -> None:
+    connection.execute(insert(tables.transformation_event).values(
+        transformation_event_id=str(uuid4()), transformation_run_id=run_id,
+        event_ordinal=_next_run_event_ordinal(connection, tables, run_id),
+        severity="error", event_code=code, execution_phase=phase,
+        safe_detail_json=_canonical_json({
+            "error_code": code, "execution_phase": phase,
+            "correlation_id_hash": _sha(run_id),
+        }),
+        created_at=_now(),
+    ))
+
+
 def _record_failure(
     engine: Any, tables: WorkflowTables, run_id: str, code: str, phase: str,
 ) -> None:
@@ -1494,16 +1606,90 @@ def _record_failure(
             raise TransformationError(
                 "publication_failed", "Run failure transition was not started -> failed."
             )
-        connection.execute(insert(tables.transformation_event).values(
-            transformation_event_id=str(uuid4()), transformation_run_id=run_id,
-            event_ordinal=1, severity="error", event_code=code,
-            execution_phase=phase,
-            safe_detail_json=_canonical_json({
-                "error_code": code, "execution_phase": phase,
-                "correlation_id_hash": _sha(run_id),
-            }),
-            created_at=_now(),
-        ))
+        _append_run_event(
+            connection, tables, run_id=run_id, code=code, phase=phase
+        )
+
+
+def _record_cleanup_failure(
+    engine: Any, tables: WorkflowTables, run_id: str,
+) -> None:
+    with engine.begin() as connection:
+        status = connection.execute(
+            select(tables.transformation_run.c.status).where(
+                tables.transformation_run.c.transformation_run_id == run_id
+            )
+        ).scalar_one()
+        if status != "started":
+            raise TransformationError(
+                "publication_failed",
+                "Cleanup failure may only quarantine a started run.",
+            )
+        _append_run_event(
+            connection, tables, run_id=run_id,
+            code="cleanup_failed", phase="cleanup",
+        )
+
+
+def _relation_kind(connection: Any, relation_name: str) -> str | None:
+    inspector = inspect(connection)
+    if relation_name in inspector.get_view_names():
+        return "view"
+    if relation_name in inspector.get_table_names():
+        return "table"
+    return None
+
+
+def _drop_relation_if_present(
+    connection: Any, relation_name: str,
+) -> None:
+    relation_kind = _relation_kind(connection, relation_name)
+    if relation_kind is None:
+        return
+    quote = connection.dialect.identifier_preparer.quote
+    connection.exec_driver_sql(
+        f"DROP {relation_kind.upper()} {quote(relation_name)}"
+    )
+
+
+def _assert_relation_absent(connection: Any, relation_name: str) -> None:
+    if _relation_kind(connection, relation_name) is not None:
+        raise TransformationError(
+            "cleanup_failed",
+            "The recorded profile-owned relation is still present after cleanup.",
+        )
+
+
+def _assert_staging_key_uniquely_owned(
+    connection: Any, tables: WorkflowTables, run_id: str, relation_key: str,
+) -> None:
+    owners = connection.execute(
+        select(tables.transformation_run.c.transformation_run_id).where(
+            tables.transformation_run.c.staging_relation_key == relation_key
+        )
+    ).scalars().all()
+    if [str(value) for value in owners] != [run_id]:
+        raise TransformationError(
+            "reconciliation_ownership_unverified",
+            "The recorded staging relation key is not uniquely owned by this run.",
+        )
+
+
+def _cleanup_execution_relations(
+    engine: Any, tables: WorkflowTables, run_id: str,
+) -> None:
+    with engine.begin() as connection:
+        relation_key = connection.execute(
+            select(tables.transformation_run.c.staging_relation_key).where(
+                tables.transformation_run.c.transformation_run_id == run_id
+            )
+        ).scalar_one()
+        staging_name = _owned_staging_relation_name(relation_key)
+        _assert_staging_key_uniquely_owned(
+            connection, tables, run_id, relation_key
+        )
+        _drop_relation_if_present(connection, staging_name)
+        _assert_relation_absent(connection, staging_name)
 
 
 @contextmanager
@@ -1787,10 +1973,14 @@ def execute_transformation(
                 "status": "already_exists",
             }
         run_id = str(uuid4())
+        relation_name = "derived_" + UUID(derived_id).hex
+        staging_name = _STAGING_PREFIX + UUID(run_id).hex
+        staging_key = _staging_relation_key(staging_name)
         connection.execute(insert(tables.transformation_run).values(
             transformation_run_id=run_id, transformation_version_id=version_id,
             status="started", executor_identity="openstatspec-python",
-            correlation_id=run_id, engine_name=connection.dialect.name,
+            correlation_id=run_id, staging_relation_key=staging_key,
+            engine_name=connection.dialect.name,
             engine_version=str(getattr(connection.dialect, "server_version_info", "unknown")),
             dialect_profile=profile.name, capability_snapshot_json=_canonical_json({"dialect_family": profile.name}),
             specification_commit=SPECIFICATION_COMMIT or "unreleased", definition_hash=version["definition_hash"],
@@ -1815,8 +2005,6 @@ def execute_transformation(
             snapshot_hash_kind="relation_snapshot", snapshot_hash_algorithm="sha256",
             snapshot_hash_version="openstatspec-relation-snapshot-v1",
         ))
-    relation_name = "derived_" + UUID(derived_id).hex
-    staging_name = "__oss_stage_" + UUID(run_id).hex
     schema_hash = _sha(version["output_schema_json"])
     phase = "input_validation"
     try:
@@ -1939,6 +2127,9 @@ def execute_transformation(
             content_hash_policy = "computed"
             variable_ids: dict[str, str] = {}
             phase = "publication"
+            _assert_relation_absent(
+                connection, _owned_staging_relation_name(staging_key)
+            )
             changed = connection.execute(
                 update(tables.transformation_run)
                 .where(
@@ -1999,26 +2190,15 @@ def execute_transformation(
                 ))
     except Exception as error:
         code = error.code if isinstance(error, TransformationError) else "execution_failed"
-        cleanup_error = None
         try:
-            with engine.begin() as cleanup:
-                inspector = inspect(cleanup)
-                quote = cleanup.dialect.identifier_preparer.quote
-                for candidate in (staging_name, relation_name):
-                    if candidate in inspector.get_view_names():
-                        cleanup.exec_driver_sql(f"DROP VIEW {quote(candidate)}")
-                    if inspector.has_table(candidate):
-                        cleanup.exec_driver_sql(f"DROP TABLE {quote(candidate)}")
-        except Exception as cleanup_exception:
-            cleanup_error = cleanup_exception
-            code = "cleanup_failed"
-            phase = "cleanup"
-        finally:
-            _record_failure(engine, tables, run_id, code, phase)
-        if cleanup_error is not None:
+            _cleanup_execution_relations(engine, tables, run_id)
+        except Exception as cleanup_error:
+            _record_cleanup_failure(engine, tables, run_id)
             raise TransformationError(
-                "cleanup_failed", "Profile-owned staging cleanup failed."
+                "cleanup_failed",
+                "Profile-owned staging cleanup failed; the run is quarantined.",
             ) from cleanup_error
+        _record_failure(engine, tables, run_id, code, phase)
         raise
     return {
         "derived_dataset_id": derived_id, "transformation_run_id": run_id,
@@ -2056,7 +2236,7 @@ def derive_dataset(
 def reconcile_started_runs(
     *, database_url: str, older_than_seconds: int = 0,
 ) -> dict[str, Any]:
-    """Fail interrupted runs and remove only reserved profile staging objects."""
+    """Reconcile started runs using only their durable, profile-owned staging key."""
     if older_than_seconds < 0:
         raise TransformationError(
             "reconciliation_invalid", "older_than_seconds cannot be negative."
@@ -2072,7 +2252,7 @@ def reconcile_started_runs(
             select(tables.transformation_run).where(
                 tables.transformation_run.c.status == "started",
                 tables.transformation_run.c.started_at <= cutoff,
-            )
+            ).order_by(tables.transformation_run.c.transformation_run_id)
         ).mappings().all()
         run_ids = {str(row["transformation_run_id"]) for row in runs}
         published = connection.execute(
@@ -2084,40 +2264,36 @@ def reconcile_started_runs(
             raise TransformationError(
                 "profile_incompatible", "A started run already owns a derived dataset."
             )
-        inspector = inspect(connection)
-        quote = connection.dialect.identifier_preparer.quote
-        expected_staging = {
-            "__oss_stage_" + UUID(run_id).hex for run_id in run_ids
-        }
-        staging_relations = expected_staging & set(
-            inspector.get_table_names() + inspector.get_view_names()
-        )
-        for name in sorted(staging_relations):
-            if name in inspector.get_view_names():
-                connection.exec_driver_sql(f"DROP VIEW {quote(name)}")
-            else:
-                connection.exec_driver_sql(f"DROP TABLE {quote(name)}")
+
         for row in runs:
             run_id = str(row["transformation_run_id"])
-            connection.execute(
+            relation_key = row["staging_relation_key"]
+            staging_name = _owned_staging_relation_name(relation_key)
+            _assert_staging_key_uniquely_owned(
+                connection, tables, run_id, relation_key
+            )
+            _drop_relation_if_present(connection, staging_name)
+            _assert_relation_absent(connection, staging_name)
+            changed = connection.execute(
                 update(tables.transformation_run).where(
                     tables.transformation_run.c.transformation_run_id == run_id,
                     tables.transformation_run.c.status == "started",
                 ).values(status="failed", completed_at=_now())
+            ).rowcount
+            if changed != 1:
+                raise TransformationError(
+                    "publication_failed",
+                    "Reconciliation run transition was not started -> failed.",
+                )
+            _append_run_event(
+                connection, tables, run_id=run_id,
+                code="interrupted_run", phase="reconciliation",
             )
-            connection.execute(insert(tables.transformation_event).values(
-                transformation_event_id=str(uuid4()), transformation_run_id=run_id,
-                event_ordinal=1, severity="error", event_code="interrupted_run",
-                execution_phase="reconciliation",
-                safe_detail_json=_canonical_json({
-                    "error_code": "interrupted_run",
-                    "execution_phase": "reconciliation",
-                    "correlation_id_hash": _sha(run_id),
-                }), created_at=_now(),
-            ))
             reconciled.append(run_id)
-    return {"reconciled": len(reconciled), "transformation_run_ids": reconciled}
-
+    return {
+        "reconciled": len(reconciled),
+        "transformation_run_ids": reconciled,
+    }
 
 
 def _next_disposition_ordinal(
