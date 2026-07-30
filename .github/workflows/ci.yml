@@ -138,3 +138,79 @@ jobs:
     env:
       OPENSTATSPEC_MARIADB_URL: mysql+pymysql://openstatspec:openstatspec@localhost:3306/openstatspec
     steps: *sql-test-steps
+
+  dolt-integration:
+    name: Dolt 2.2.2 integration
+    runs-on: ubuntu-latest
+    env:
+      OPENSTATSPEC_DOLT_URL: mysql+pymysql://openstatspec:openstatspec@127.0.0.1:13308/openstatspec
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout OpenStatSpec specification fixtures
+        uses: actions/checkout@v7
+        with: *specification-checkout
+      - name: Checkout required SPSS engine
+        uses: actions/checkout@v7
+        with: *engine-checkout
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Initialize Dolt 2.2.2
+        run: |
+          mkdir -p "$RUNNER_TEMP/openstatspec-dolt"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/openstatspec-dolt:/var/lib/dolt" \
+            --workdir /var/lib/dolt \
+            dolthub/dolt:2.2.2 init \
+            --name "OpenStatSpec CI" --email "ci@openstatspec.org"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/openstatspec-dolt:/var/lib/dolt" \
+            --workdir /var/lib/dolt \
+            dolthub/dolt:2.2.2 sql \
+            -q "CREATE DATABASE openstatspec"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/openstatspec-dolt:/var/lib/dolt" \
+            --workdir /var/lib/dolt \
+            dolthub/dolt:2.2.2 sql \
+            -q "CREATE USER 'openstatspec'@'%' IDENTIFIED BY 'openstatspec'; GRANT ALL PRIVILEGES ON openstatspec.* TO 'openstatspec'@'%'"
+          docker run --detach --name openstatspec-dolt \
+            --publish 127.0.0.1:13308:3306 \
+            --volume "$RUNNER_TEMP/openstatspec-dolt:/var/lib/dolt" \
+            --workdir /var/lib/dolt \
+            dolthub/dolt:2.2.2 sql-server -H 0.0.0.0 -l warning
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ./openstatspec-pyspssio
+      - run: python -m pip install -e ".[dev,sql]"
+      - name: Wait for Dolt
+        run: |
+          python - <<'PY'
+          import time
+          import pymysql
+
+          for attempt in range(30):
+              try:
+                  connection = pymysql.connect(
+                      host="127.0.0.1",
+                      port=13308,
+                      user="openstatspec",
+                      password="openstatspec",
+                      database="openstatspec",
+                  )
+              except pymysql.MySQLError:
+                  if attempt == 29:
+                      raise
+                  time.sleep(2)
+              else:
+                  connection.close()
+                  break
+          PY
+      - run: python -m pytest -m services
+      - name: Show Dolt logs on failure and stop server
+        if: always()
+        run: |
+          if docker inspect openstatspec-dolt >/dev/null 2>&1; then
+            if [ "${{ job.status }}" != "success" ]; then
+              docker logs openstatspec-dolt
+            fi
+            docker rm --force openstatspec-dolt
+          fi

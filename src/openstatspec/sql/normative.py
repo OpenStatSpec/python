@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger, CheckConstraint, Column, DateTime, Float, ForeignKey, Integer,
-    MetaData, String, Table, Text, UniqueConstraint, insert, inspect, select, update,
+    MetaData, String, Table, Text, UniqueConstraint, delete, insert, inspect, select, update,
 )
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 
@@ -259,11 +259,10 @@ def create(connection: Any, tables: NormativeTables) -> None:
     expected = {table.name for table in tables.all()}
     existing = set(inspect(connection).get_table_names(schema=tables.dataset.schema))
     if tables.catalog_identity.name not in existing:
-        conflicts = sorted(existing & expected)
-        if conflicts:
+        if existing:
             raise RuntimeError(
-                "The selected catalog namespace contains unowned OpenStatSpec relation names: "
-                + ", ".join(conflicts)
+                "The selected catalog namespace is occupied by an unowned OpenStatSpec relation "
+                "and has no catalog identity: " + ", ".join(sorted(existing))
             )
         tables.dataset.metadata.create_all(connection, tables=list(tables.all()))
         connection.execute(insert(tables.catalog_identity).values(
@@ -362,8 +361,9 @@ def store_imported_dataset(
     missing_rules: Iterable[Mapping[str, Any]], attributes: Iterable[Mapping[str, Any]],
     multiple_response_sets: Iterable[Mapping[str, Any]], source_extensions: Mapping[str, Any],
     case_weight_variable: str | None = None,
+    dataset_id: str | None = None,
 ) -> str:
-    dataset_id = str(uuid4())
+    dataset_id = dataset_id or str(uuid4())
     connection.execute(insert(tables.dataset).values(
         dataset_id=dataset_id, spec_version=SPEC_VERSION, source_format=source_format,
         physical_table_schema=None, physical_table_name=physical_table_name,
@@ -505,6 +505,70 @@ def store_imported_dataset(
                 source_ordinal=int(row["member_ordinal"]),
             ))
     return dataset_id
+
+
+def delete_dataset_representation(
+    connection: Any, tables: NormativeTables, dataset_id: str,
+) -> None:
+    """Delete one partially written dataset while retaining operation audit rows."""
+    variable_ids = select(tables.variable.c.variable_id).where(
+        tables.variable.c.dataset_id == dataset_id
+    )
+    label_set_ids = select(tables.value_label_set.c.value_label_set_id).where(
+        tables.value_label_set.c.dataset_id == dataset_id
+    )
+    variable_set_ids = select(tables.variable_set.c.variable_set_id).where(
+        tables.variable_set.c.dataset_id == dataset_id
+    )
+    response_set_ids = select(
+        tables.multiple_response_set.c.multiple_response_set_id
+    ).where(tables.multiple_response_set.c.dataset_id == dataset_id)
+
+    connection.execute(delete(tables.fidelity_event).where(
+        tables.fidelity_event.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.dataset_weight_variable).where(
+        tables.dataset_weight_variable.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.variable_value_label_set).where(
+        tables.variable_value_label_set.c.variable_id.in_(variable_ids)
+    ))
+    connection.execute(delete(tables.missing_rule).where(
+        tables.missing_rule.c.variable_id.in_(variable_ids)
+    ))
+    connection.execute(delete(tables.variable_attribute).where(
+        tables.variable_attribute.c.variable_id.in_(variable_ids)
+    ))
+    connection.execute(delete(tables.variable_set_member).where(
+        tables.variable_set_member.c.variable_set_id.in_(variable_set_ids)
+    ))
+    connection.execute(delete(tables.multiple_response_member).where(
+        tables.multiple_response_member.c.multiple_response_set_id.in_(response_set_ids)
+    ))
+    connection.execute(delete(tables.value_label).where(
+        tables.value_label.c.value_label_set_id.in_(label_set_ids)
+    ))
+    connection.execute(delete(tables.value_label_set).where(
+        tables.value_label_set.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.dataset_attribute).where(
+        tables.dataset_attribute.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.document).where(
+        tables.document.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.variable_set).where(
+        tables.variable_set.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.multiple_response_set).where(
+        tables.multiple_response_set.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.variable).where(
+        tables.variable.c.dataset_id == dataset_id
+    ))
+    connection.execute(delete(tables.dataset).where(
+        tables.dataset.c.dataset_id == dataset_id
+    ))
 
 
 def dataset_id_for_name(connection: Any, tables: NormativeTables, dataset_name: str) -> str:

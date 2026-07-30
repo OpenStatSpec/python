@@ -4,6 +4,8 @@ A declaration is deliberately not a claim that a live target has been tested.
 Importers use this information for preflight checks before creating a dataset.
 """
 
+import math
+
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -53,7 +55,13 @@ MYSQL = SqlProfile(
     "mysql", ("mysql", "mariadb"), 1_016, 64, True, True,
     4_294_967_295, 65_535, True, ("PyMySQL",),
 )
-PROFILES = (SQLITE, POSTGRESQL, MYSQL)
+DOLT = SqlProfile(
+    "dolt", (), 305, 64, True, True,
+    65_504, 65_504, True, ("PyMySQL",),
+)
+# Dolt deliberately has no URL scheme. It is selected only after the server
+# reached through the MySQL wire family positively identifies itself as Dolt.
+PROFILES = (SQLITE, POSTGRESQL, MYSQL, DOLT)
 
 
 def profile_for_url(database_url: str) -> SqlProfile:
@@ -170,6 +178,15 @@ def preflight(
         row_bytes = 8
         for variable in variables:
             if variable.get("storage_kind") != "string":
+                value = row.get(str(variable["physical_name"]))
+                if value is not None and not math.isfinite(float(value)):
+                    raise _exceeded(
+                        "nonfinite_numeric_value",
+                        f"row {row_ordinal} value for {variable['source_name']!r} "
+                        "is not a finite binary64 value.",
+                        row_ordinal=row_ordinal,
+                        source_name=variable["source_name"],
+                    )
                 row_bytes += 8
                 continue
             value = row.get(str(variable["physical_name"]), "")
@@ -183,7 +200,7 @@ def preflight(
                     row_ordinal=row_ordinal, source_name=variable["source_name"],
                     encoded_bytes=encoded_bytes, maximum=profile.max_text_value_bytes,
                 )
-            row_bytes += 20 if profile.name in {"mysql", "mariadb"} else encoded_bytes
+            row_bytes += 20 if profile.name in {"mysql", "mariadb", "dolt"} else encoded_bytes
         if row_bytes > profile.max_row_bytes:
             raise _exceeded(
                 "row_size_limit",
@@ -197,7 +214,7 @@ def preflight(
 def _row_storage_bytes(profile: SqlProfile, variable: Mapping[str, Any]) -> int:
     if variable.get("storage_kind") == "numeric":
         return 8
-    if profile.name in {"mysql", "mariadb"}:
+    if profile.name in {"mysql", "mariadb", "dolt"}:
         return 20
     return int(variable.get("string_width") or 0)
 

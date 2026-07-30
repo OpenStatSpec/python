@@ -14,7 +14,7 @@ from sqlalchemy import inspect as inspect_database
 
 import openstatspec
 from conformance import compare_sav_semantics
-from openstatspec.sql.profiles import profile_for_url
+from openstatspec.sql.capabilities import effective_profile
 
 
 SEMANTIC_EXPECTATIONS = {
@@ -276,6 +276,7 @@ def test_official_manifest_round_trips_through_sqlite(
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
+        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 @pytest.mark.parametrize(("fixture", "source"), _round_trip_fixtures())
@@ -299,7 +300,7 @@ def _assert_official_preflight_failure(
     )
     assert fixture["directions"] == ["import"]
     assert set(fixture["expects"]) == PREFLIGHT_EXPECTATIONS
-    maximum = profile_for_url(database_url).max_physical_variables
+    maximum = effective_profile(database_url)[0].max_physical_variables
     source = tmp_path / f"preflight-too-wide-{profile}-{uuid4().hex[:8]}.sav"
     columns = [f"v{ordinal:05d}" for ordinal in range(1, maximum + 2)]
     pyspssio.write_sav(
@@ -358,6 +359,7 @@ def test_official_preflight_failure_is_atomic_and_diagnostic(tmp_path: Path) -> 
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
+        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 def test_official_preflight_failure_through_server_profiles(

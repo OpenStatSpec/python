@@ -38,6 +38,8 @@ from .dictionary import (
     variable_attribute_pairs,
 )
 from ..core import UnsupportedOperationError
+from ..sql.capabilities import effective_profile
+from ..sql.profiles import preflight
 from ..sql.wide import (
     create_wide_dataset,
     physical_name,
@@ -262,7 +264,11 @@ def export_sav_dataset(
     destination_path = Path(destination)
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
         raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
-    dataset, variables, rows = read_wide_dataset(database_url=database_url, dataset_id=dataset_id)
+    profile, _active = effective_profile(database_url)
+    dataset, variables, rows = read_wide_dataset(
+        database_url=database_url, dataset_id=dataset_id, profile=profile,
+    )
+    preflight(profile, variables, rows=rows)
     validate_spss_catalog(
         variables,
         case_weight_variable=dataset.get("case_weight_variable"),

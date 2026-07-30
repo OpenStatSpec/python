@@ -13,12 +13,14 @@ unencrypted .sav and .zsav files, and writes both formats through the same imple
 
 ## Verified SQL profiles
 
-SQLite has a local reference fixture. PostgreSQL, MySQL, and MariaDB have
+SQLite has a local reference fixture. PostgreSQL, MySQL, MariaDB, and Dolt have
 separate service-backed conformance checks in GitHub Actions that import,
-validate, and export the supported fixture. MySQL 8.4 and MariaDB 11.4 exercise
-the shared profile contract; this does not claim coverage for every server
-configuration. An import that exceeds a target's strict single-table column
-limit fails before it creates a dataset.
+validate, and export the supported fixture. Dolt is an independent core profile
+pinned to exact server version 2.2.2 and detected over `mysql+pymysql` by active
+server identity; other Dolt versions and unknown MySQL-wire products fail closed.
+The core Dolt profile does not claim support for the separate Transformation
+Workflow. An import that exceeds a target's strict single-table column or row
+envelope fails before it creates a dataset.
 
 ## Fidelity contract
 

@@ -62,12 +62,17 @@ engine. Its import module remains `pyspssio`; the exact source commit is recorde
 in operation metadata. There is no fallback reader or writer. It supports unencrypted SAV and ZSAV import and
 SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
 reference path.
-PostgreSQL, MySQL, and MariaDB are each covered by separate service-backed CI
-conformance checks. Use these explicit SQLAlchemy URLs:
+PostgreSQL, MySQL, MariaDB, and Dolt are each covered by separate service-backed CI
+conformance checks. Dolt support is an independent core profile pinned to 2.2.2;
+other Dolt versions and unknown MySQL-wire products fail closed. Use these explicit SQLAlchemy URLs:
 
 - SQLite: `sqlite:///dataset.sqlite`
 - PostgreSQL: `postgresql+psycopg://user:password@host/database`
 - MySQL/MariaDB: `mysql+pymysql://user:password@host/database`
+- Dolt 2.2.2: `mysql+pymysql://user:password@host/database` (detected by server identity)
+
+The Dolt core profile supports strict wide-table import, validation, and export;
+the separate Transformation Workflow is unsupported.
 
 Run `openstatspec capabilities` before an integration to inspect the
 machine-readable feature matrix. Export is deliberately strict: if known
