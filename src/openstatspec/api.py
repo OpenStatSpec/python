@@ -20,6 +20,11 @@ from .sql.workflow import (
     remove_derived_relation as _remove_derived_relation,
     retire_derived_dataset as _retire_derived_dataset,
 )
+from .sql.inplace_transform import (
+    apply_spss_in_place as _apply_spss_in_place,
+    in_place_transformation_capabilities,
+    install_in_place_transformation_schema as _install_in_place_schema,
+)
 from .sql.capabilities import (
     SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, active_connection, catalog_binding,
 )
@@ -84,6 +89,9 @@ def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
         "sql_profiles": declared_profiles(database_url),
         "optional_profiles": {
             "sql_transformation_workflow": transformation_capabilities(database_url),
+            "spss_in_place_transformation": (
+                in_place_transformation_capabilities()
+            ),
         },
     }
     return declaration
@@ -128,6 +136,27 @@ def execute_sql_transformation(*, database_url: Any, **options: Any) -> Mapping[
 
 def derive_sql_dataset(*, database_url: Any, **options: Any) -> Mapping[str, Any]:
     return result(_derive_dataset(database_url=str(database_url), **options))
+
+
+def apply_spss_in_place(
+    *, database_url: Any, dataset_id: str, source_text: str,
+    actor: str, expected_branch: str | None = None,
+    expected_head: str | None = None,
+) -> Mapping[str, Any]:
+    """Apply supported SPSS-like syntax to the same SQL dataset/table."""
+    return result(_apply_spss_in_place(
+        database_url=str(database_url),
+        dataset_id=dataset_id,
+        source_text=source_text,
+        actor=actor,
+        expected_branch=expected_branch,
+        expected_head=expected_head,
+    ))
+
+
+def install_in_place_transformation_schema(*, database_url: Any) -> None:
+    """Install the compact apply-audit relation before the first apply."""
+    _install_in_place_schema(database_url=str(database_url))
 
 
 def validate_derived(*, database_url: Any, derived_dataset_id: str) -> Mapping[str, Any]:

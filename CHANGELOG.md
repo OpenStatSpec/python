@@ -4,8 +4,21 @@ All notable changes to this reference implementation are documented here.
 
 ## Unreleased
 
+### Added
+
+- Added a bounded SPSS-like `RECODE`, `VARIABLE LABELS`, and `VALUE LABELS`
+  parser with stable diagnostics and conformance fixtures.
+- Added canonical Transformation Plan serialization, RFC 8785 hashes, schema
+  binding, deterministic typed operations, and an agent-facing CLI/API.
+- Added product-neutral in-place execution with same dataset/table identity,
+  direct data and metadata mutation, and compact operation audit. Dolt adds
+  expected branch/HEAD and clean-working-set checks.
+
 ### Changed
 
+- Version history, diff, rollback, restoration, and commit remain database
+  responsibilities; the transformer creates no derived/copy/snapshot/recovery
+  layer and performs no `DOLT_COMMIT`.
 - SQL server support now distinguishes conservative family claims from exact
   CI evidence: PostgreSQL 17.x/18.x at 17.10/18.4, MySQL 8.4.x/9.7.x at
   8.4.11/9.7.2, and MariaDB 11.4.x/11.8.x/12.3.x at
