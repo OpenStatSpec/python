@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: OpenStatSpec/specification
-          ref: d287c2cde9ade71f04e27dd012caec876901aed5
+          ref: 79339ec3d8f8aa81789b7e85f6b8afa6f1374e50
           path: openstatspec-specification
       - name: Checkout required SPSS engine
         uses: actions/checkout@v7

@@ -28,10 +28,10 @@ def test_profile_detection_tracks_supported_dialect_urls() -> None:
 def test_profile_declarations_publish_released_specification_provenance() -> None:
     for declaration in capabilities.profile_declarations().values():
         assert declaration["specification_status"] == "released"
-        assert declaration["specification_release"] == "v0.1.0"
+        assert declaration["specification_release"] == "v0.2.0"
         assert (
             declaration["specification_commit"]
-            == "d287c2cde9ade71f04e27dd012caec876901aed5"
+            == "79339ec3d8f8aa81789b7e85f6b8afa6f1374e50"
         )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:

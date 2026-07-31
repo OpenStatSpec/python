@@ -69,8 +69,8 @@ machine-readable loss report with the export result.
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
 6. Confirm the release tag matches the package version and that CI, release
-   fixtures, and capabilities use OpenStatSpec specification release `v0.1.0`
-   at exact commit `d287c2cde9ade71f04e27dd012caec876901aed5`.
+   fixtures, and capabilities use OpenStatSpec specification release `v0.2.0`
+   at exact commit `79339ec3d8f8aa81789b7e85f6b8afa6f1374e50`.
 7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds

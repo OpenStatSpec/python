@@ -2,9 +2,11 @@
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
 
 from .api import (
-    capability_matrix, derive_sql_dataset, execute_sql_transformation,
+    apply_spss_in_place, capability_matrix, derive_sql_dataset,
+    execute_sql_transformation,
     export_sav, get_dataset, import_sav, inspect, list_datasets,
     register_sql_transformation, validate, validate_derived,
 )
@@ -73,6 +75,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     derive.add_argument("--dataset-name")
     derive.add_argument("--weight-variable")
 
+    apply_spss = commands.add_parser(
+        "apply-spss",
+        help="apply supported SPSS syntax in-place on a controlled Dolt branch",
+    )
+    apply_spss.add_argument("--database-url", required=True)
+    apply_spss.add_argument("--dataset-id", required=True)
+    apply_spss.add_argument("--actor", required=True)
+    apply_spss.add_argument("--expected-branch")
+    apply_spss.add_argument("--expected-head")
+    syntax_source = apply_spss.add_mutually_exclusive_group(required=True)
+    syntax_source.add_argument("--syntax")
+    syntax_source.add_argument("--syntax-file")
+
     derived_validator = commands.add_parser("validate-derived", help="validate a derived dataset")
     derived_validator.add_argument("--database-url", required=True)
     derived_validator.add_argument("--derived-dataset-id", required=True)
@@ -121,6 +136,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             parameters=_json(args.parameters_json, {}), output_mode=args.mode,
             transformation_name=args.name, dataset_name=args.dataset_name,
             weight_variable=args.weight_variable,
+        )
+    elif args.command == "apply-spss":
+        source_text = (
+            args.syntax
+            if args.syntax is not None
+            else Path(args.syntax_file).read_text(encoding="utf-8")
+        )
+        output = apply_spss_in_place(
+            database_url=args.database_url,
+            dataset_id=args.dataset_id,
+            source_text=source_text,
+            actor=args.actor,
+            expected_branch=args.expected_branch,
+            expected_head=args.expected_head,
         )
     else:
         output = validate_derived(
