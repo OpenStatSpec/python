@@ -82,6 +82,17 @@ Dolt claims the conservative 2.2.x range `>=2.2.2,<2.3.0`; its full service
 suite is exercised independently at exact versions 2.2.2 and 2.2.3 using
 immutable container-image digests.
 
+| Engine/profile | Runtime supported policy | Exact CI-tested versions |
+| --- | --- | --- |
+| SQLite core / optional workflow | Core `>=3.24.0,<4.0.0`; optional workflow `>=3.35.0,<4.0.0` | Runtime-provided SQLite on Python 3.11–3.14 runners; not a pinned server image |
+| PostgreSQL | 17.x and 18.x | 17.10 and 18.4 |
+| MySQL | 8.4.x and 9.7.x | 8.4.11 and 9.7.2 |
+| MariaDB | 11.4.x, 11.8.x, and 12.3.x | 11.4.12, 11.8.8, and 12.3.2 |
+| Dolt | 2.2.x with `>=2.2.2,<2.3.0` | 2.2.2 and 2.2.3 |
+
+Microsoft SQL Server (MSSQL) remains roadmap-only and is not a supported
+runtime profile; see the specification's [MSSQL roadmap](https://github.com/OpenStatSpec/specification/blob/main/docs/mssql-dialect-roadmap.md).
+
 Use these explicit SQLAlchemy URLs:
 
 - SQLite: `sqlite:///dataset.sqlite`
