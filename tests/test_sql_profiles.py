@@ -28,10 +28,10 @@ def test_profile_detection_tracks_supported_dialect_urls() -> None:
 def test_profile_declarations_publish_specification_rc_provenance() -> None:
     for declaration in capabilities.profile_declarations().values():
         assert declaration["specification_status"] == "release_candidate"
-        assert declaration["specification_release"] == "v1.0.0-rc.1"
+        assert declaration["specification_release"] is None
         assert (
             declaration["specification_commit"]
-            == "fef0dc6f4b17ff7141dad3f49d0524c63efbfed5"
+            == "e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5"
         )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:
@@ -89,16 +89,21 @@ def test_normative_catalog_compiles_for_every_sql_family() -> None:
 @pytest.mark.parametrize(
     ("profile", "version", "supported"),
     [
-        ("mysql", "8.4.6", True), ("mysql", "9.7.0", True),
-        ("mysql", "8.0.44", False),
+        ("mysql", "8.4.0", True), ("mysql", "8.4.999", True),
+        ("mysql", "9.7.2", True), ("mysql", "8.0.44", False),
+        ("mysql", "8.5.0", False), ("mysql", "9.8.0", False),
         ("dolt", "2.2.2", True), ("dolt", " 2.2.2 ", True),
         ("dolt", "2.2.3", False), ("dolt", "2.2.2-rc1", False),
         ("dolt", "2.2.2+build.1", False), ("dolt", "garbage", False),
-        ("mariadb", "11.4.8-MariaDB", True),
-        ("mariadb", "11.8.3-MariaDB", True),
-        ("mariadb", "12.3.1-MariaDB", True),
-        ("postgresql", "17.6", True), ("postgresql", "18.1", True),
-        ("postgresql", "16.10", False),
+        ("mariadb", "11.4.0-MariaDB", True),
+        ("mariadb", "11.4.999-MariaDB", True),
+        ("mariadb", "11.8.8-MariaDB", True),
+        ("mariadb", "12.3.2-MariaDB", True),
+        ("mariadb", "11.5.0-MariaDB", False),
+        ("mariadb", "12.4.0-MariaDB", False),
+        ("postgresql", "17.0", True), ("postgresql", "17.99", True),
+        ("postgresql", "18.4", True), ("postgresql", "16.10", False),
+        ("postgresql", "19.0", False),
     ],
 )
 def test_claimed_server_version_policy_is_explicit(
@@ -123,10 +128,70 @@ def test_active_server_identity_matches_claimed_ci_profile(
     database_url = os.environ.get(environment_name)
     if not database_url:
         pytest.skip(f"{environment_name} is not configured")
+
     active = active_connection(database_url)
     assert active["profile"] == profile
     assert active["claimed_supported"] is True
     assert active["matched_claim"] is not None
+
+
+@pytest.mark.services
+@pytest.mark.parametrize(
+    ("database_environment", "version_environment", "profile"),
+    [
+        (
+            "OPENSTATSPEC_POSTGRES_URL",
+            "OPENSTATSPEC_EXPECTED_POSTGRES_VERSION",
+            "postgresql",
+        ),
+        (
+            "OPENSTATSPEC_MYSQL_URL",
+            "OPENSTATSPEC_EXPECTED_MYSQL_VERSION",
+            "mysql",
+        ),
+        (
+            "OPENSTATSPEC_MARIADB_URL",
+            "OPENSTATSPEC_EXPECTED_MARIADB_VERSION",
+            "mariadb",
+        ),
+    ],
+)
+def test_live_server_version_matches_exact_ci_evidence(
+    database_environment: str, version_environment: str, profile: str,
+) -> None:
+    database_url = os.environ.get(database_environment)
+    if not database_url:
+        pytest.skip(f"{database_environment} is not configured")
+    expected_version = os.environ.get(version_environment)
+    assert expected_version, f"{version_environment} is required for CI provenance"
+
+    active = active_connection(database_url)
+
+    assert active["profile"] == profile
+    assert active["server_version"] == expected_version
+
+
+def test_server_policy_distinguishes_claimed_families_from_exact_ci_evidence() -> None:
+    declarations = capabilities.profile_declarations()
+    assert declarations["mysql"]["claimed_server_versions"] == [
+        "MySQL 8.4.x", "MySQL 9.7.x",
+    ]
+    assert declarations["mysql"]["ci_tested_server_versions"] == [
+        "MySQL 8.4.11", "MySQL 9.7.2",
+    ]
+    assert declarations["mariadb"]["claimed_server_versions"] == [
+        "MariaDB 11.4.x", "MariaDB 11.8.x", "MariaDB 12.3.x",
+    ]
+    assert declarations["mariadb"]["ci_tested_server_versions"] == [
+        "MariaDB 11.4.12", "MariaDB 11.8.8", "MariaDB 12.3.2",
+    ]
+    assert declarations["postgresql"]["claimed_server_versions"] == [
+        "PostgreSQL 17.x", "PostgreSQL 18.x",
+    ]
+    assert declarations["postgresql"]["ci_tested_server_versions"] == [
+        "PostgreSQL 17.10", "PostgreSQL 18.4",
+    ]
+
 
 class _ProbeResult:
     def __init__(self, value):

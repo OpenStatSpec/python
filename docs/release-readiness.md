@@ -1,4 +1,4 @@
-# 0.2.0 release readiness
+# Next release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
@@ -14,13 +14,13 @@ database contract.
 
 ## SQL profiles
 
-| Profile | Connection URL | Verification |
-| --- | --- | --- |
-| SQLite | `sqlite:///dataset.sqlite` | Python 3.11–3.14 local reference jobs |
-| PostgreSQL | `postgresql+psycopg://…` | PostgreSQL 17 and 18 service jobs |
-| MySQL | `mysql+pymysql://…` | MySQL 8.4 and 9.7 service jobs |
-| MariaDB | `mysql+pymysql://…` | MariaDB 11.4, 11.8, and 12.3 service jobs |
-| Dolt | `mysql+pymysql://…` | Exact Dolt 2.2.2 service job |
+| Profile | Connection URL | Claimed versions | Exact CI evidence |
+| --- | --- | --- | --- |
+| SQLite | `sqlite:///dataset.sqlite` | `>=3.24.0,<4.0.0` | Active Python 3.11–3.14 runner version |
+| PostgreSQL | `postgresql+psycopg://…` | 17.x and 18.x | 17.10 and 18.4 |
+| MySQL | `mysql+pymysql://…` | 8.4.x and 9.7.x | 8.4.11 and 9.7.2 |
+| MariaDB | `mysql+pymysql://…` | 11.4.x, 11.8.x, and 12.3.x | 11.4.12, 11.8.8, and 12.3.2 |
+| Dolt | `mysql+pymysql://…` | Exact 2.2.2 | Exact 2.2.2 |
 
 Separate service matrices test the shared MySQL/MariaDB profile contract while
 retaining distinct active-server identities and version claims. Dolt is an
@@ -29,6 +29,15 @@ independent core profile that fails closed unless the product version is exactly
 claim coverage for every server configuration. The machine-readable capability
 declaration reports both the theoretical profile boundaries and effective
 limits observed from the active connection.
+Every server service job compares the normalized live product version with its
+exact matrix entry, so a moved or mismatched image cannot substantiate the CI
+declaration. SQLite's optional Transformation Workflow retains its narrower
+`>=3.35.0,<4.0.0` live preflight alongside the core `>=3.24.0,<4.0.0` policy.
+Microsoft SQL Server remains unsupported and must not appear in runtime
+capabilities; future implementation requirements are documented in the
+specification's
+[MSSQL dialect roadmap](https://github.com/OpenStatSpec/specification/blob/main/docs/mssql-dialect-roadmap.md).
+
 
 ## Export-loss policy
 
@@ -53,14 +62,15 @@ machine-readable loss report with the export result.
    first and confirm that a clean environment can download it from PyPI. The
    main package has no fallback SPSS engine.
 2. Run `python -m pytest -m "not services"`.
-3. Confirm the GitHub Actions matrix is green for PostgreSQL 17/18, MySQL
-   8.4/9.7, MariaDB 11.4/11.8/12.3, and exact Dolt 2.2.2.
+3. Confirm the GitHub Actions matrix is green for exact PostgreSQL 17.10/18.4,
+   MySQL 8.4.11/9.7.2, MariaDB 11.4.12/11.8.8/12.3.2, and exact Dolt
+   2.2.2 service evidence.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
-6. Confirm the `v0.2.0` tag matches package version `0.2.0`, and that CI and
-   release fixtures use specification release `v1.0.0-rc.1` at exact commit
-   `fef0dc6f4b17ff7141dad3f49d0524c63efbfed5`.
+6. Confirm the release tag matches the package version and that CI, release
+   fixtures, and capabilities use untagged specification `main` commit
+   `e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5` with a null release value.
 7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds

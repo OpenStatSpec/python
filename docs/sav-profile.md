@@ -15,12 +15,25 @@ unencrypted .sav and .zsav files, and writes both formats through the same imple
 
 SQLite has a local reference fixture. PostgreSQL, MySQL, MariaDB, and Dolt have
 separate service-backed conformance checks in GitHub Actions that import,
-validate, and export the supported fixture. Dolt is an independent core profile
-pinned to exact server version 2.2.2 and detected over `mysql+pymysql` by active
-server identity; other Dolt versions and unknown MySQL-wire products fail closed.
-The core Dolt profile does not claim support for the separate Transformation
-Workflow. An import that exceeds a target's strict single-table column or row
-envelope fails before it creates a dataset.
+validate, and export the supported fixture. The family claims and exact CI
+points are PostgreSQL 17.x/18.x at 17.10/18.4, MySQL 8.4.x/9.7.x at
+8.4.11/9.7.2, and MariaDB 11.4.x/11.8.x/12.3.x at
+11.4.12/11.8.8/12.3.2. CI compares each live normalized server version with
+that exact evidence point.
+
+Dolt is an independent core profile pinned to exact server version 2.2.2 and
+detected over `mysql+pymysql` by active server identity; other Dolt versions
+and unknown MySQL-wire products fail closed. The core Dolt profile does not
+claim support for the separate Transformation Workflow. An import that exceeds
+a target's strict single-table column or row envelope fails before it creates a
+dataset.
+
+The core SQLite profile remains `>=3.24.0,<4.0.0`; only the optional
+Transformation Workflow requires `>=3.35.0,<4.0.0`. Microsoft SQL Server is
+not a supported profile. Its driver, SQL-difference, preflight, CI,
+conformance, security, and atomicity work is future scope in the
+specification's
+[MSSQL dialect roadmap](https://github.com/OpenStatSpec/specification/blob/main/docs/mssql-dialect-roadmap.md).
 
 ## Fidelity contract
 

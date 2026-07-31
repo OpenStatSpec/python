@@ -15,8 +15,8 @@ from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, SqlProfile
 from .profiles import profile_for_url, validate_connection_url
 from ..core import UnsupportedOperationError
 
-SPECIFICATION_COMMIT = "fef0dc6f4b17ff7141dad3f49d0524c63efbfed5"
-SPECIFICATION_RELEASE: str | None = "v1.0.0-rc.1"
+SPECIFICATION_COMMIT = "e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5"
+SPECIFICATION_RELEASE: str | None = None
 
 SERVER_POLICIES = {
     "sqlite": {
@@ -25,7 +25,7 @@ SERVER_POLICIES = {
     },
     "mysql": {
         "claimed": ["MySQL 8.4.x", "MySQL 9.7.x"],
-        "ci": ["MySQL 8.4.x", "MySQL 9.7.x"],
+        "ci": ["MySQL 8.4.11", "MySQL 9.7.2"],
     },
     "dolt": {
         "claimed": ["Dolt 2.2.2"],
@@ -33,11 +33,11 @@ SERVER_POLICIES = {
     },
     "mariadb": {
         "claimed": ["MariaDB 11.4.x", "MariaDB 11.8.x", "MariaDB 12.3.x"],
-        "ci": ["MariaDB 11.4.x", "MariaDB 11.8.x", "MariaDB 12.3.x"],
+        "ci": ["MariaDB 11.4.12", "MariaDB 11.8.8", "MariaDB 12.3.2"],
     },
     "postgresql": {
         "claimed": ["PostgreSQL 17.x", "PostgreSQL 18.x"],
-        "ci": ["PostgreSQL 17.x", "PostgreSQL 18.x"],
+        "ci": ["PostgreSQL 17.10", "PostgreSQL 18.4"],
     },
 }
 
@@ -155,7 +155,7 @@ def active_connection(database_url: str) -> dict[str, Any]:
         "product": profile_name,
         "transport": "mysql" if dialect in {"mysql", "mariadb"} else dialect,
         "driver": engine.dialect.driver,
-        "server_version": _normalized_version(raw_product_version),
+        "server_version": _normalized_version(profile_name, raw_product_version),
         "raw_server_version": raw_product_version,
         "raw_wire_version": raw_wire_version,
         "raw_product_version": raw_product_version,
@@ -422,5 +422,8 @@ def _version_tuple(raw_version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.groups(default="0"))
 
 
-def _normalized_version(raw_version: str) -> str:
-    return ".".join(str(part) for part in _version_tuple(raw_version))
+def _normalized_version(profile: str, raw_version: str) -> str:
+    """Normalize a product version using that product's stable release width."""
+    version = _version_tuple(raw_version)
+    width = 2 if profile == "postgresql" else 3
+    return ".".join(str(part) for part in version[:width])
