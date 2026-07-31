@@ -25,13 +25,13 @@ def test_profile_detection_tracks_supported_dialect_urls() -> None:
     assert profile_for_url("mariadb+mariadbconnector://user@host/database") is MYSQL
     assert profile_for_url("mysql+pymysql://user@host/dolt_database") is MYSQL
 
-def test_profile_declarations_publish_specification_rc_provenance() -> None:
+def test_profile_declarations_publish_released_specification_provenance() -> None:
     for declaration in capabilities.profile_declarations().values():
-        assert declaration["specification_status"] == "release_candidate"
-        assert declaration["specification_release"] is None
+        assert declaration["specification_status"] == "released"
+        assert declaration["specification_release"] == "v0.1.0"
         assert (
             declaration["specification_commit"]
-            == "e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5"
+            == "d287c2cde9ade71f04e27dd012caec876901aed5"
         )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:
@@ -93,8 +93,12 @@ def test_normative_catalog_compiles_for_every_sql_family() -> None:
         ("mysql", "9.7.2", True), ("mysql", "8.0.44", False),
         ("mysql", "8.5.0", False), ("mysql", "9.8.0", False),
         ("dolt", "2.2.2", True), ("dolt", " 2.2.2 ", True),
-        ("dolt", "2.2.3", False), ("dolt", "2.2.2-rc1", False),
-        ("dolt", "2.2.2+build.1", False), ("dolt", "garbage", False),
+        ("dolt", "2.2.3", True), ("dolt", "2.2.999", True),
+        ("dolt", "2.2.0", False), ("dolt", "2.2.1", False),
+        ("dolt", "2.3.0", False), ("dolt", "2.2", False),
+        ("dolt", "2.2.3-rc1", False), ("dolt", "2.2.3+build.1", False),
+        ("dolt", "v2.2.3", False), ("dolt", "2.2.03", False),
+        ("dolt", "garbage", False),
         ("mariadb", "11.4.0-MariaDB", True),
         ("mariadb", "11.4.999-MariaDB", True),
         ("mariadb", "11.8.8-MariaDB", True),
@@ -154,6 +158,11 @@ def test_active_server_identity_matches_claimed_ci_profile(
             "OPENSTATSPEC_EXPECTED_MARIADB_VERSION",
             "mariadb",
         ),
+        (
+            "OPENSTATSPEC_DOLT_URL",
+            "OPENSTATSPEC_EXPECTED_DOLT_VERSION",
+            "dolt",
+        ),
     ],
 )
 def test_live_server_version_matches_exact_ci_evidence(
@@ -190,6 +199,17 @@ def test_server_policy_distinguishes_claimed_families_from_exact_ci_evidence() -
     ]
     assert declarations["postgresql"]["ci_tested_server_versions"] == [
         "PostgreSQL 17.10", "PostgreSQL 18.4",
+    ]
+    assert declarations["dolt"]["claimed_server_versions"] == ["Dolt 2.2.x"]
+    assert declarations["dolt"]["claimed_version_range"] == {
+        "minimum_inclusive": "2.2.2",
+        "maximum_exclusive": "2.3.0",
+    }
+    assert declarations["dolt"]["ci_tested_server_versions"] == [
+        "Dolt 2.2.2", "Dolt 2.2.3",
+    ]
+    assert declarations["dolt"]["exact_ci_tested_versions"] == [
+        "2.2.2", "2.2.3",
     ]
 
 
@@ -235,7 +255,7 @@ def _mock_mysql_probes(monkeypatch, **overrides):
     responses = {
         "select @@version": "8.0.31",
         "select @@version_comment": "Dolt",
-        "select DOLT_VERSION()": "2.2.2",
+        "select DOLT_VERSION()": "2.2.3",
         "select @@max_allowed_packet": 1_073_741_824,
     }
     responses.update(overrides)
@@ -253,12 +273,12 @@ def test_dolt_identity_is_exact_and_publishes_wire_and_product_versions(monkeypa
 
     assert active["dialect"] == "mysql"
     assert active["profile"] == active["engine"] == active["product"] == "dolt"
-    assert active["transport"] == "mysql"
+    assert active["transport"] == "mysql_compatible"
     assert active["driver"] == "pymysql"
     assert active["raw_wire_version"] == "8.0.31"
-    assert active["raw_product_version"] == active["raw_server_version"] == "2.2.2"
+    assert active["raw_product_version"] == active["raw_server_version"] == "2.2.3"
     assert active["raw_version_comment"] == "  dOlT  "
-    assert active["server_version"] == "2.2.2"
+    assert active["server_version"] == "2.2.3"
     assert active["identity_source"] == "SELECT @@version, @@version_comment, DOLT_VERSION()"
     assert active["claimed_supported"] is True
     assert connection.calls == [
@@ -300,16 +320,19 @@ def test_dolt_comment_requires_a_nonempty_product_version(monkeypatch) -> None:
 
 @pytest.mark.parametrize(
     "product_version",
-    ["2.2.2-rc1", "2.2.2+build.1", "v2.2.2", "garbage"],
+    [
+        "2.2.0", "2.2.1", "2.3.0", "2.2",
+        "2.2.3-rc1", "2.2.3+build.1", "v2.2.3", "2.2.03", "garbage",
+    ],
 )
-def test_dolt_identity_rejects_nonexact_product_versions(
+def test_dolt_identity_rejects_out_of_range_or_noncanonical_product_versions(
     monkeypatch, product_version,
 ) -> None:
     connection = _mock_mysql_probes(
         monkeypatch, **{"select DOLT_VERSION()": product_version},
     )
 
-    with pytest.raises(UnsupportedOperationError, match="exactly 2.2.2"):
+    with pytest.raises(UnsupportedOperationError, match=r">=2\.2\.2,<2\.3\.0"):
         active_connection("mysql+pymysql://user@host/database")
 
     assert connection.calls == [
@@ -351,7 +374,7 @@ def test_non_dolt_products_never_call_the_dolt_function(monkeypatch) -> None:
 
 def test_effective_profile_selects_dolt_without_changing_url_profile(monkeypatch) -> None:
     active = {
-        "profile": "dolt", "server_version": "2.2.2", "claimed_supported": True,
+        "profile": "dolt", "server_version": "2.2.3", "claimed_supported": True,
         "observed": {"max_allowed_packet": 1_073_741_824},
     }
     monkeypatch.setattr(capabilities, "active_connection", lambda _url: active)
@@ -370,10 +393,19 @@ def test_effective_profile_selects_dolt_without_changing_url_profile(monkeypatch
 def test_dolt_declaration_labels_conservative_envelopes() -> None:
     declaration = capabilities.profile_declarations()["dolt"]
 
-    assert declaration["dialect"] == declaration["transport"] == "mysql"
-    assert declaration["profile"] == declaration["engine"] == "dolt"
-    assert declaration["claimed_server_versions"] == ["Dolt 2.2.2"]
-    assert declaration["ci_tested_server_versions"] == ["Dolt 2.2.2"]
+    assert declaration["dialect"] == "mysql"
+    assert declaration["profile"] == "dolt"
+    assert declaration["engine"] == "dolt"
+    assert declaration["transport"] == "mysql_compatible"
+    assert declaration["claimed_server_versions"] == ["Dolt 2.2.x"]
+    assert declaration["claimed_version_range"] == {
+        "minimum_inclusive": "2.2.2",
+        "maximum_exclusive": "2.3.0",
+    }
+    assert declaration["ci_tested_server_versions"] == [
+        "Dolt 2.2.2", "Dolt 2.2.3",
+    ]
+    assert declaration["exact_ci_tested_versions"] == ["2.2.2", "2.2.3"]
     assert declaration["proposed_adapter_limits"]["maximum_physical_columns"] == 306
     assert declaration["proposed_adapter_limits"]["maximum_source_variables"] == 305
     assert declaration["proposed_adapter_limits"]["maximum_value_bytes"] == 65_504

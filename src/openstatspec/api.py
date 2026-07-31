@@ -37,7 +37,7 @@ def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
     """
     declaration = {
         "specification": "OpenStatSpec",
-        "specification_status": "release_candidate",
+        "specification_status": "released",
         "specification_release": SPECIFICATION_RELEASE,
         "specification_commit": SPECIFICATION_COMMIT,
         "profile": "SPSS SAV/ZSAV 1.0",

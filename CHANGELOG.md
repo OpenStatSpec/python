@@ -10,16 +10,17 @@ All notable changes to this reference implementation are documented here.
   CI evidence: PostgreSQL 17.x/18.x at 17.10/18.4, MySQL 8.4.x/9.7.x at
   8.4.11/9.7.2, and MariaDB 11.4.x/11.8.x/12.3.x at
   11.4.12/11.8.8/12.3.2. Each service job verifies the live normalized version.
-- Dolt remains independently pinned and service-tested at exact version 2.2.2.
+- Dolt remains an independent core profile, now claiming canonical stable
+  versions `>=2.2.2,<2.3.0` and running its complete service suite at exact
+  versions 2.2.2 and 2.2.3 from immutable container-image pins.
   SQLite retains its core `>=3.24.0,<4.0.0` and optional workflow
   `>=3.35.0,<4.0.0` tiers. MSSQL remains unsupported and roadmap-only.
 
 ### Specification basis
 
-- CI, release validation, and machine-readable capabilities use untagged
-  OpenStatSpec specification `main` commit
-  `e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5`; the specification release value
-  is null until that commit is tagged.
+- CI, release validation, and machine-readable capabilities use OpenStatSpec
+  specification release `v0.1.0` at exact commit
+  `d287c2cde9ade71f04e27dd012caec876901aed5`.
 
 ## 0.2.0 — 2026-07-30
 

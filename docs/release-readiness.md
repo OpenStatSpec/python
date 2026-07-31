@@ -20,12 +20,12 @@ database contract.
 | PostgreSQL | `postgresql+psycopg://…` | 17.x and 18.x | 17.10 and 18.4 |
 | MySQL | `mysql+pymysql://…` | 8.4.x and 9.7.x | 8.4.11 and 9.7.2 |
 | MariaDB | `mysql+pymysql://…` | 11.4.x, 11.8.x, and 12.3.x | 11.4.12, 11.8.8, and 12.3.2 |
-| Dolt | `mysql+pymysql://…` | Exact 2.2.2 | Exact 2.2.2 |
+| Dolt | `mysql+pymysql://…` | 2.2.x with `>=2.2.2,<2.3.0` | 2.2.2 and 2.2.3 |
 
 Separate service matrices test the shared MySQL/MariaDB profile contract while
 retaining distinct active-server identities and version claims. Dolt is an
-independent core profile that fails closed unless the product version is exactly
-2.2.2; the optional Transformation Workflow remains SQLite-only. This does not
+independent core profile that accepts only canonical stable versions in
+`>=2.2.2,<2.3.0`; the optional Transformation Workflow remains SQLite-only. This does not
 claim coverage for every server configuration. The machine-readable capability
 declaration reports both the theoretical profile boundaries and effective
 limits observed from the active connection.
@@ -64,13 +64,13 @@ machine-readable loss report with the export result.
 2. Run `python -m pytest -m "not services"`.
 3. Confirm the GitHub Actions matrix is green for exact PostgreSQL 17.10/18.4,
    MySQL 8.4.11/9.7.2, MariaDB 11.4.12/11.8.8/12.3.2, and exact Dolt
-   2.2.2 service evidence.
+   2.2.2/2.2.3 service evidence from the immutable image pins in CI.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
 6. Confirm the release tag matches the package version and that CI, release
-   fixtures, and capabilities use untagged specification `main` commit
-   `e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5` with a null release value.
+   fixtures, and capabilities use OpenStatSpec specification release `v0.1.0`
+   at exact commit `d287c2cde9ade71f04e27dd012caec876901aed5`.
 7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds

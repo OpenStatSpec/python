@@ -69,23 +69,25 @@ in operation metadata. There is no fallback reader or writer. It supports unencr
 SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
 reference path.
 PostgreSQL, MySQL, MariaDB, and Dolt are each covered by separate service-backed CI
-conformance checks. Dolt support is an independent core profile pinned to 2.2.2;
-other Dolt versions and unknown MySQL-wire products fail closed.
+conformance checks. Dolt support is an independent core profile for the
+canonical stable range `>=2.2.2,<2.3.0`; earlier patches, other families,
+noncanonical versions, and unknown MySQL-wire products fail closed.
 
 The supported family claims are broader than the deliberately exact CI
 evidence points: PostgreSQL 17.x/18.x is exercised at 17.10/18.4, MySQL
 8.4.x/9.7.x at 8.4.11/9.7.2, and MariaDB 11.4.x/11.8.x/12.3.x at
 11.4.12/11.8.8/12.3.2. Each service job checks the normalized live server
 version against its exact matrix entry before that run can count as evidence.
-Dolt remains a separate exact-version policy: its only claimed and CI-tested
-version is 2.2.2.
+Dolt claims the conservative 2.2.x range `>=2.2.2,<2.3.0`; its full service
+suite is exercised independently at exact versions 2.2.2 and 2.2.3 using
+immutable container-image digests.
 
 Use these explicit SQLAlchemy URLs:
 
 - SQLite: `sqlite:///dataset.sqlite`
 - PostgreSQL: `postgresql+psycopg://user:password@host/database`
 - MySQL/MariaDB: `mysql+pymysql://user:password@host/database`
-- Dolt 2.2.2: `mysql+pymysql://user:password@host/database` (detected by server identity)
+- Dolt `>=2.2.2,<2.3.0`: `mysql+pymysql://user:password@host/database` (detected by server identity)
 
 The Dolt core profile supports strict wide-table import, validation, and export;
 the separate Transformation Workflow is unsupported.

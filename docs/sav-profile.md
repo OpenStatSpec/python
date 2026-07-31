@@ -21,9 +21,11 @@ points are PostgreSQL 17.x/18.x at 17.10/18.4, MySQL 8.4.x/9.7.x at
 11.4.12/11.8.8/12.3.2. CI compares each live normalized server version with
 that exact evidence point.
 
-Dolt is an independent core profile pinned to exact server version 2.2.2 and
-detected over `mysql+pymysql` by active server identity; other Dolt versions
-and unknown MySQL-wire products fail closed. The core Dolt profile does not
+Dolt is an independent core profile for canonical stable versions in
+`>=2.2.2,<2.3.0`, detected over `mysql+pymysql` by active server identity and
+service-tested at exact versions 2.2.2 and 2.2.3. Earlier patches, other
+families, noncanonical versions, and unknown MySQL-wire products fail closed.
+The core Dolt profile does not
 claim support for the separate Transformation Workflow. An import that exceeds
 a target's strict single-table column or row envelope fails before it creates a
 dataset.

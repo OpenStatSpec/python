@@ -15,8 +15,10 @@ from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, SqlProfile
 from .profiles import profile_for_url, validate_connection_url
 from ..core import UnsupportedOperationError
 
-SPECIFICATION_COMMIT = "e94ae8349d2b0dffe0c65e820b4b22b8c074b7b5"
-SPECIFICATION_RELEASE: str | None = None
+SPECIFICATION_COMMIT = "d287c2cde9ade71f04e27dd012caec876901aed5"
+SPECIFICATION_RELEASE: str | None = "v0.1.0"
+
+_DOLT_2_2_STABLE_VERSION = re.compile(r"2\.2\.(0|[1-9][0-9]*)")
 
 SERVER_POLICIES = {
     "sqlite": {
@@ -28,8 +30,13 @@ SERVER_POLICIES = {
         "ci": ["MySQL 8.4.11", "MySQL 9.7.2"],
     },
     "dolt": {
-        "claimed": ["Dolt 2.2.2"],
-        "ci": ["Dolt 2.2.2"],
+        "claimed": ["Dolt 2.2.x"],
+        "range": {
+            "minimum_inclusive": "2.2.2",
+            "maximum_exclusive": "2.3.0",
+        },
+        "ci": ["Dolt 2.2.2", "Dolt 2.2.3"],
+        "exact_ci": ["2.2.2", "2.2.3"],
     },
     "mariadb": {
         "claimed": ["MariaDB 11.4.x", "MariaDB 11.8.x", "MariaDB 12.3.x"],
@@ -115,9 +122,10 @@ def active_connection(database_url: str) -> dict[str, Any]:
                 raw_product_version = _required_text_probe(
                     connection, "select DOLT_VERSION()", "DOLT_VERSION()",
                 )
-                if raw_product_version.strip() != "2.2.2":
+                if not _dolt_version_supported(raw_product_version):
                     raise UnsupportedOperationError(
-                        "The active Dolt product version must be exactly 2.2.2."
+                        "The active Dolt product version must be a canonical stable "
+                        "release in the supported range >=2.2.2,<2.3.0."
                     )
                 identity_source = "SELECT @@version, @@version_comment, DOLT_VERSION()"
             elif "mariadb" in identity_text:
@@ -153,7 +161,11 @@ def active_connection(database_url: str) -> dict[str, Any]:
         "profile": profile_name,
         "engine": profile_name,
         "product": profile_name,
-        "transport": "mysql" if dialect in {"mysql", "mariadb"} else dialect,
+        "transport": (
+            "mysql_compatible" if profile_name == "dolt"
+            else "mysql" if dialect in {"mysql", "mariadb"}
+            else dialect
+        ),
         "driver": engine.dialect.driver,
         "server_version": _normalized_version(profile_name, raw_product_version),
         "raw_server_version": raw_product_version,
@@ -325,13 +337,18 @@ def _profile(
         "profile": name,
         "engine": name,
         "dialect": "mysql" if name == "dolt" else name,
-        "transport": "mysql" if name == "dolt" else name,
+        "transport": "mysql_compatible" if name == "dolt" else name,
         "specification_commit": SPECIFICATION_COMMIT,
-        "specification_status": "release_candidate",
+        "specification_status": "released",
         "specification_release": SPECIFICATION_RELEASE,
         "driver": "psycopg" if name == "postgresql" else "PyMySQL" if name in {"mysql", "mariadb", "dolt"} else "sqlite3",
         "claimed_server_versions": policy["claimed"],
+        "claimed_version_range": policy.get("range"),
         "ci_tested_server_versions": policy["ci"],
+        **(
+            {"exact_ci_tested_versions": policy["exact_ci"]}
+            if "exact_ci" in policy else {}
+        ),
         "theoretical_limits": theoretical,
         "proposed_adapter_limits": proposed,
         "observed_limits": observed_limits,
@@ -391,7 +408,7 @@ def _profile(
 
 def server_version_supported(profile: str, raw_version: str) -> bool:
     if profile == "dolt":
-        return raw_version.strip() == "2.2.2"
+        return _dolt_version_supported(raw_version)
     version = _version_tuple(raw_version)
     if profile == "sqlite":
         return (3, 24) <= version[:2] < (4, 0)
@@ -402,6 +419,12 @@ def server_version_supported(profile: str, raw_version: str) -> bool:
     }[profile]
     width = len(next(iter(allowed)))
     return version[:width] in allowed
+
+
+def _dolt_version_supported(raw_version: str) -> bool:
+    """Accept only canonical stable Dolt 2.2 patches at or above 2.2.2."""
+    match = _DOLT_2_2_STABLE_VERSION.fullmatch(raw_version.strip())
+    return match is not None and match.group(1) not in {"0", "1"}
 
 
 def _matched_claim(profile: str, raw_version: str) -> str | None:
