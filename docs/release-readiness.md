@@ -1,4 +1,4 @@
-# Next release readiness
+# 0.3.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
