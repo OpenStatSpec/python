@@ -32,8 +32,8 @@ All notable changes to this reference implementation are documented here.
 ### Specification basis
 
 - CI, release validation, and machine-readable capabilities use OpenStatSpec
-  specification release `v0.1.0` at exact commit
-  `d287c2cde9ade71f04e27dd012caec876901aed5`.
+  specification release `v0.2.0` at exact commit
+  `79339ec3d8f8aa81789b7e85f6b8afa6f1374e50`.
 
 ## 0.2.0 — 2026-07-30
 

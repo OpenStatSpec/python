@@ -15,8 +15,8 @@ from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, SqlProfile
 from .profiles import profile_for_url, validate_connection_url
 from ..core import UnsupportedOperationError
 
-SPECIFICATION_COMMIT = "d287c2cde9ade71f04e27dd012caec876901aed5"
-SPECIFICATION_RELEASE: str | None = "v0.1.0"
+SPECIFICATION_COMMIT = "79339ec3d8f8aa81789b7e85f6b8afa6f1374e50"
+SPECIFICATION_RELEASE: str | None = "v0.2.0"
 
 _DOLT_2_2_STABLE_VERSION = re.compile(r"2\.2\.(0|[1-9][0-9]*)")
 

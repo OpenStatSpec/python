@@ -39,8 +39,8 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
     assert matrix["specification_status"] == "released"
-    assert matrix["specification_release"] == "v0.1.0"
-    assert matrix["specification_commit"] == "d287c2cde9ade71f04e27dd012caec876901aed5"
+    assert matrix["specification_release"] == "v0.2.0"
+    assert matrix["specification_commit"] == "79339ec3d8f8aa81789b7e85f6b8afa6f1374e50"
     assert matrix["directions"] == ["import", "export", "semantic_round_trip"]
     assert matrix["active_connection"] is None
     assert matrix["engine"]["package"] == "openstatspec-pyspssio"
