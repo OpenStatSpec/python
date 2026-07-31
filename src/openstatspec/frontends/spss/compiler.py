@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .binding import BoundTransformation, VariableSchema, bind_spss_syntax
-from .plan import TransformationPlan
+from ...transform.plan import TransformationPlan
+from ...transform.schema import BoundTransformation, VariableSchema
+from .binding import bind_spss_syntax
 from .syntax import (
     normalize_spss_source,
     parse_spss_syntax,

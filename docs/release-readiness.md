@@ -1,4 +1,4 @@
-# 0.3.0 release readiness
+# 0.4.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
@@ -55,6 +55,36 @@ custom-attribute arrays. Non-UTF-8 output requires an explicit matching locale;
 otherwise the strict export policy reports and blocks the loss. A caller
 that supplies consent for an available loss code receives the
 machine-readable loss report with the export result.
+
+## Transformation release gates
+
+The canonical transformation core and SPSS syntax frontend are separate public
+surfaces. A release must run the specification-owned canonical-plan and SPSS
+frontend conformance fixtures, then exercise both the generic plan apply API
+and the SPSS compatibility apply path.
+
+The gate must prove that:
+
+- a TransformationPlan object and its strict JSON mapping produce the same
+  plan hash and in-place result;
+- top-level SPSS compiler imports and legacy openstatspec.transform re-exports
+  still load from an installed wheel;
+- install-in-place-schema, apply-plan, and apply-spss execute their documented
+  CLI workflows;
+- invalid or unsupported plans fail before the first data or metadata mutation;
+- successful applies retain the same dataset ID, physical schema/table
+  identity, dataset count, and persistent physical data-table count;
+- audit rows distinguish canonical plans from SPSS syntax, preserve correct
+  source/plan hashes and frontend contract, and contain no copied data;
+- no OpenStatSpec rollback, snapshot, staging, copy, derived-dataset, or
+  parallel history artifacts are created; and
+- Dolt checks expected branch, HEAD, and a clean working set without committing
+  or changing HEAD; other supported SQL connections remain allowed.
+
+The built wheel must contain the generic openstatspec.transform modules and the
+implemented openstatspec.frontends.spss package. Stata and SAS remain empty
+source-tree placeholders and must expose no compiler, apply API, CLI choice,
+capability claim, or implied support.
 
 ## Maintainer checks before tagging
 

@@ -26,6 +26,10 @@ import.
   capabilities, and loss reports.
 - `openstatspec.sql`: database connection and wide-table/catalog operations.
 - `openstatspec.spss`: SAV/ZSAV adapter boundary.
+- `openstatspec.transform`: canonical plans, frontend-neutral schema concepts,
+  and plan validation.
+- `openstatspec.frontends.spss`: the SPSS-like syntax frontend and convenience
+  execution adapter.
 
 ## Intended workflow
 
@@ -63,43 +67,17 @@ implemented capability boundary.
 
 ## SPSS-like transformation frontend
 
-The transformation frontend accepts `RECODE`, `VARIABLE LABELS`, and
-`VALUE LABELS`, lowers them to a canonical OpenStatSpec Transformation Plan,
-and mutates the same logical dataset and physical wide table. SQLite,
-PostgreSQL, MySQL, MariaDB, and Dolt connections are allowed. It creates no
-derived dataset, copied table, snapshot, or OpenStatSpec rollback/version layer.
+The SPSS-like frontend lowers supported `RECODE`, `VARIABLE LABELS`, and
+`VALUE LABELS` syntax into a language-neutral canonical plan. The in-place
+path applies it to the same logical dataset, physical wide table, and metadata
+catalog without a derived dataset, copied table, snapshot, or separate
+rollback/history layer. Dolt remains the sole versioning layer for Dolt-backed
+edits, and the transformer never calls `DOLT_COMMIT`.
 
-Install the compact operation-audit relation separately, then apply syntax:
-
-```python
-from openstatspec import (
-    apply_spss_in_place,
-    install_in_place_transformation_schema,
-)
-
-database_url = "postgresql+psycopg://user:password@host/database"
-install_in_place_transformation_schema(database_url=database_url)
-result = apply_spss_in_place(
-    database_url=database_url,
-    dataset_id="...",
-    actor="agent@example.org",
-    source_text="""
-      RECODE age (18 THRU 34 = 1) (35 THRU 64 = 2) INTO age_group.
-      VARIABLE LABELS age_group 'Age group'.
-      VALUE LABELS age_group 1 '18-34' 2 '35-64'.
-    """,
-)
-```
-
-Existing-target recodes and metadata mutations use direct DML. SQLite and
-PostgreSQL may also add a target column in the same native transaction. MySQL,
-MariaDB, and Dolt reject such schema-changing plans before mutation because
-their implicit-commit DDL could otherwise leave a partial apply. On Dolt, the
-caller additionally supplies expected branch and HEAD identities, and the
-working set must be clean. The transformer never calls `DOLT_COMMIT`.
-
-See [in-place transformations](docs/in-place-transformation.md) for the full
-execution boundary and CLI form.
+See the [dataset transformations manual](docs/transformations.md) for schema
+installation, Python and CLI surfaces, database invariants, audit provenance,
+package layout, and extension guidance. Stata and SAS are unimplemented
+placeholders.
 
 ## Current support status
 

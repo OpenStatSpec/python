@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import openstatspec
 import openstatspec.cli
@@ -93,3 +94,65 @@ def test_capability_matrix_reports_active_sqlite_limits(tmp_path) -> None:
         "source": "OpenStatSpec profile boundary; SQLite has no fixed native identifier limit",
         "repertoire": "generated ASCII [a-z0-9_] identifiers",
     }
+
+
+def test_cli_installs_schema_and_applies_plan_or_spss(
+    tmp_path, capsys,
+) -> None:
+    source = tmp_path / "transform-source.sav"
+    database_path = tmp_path / "transform.sqlite"
+    database_url = f"sqlite:///{database_path}"
+    pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
+    openstatspec.import_sav(
+        source,
+        database_url=database_url,
+        dataset_id="transform-cli",
+    )
+    connection = sqlite3.connect(database_path)
+    live_dataset_id = connection.execute(
+        "SELECT dataset_id FROM dataset"
+    ).fetchone()[0]
+
+    assert openstatspec.cli.main([
+        "install-in-place-schema",
+        "--database-url", database_url,
+    ]) == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "installed"}
+
+    plan = openstatspec.compile_spss_syntax(
+        "RECODE answer (1 = 2).",
+        openstatspec.VariableSchema((
+            openstatspec.VariableDefinition("answer", "numeric"),
+        )),
+    ).plan
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(
+        json.dumps(plan.as_dict()),
+        encoding="utf-8",
+    )
+    assert openstatspec.cli.main([
+        "apply-plan",
+        "--database-url", database_url,
+        "--dataset-id", live_dataset_id,
+        "--actor", "cli-test",
+        "--plan-file", str(plan_file),
+    ]) == 0
+    generic = json.loads(capsys.readouterr().out)
+    assert generic["source_kind"] == "canonical_plan"
+
+    assert openstatspec.cli.main([
+        "apply-spss",
+        "--database-url", database_url,
+        "--dataset-id", live_dataset_id,
+        "--actor", "cli-test",
+        "--syntax", "RECODE answer (2 = 3).",
+    ]) == 0
+    spss = json.loads(capsys.readouterr().out)
+    assert spss["source_kind"] == "spss_syntax"
+
+    table_name = connection.execute(
+        "SELECT physical_table_name FROM dataset"
+    ).fetchone()[0]
+    assert connection.execute(
+        f'SELECT answer FROM "{table_name}"'
+    ).fetchone() == (3.0,)

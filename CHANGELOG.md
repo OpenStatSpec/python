@@ -2,6 +2,37 @@
 
 All notable changes to this reference implementation are documented here.
 
+## 0.4.0 — 2026-07-31
+
+### Added
+
+- Added a public canonical transformation-plan in-place API accepting either
+  typed plan objects or strictly validated mappings.
+- Added apply-plan and install-in-place-schema CLI workflows alongside the
+  compatible apply-spss command.
+- Added explicit audit provenance distinguishing canonical plan documents from
+  SPSS syntax sources.
+- Added a transformation manual covering the canonical core, frontend boundary,
+  execution invariants, CLI/API workflows, and extension rules.
+
+### Changed
+
+- Moved the SPSS parser, binder, compiler, and convenience execution adapter to
+  the dedicated openstatspec.frontends.spss package.
+- Kept openstatspec.transform language-neutral with canonical plan, schema, and
+  live-schema validation modules while preserving previous SPSS import paths.
+- Reserved empty Stata and SAS frontend directories without exposing parsers,
+  capabilities, CLI choices, or support claims.
+- Strengthened pre-mutation target-type checks and target-scoped physical table
+  identity guards. The executor continues to modify the same dataset and table
+  without creating OpenStatSpec rollback, copy, snapshot, or history layers.
+
+### Specification basis
+
+- Conformance and release validation continue to use OpenStatSpec specification
+  release v0.2.0 at exact commit
+  79339ec3d8f8aa81789b7e85f6b8afa6f1374e50.
+
 ## 0.3.0 — 2026-07-31
 
 ### Added

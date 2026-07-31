@@ -8,7 +8,7 @@ import math
 import re
 from typing import Literal
 
-from .errors import SourcePosition, SourceSpan, frontend_error
+from ...transform.errors import SourcePosition, SourceSpan, frontend_error
 
 
 TokenKind = Literal[

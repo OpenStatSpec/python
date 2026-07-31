@@ -5,10 +5,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .api import (
-    apply_spss_in_place, capability_matrix, derive_sql_dataset,
+    apply_spss_in_place, apply_transformation_plan_in_place,
+    capability_matrix, derive_sql_dataset,
     execute_sql_transformation,
     export_sav, get_dataset, import_sav, inspect, list_datasets,
-    register_sql_transformation, validate, validate_derived,
+    install_in_place_transformation_schema, register_sql_transformation,
+    validate, validate_derived,
 )
 
 
@@ -77,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     apply_spss = commands.add_parser(
         "apply-spss",
-        help="apply supported SPSS syntax in-place on a controlled Dolt branch",
+        help="compile supported SPSS syntax and apply it in-place",
     )
     apply_spss.add_argument("--database-url", required=True)
     apply_spss.add_argument("--dataset-id", required=True)
@@ -87,6 +89,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     syntax_source = apply_spss.add_mutually_exclusive_group(required=True)
     syntax_source.add_argument("--syntax")
     syntax_source.add_argument("--syntax-file")
+
+    apply_plan = commands.add_parser(
+        "apply-plan",
+        help="apply a canonical transformation plan in-place",
+    )
+    apply_plan.add_argument("--database-url", required=True)
+    apply_plan.add_argument("--dataset-id", required=True)
+    apply_plan.add_argument("--actor", required=True)
+    apply_plan.add_argument("--expected-branch")
+    apply_plan.add_argument("--expected-head")
+    apply_plan.add_argument("--plan-file", required=True)
+
+    install_in_place = commands.add_parser(
+        "install-in-place-schema",
+        help="install or upgrade the compact in-place apply audit schema",
+    )
+    install_in_place.add_argument("--database-url", required=True)
 
     derived_validator = commands.add_parser("validate-derived", help="validate a derived dataset")
     derived_validator.add_argument("--database-url", required=True)
@@ -151,6 +170,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_branch=args.expected_branch,
             expected_head=args.expected_head,
         )
+    elif args.command == "apply-plan":
+        plan = json.loads(Path(args.plan_file).read_text(encoding="utf-8"))
+        output = apply_transformation_plan_in_place(
+            database_url=args.database_url,
+            dataset_id=args.dataset_id,
+            plan=plan,
+            actor=args.actor,
+            expected_branch=args.expected_branch,
+            expected_head=args.expected_head,
+        )
+    elif args.command == "install-in-place-schema":
+        install_in_place_transformation_schema(database_url=args.database_url)
+        output = {"status": "installed"}
     else:
         output = validate_derived(
             database_url=args.database_url, derived_dataset_id=args.derived_dataset_id,

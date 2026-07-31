@@ -8,7 +8,10 @@ from sqlalchemy import create_engine, inspect, text
 
 import openstatspec
 import openstatspec.sql.inplace_transform as inplace_transform
-from openstatspec.sql.inplace_transform import _apply_on_connection
+from openstatspec.sql.inplace_transform import (
+    InPlacePlanSubmission,
+    _apply_plan_on_connection,
+)
 from openstatspec.sql.wide import create_wide_dataset
 
 
@@ -32,6 +35,26 @@ def _variables() -> list[dict[str, object]]:
         "value_labels": "{}",
         "missing_ranges": "[]",
     }]
+
+
+def _plan(source_text: str):
+    schema = openstatspec.VariableSchema((
+        openstatspec.VariableDefinition(
+            "score",
+            "numeric",
+            variable_label="Score",
+        ),
+    ))
+    return openstatspec.compile_spss_syntax(source_text, schema).plan
+
+
+def _submission(source_text: str) -> InPlacePlanSubmission:
+    plan = _plan(source_text)
+    return InPlacePlanSubmission(
+        plan=plan,
+        source_kind="canonical_plan",
+        source_hash=plan.sha256(),
+    )
 
 
 @pytest.fixture
@@ -68,10 +91,10 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
             name for name in inspect(connection).get_table_names()
             if name.startswith("data_")
         }
-        result = _apply_on_connection(
+        result = _apply_plan_on_connection(
             connection,
             dataset_id=dataset_id,
-            source_text=(
+            submission=_submission(
                 "RECODE score (1,2 = 0) (3 = 1) INTO score_band. "
                 "VARIABLE LABELS score_band 'Score band'. "
                 "VALUE LABELS score_band 0 'Lower' 1 'Upper'."
@@ -79,8 +102,8 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
             actor="test-agent",
             database_profile="sqlite",
             allow_schema_change=True,
-            dolt_branch="feature/recode",
-            dolt_head="abc123",
+            dolt_branch=None,
+            dolt_head=None,
         )
         after_datasets = connection.execute(text(
             "SELECT COUNT(*) FROM dataset"
@@ -126,13 +149,14 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
         "dolt_head_after, actor, status "
         "FROM transformation_apply"
     ).fetchone() == (
-        "sqlite", "feature/recode", "abc123", "abc123", "test-agent",
+        "sqlite", None, None, None, "test-agent",
         "succeeded",
     )
 
 
 def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     url, path, dataset_id, table_name = catalog
+    plan = _plan("RECODE score (1 = 0).")
     result = openstatspec.apply_spss_in_place(
         database_url=url,
         dataset_id=dataset_id,
@@ -141,9 +165,184 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     )
     assert result["dolt_branch"] is None
     assert result["dolt_commit_performed"] is False
+    assert result["plan_hash"] == plan.sha256()
     assert sqlite3.connect(path).execute(
         f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
     ).fetchall() == [(0.0,), (2.0,), (3.0,)]
+    audit = sqlite3.connect(path).execute(
+        "SELECT source_kind, frontend_contract FROM transformation_apply"
+    ).fetchone()
+    assert audit == (
+        "spss_syntax",
+        "openstatspec-spss-syntax-frontend-v0.1",
+    )
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_public_generic_plan_apply_accepts_object_and_mapping(
+    catalog, as_mapping,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    plan = _plan("RECODE score (1 = 7).")
+    supplied = plan.as_dict() if as_mapping else plan
+    result = openstatspec.apply_transformation_plan_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        plan=supplied,
+        actor="test-agent",
+    )
+    assert result["dataset_id"] == dataset_id
+    assert result["physical_table_name"] == table_name
+    assert result["source_kind"] == "canonical_plan"
+    assert result["source_hash"] == result["plan_hash"] == plan.sha256()
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(7.0,), (2.0,), (3.0,)]
+    assert connection.execute(
+        "SELECT source_kind, source_hash, frontend_contract, plan_hash "
+        "FROM transformation_apply"
+    ).fetchone() == (
+        "canonical_plan",
+        plan.sha256(),
+        None,
+        plan.sha256(),
+    )
+
+
+def test_generic_plan_is_bound_to_live_schema_before_mutation(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+    plan = openstatspec.TransformationPlan((
+        openstatspec.SetVariableLabelOperation("missing", "Must fail"),
+    ))
+    with pytest.raises(openstatspec.TransformationFrontendError) as caught:
+        openstatspec.apply_transformation_plan_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            plan=plan,
+            actor="test-agent",
+        )
+    assert caught.value.code == "unknown_variable"
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0,), (2.0,), (3.0,)]
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_string_create_target_is_rejected_before_any_mutation(
+    catalog, as_mapping,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    plan = openstatspec.TransformationPlan((
+        openstatspec.SetVariableLabelOperation("score", "Must roll back"),
+        openstatspec.RecodeOperation(
+            source="score",
+            target="band",
+            target_mode="create",
+            rules=(
+                openstatspec.RecodeRule(
+                    openstatspec.RecodeMatch(
+                        "values",
+                        values=(openstatspec.TypedValue.binary64(1),),
+                    ),
+                    openstatspec.RecodeResult(
+                        "literal",
+                        openstatspec.TypedValue.string("low"),
+                    ),
+                ),
+            ),
+            unmatched=openstatspec.RecodeResult(
+                "literal",
+                openstatspec.TypedValue.string("other"),
+            ),
+        ),
+    ))
+    supplied = plan.as_dict() if as_mapping else plan
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        openstatspec.apply_transformation_plan_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            plan=supplied,
+            actor="test-agent",
+        )
+    assert caught.value.code == "in_place_target_type_unsupported"
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT variable_label FROM variable WHERE source_name = 'score'"
+    ).fetchone() == ("Score",)
+    assert "band" not in {
+        row[1]
+        for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    }
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (0,)
+
+
+def test_string_source_can_create_numeric_target(tmp_path) -> None:
+    path = tmp_path / "string-source.sqlite"
+    url = f"sqlite:///{path}"
+    variables = _variables()
+    variables[0].update({
+        "source_name": "color",
+        "physical_name": "color",
+        "storage_kind": "string",
+        "string_width": 8,
+        "label": "Color",
+        "format": "A8",
+        "print_format": "[1, 8, 0]",
+        "write_format": "[1, 8, 0]",
+    })
+    create_wide_dataset(
+        database_url=url,
+        dataset_id="string_source",
+        source_name="source.sav",
+        source_format="SAV",
+        source_sha256="e" * 64,
+        rows=[{"color": "R"}, {"color": "B"}],
+        variables=variables,
+    )
+    openstatspec.install_in_place_transformation_schema(database_url=url)
+    connection = sqlite3.connect(path)
+    dataset_id, table_name = connection.execute(
+        "SELECT dataset_id, physical_table_name FROM dataset"
+    ).fetchone()
+    plan = openstatspec.TransformationPlan((
+        openstatspec.RecodeOperation(
+            source="color",
+            target="is_red",
+            target_mode="create",
+            rules=(
+                openstatspec.RecodeRule(
+                    openstatspec.RecodeMatch(
+                        "values",
+                        values=(openstatspec.TypedValue.string("R"),),
+                    ),
+                    openstatspec.RecodeResult(
+                        "literal",
+                        openstatspec.TypedValue.binary64(1),
+                    ),
+                ),
+            ),
+            unmatched=openstatspec.RecodeResult(
+                "literal",
+                openstatspec.TypedValue.binary64(0),
+            ),
+        ),
+    ))
+    openstatspec.apply_transformation_plan_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        plan=plan,
+        actor="test-agent",
+    )
+    assert sqlite3.connect(path).execute(
+        f'SELECT color, is_red FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [("R", 1.0), ("B", 0.0)]
 
 
 def test_missing_audit_schema_fails_before_mutation(catalog) -> None:
@@ -172,10 +371,10 @@ def test_nontransactional_ddl_profile_rejects_create_before_mutation(
     engine = create_engine(url)
     with pytest.raises(openstatspec.TransformationError) as caught:
         with engine.begin() as connection:
-            _apply_on_connection(
+            _apply_plan_on_connection(
                 connection,
                 dataset_id=dataset_id,
-                source_text=(
+                submission=_submission(
                     "VARIABLE LABELS score 'Changed'. "
                     "RECODE score (1 = 0) INTO score_band."
                 ),

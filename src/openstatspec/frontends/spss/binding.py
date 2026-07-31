@@ -2,56 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Literal
 
-from .errors import SourceSpan, frontend_error
-from .plan import (
+from ...transform.errors import SourceSpan, frontend_error
+from ...transform.plan import (
     PlanOperation, RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
     ReplaceValueLabelsOperation, SetVariableLabelOperation, TransformationPlan,
     TypedValue, ValueLabel,
 )
+from ...transform.schema import (
+    BoundTransformation, StorageKind, VariableDefinition, VariableSchema,
+)
+from ...transform.validation import bind_transformation_plan
 from .syntax import (
     RecodeCommandSyntax, RecodeMatchSyntax, RecodeResultSyntax, SpssSyntaxProgram,
     SyntaxLiteral, ValueLabelsCommandSyntax, VariableLabelsCommandSyntax,
 )
-
-
-StorageKind = Literal["numeric", "string"]
-
-
-@dataclass(frozen=True)
-class VariableDefinition:
-    name: str
-    storage_kind: StorageKind
-    variable_label: str | None = None
-    value_labels: tuple[ValueLabel, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("Variable name must be non-empty text.")
-        if self.storage_kind not in {"numeric", "string"}:
-            raise ValueError("storage_kind must be numeric or string.")
-        expected_type = "binary64" if self.storage_kind == "numeric" else "string"
-        if any(label.value.type != expected_type for label in self.value_labels):
-            raise ValueError("Value-label types must match their variable storage kind.")
-
-
-@dataclass(frozen=True)
-class VariableSchema:
-    variables: tuple[VariableDefinition, ...]
-
-    def __post_init__(self) -> None:
-        names = [variable.name.casefold() for variable in self.variables]
-        if len(names) != len(set(names)):
-            raise ValueError("Variable names must be unique case-insensitively.")
-
-
-@dataclass(frozen=True)
-class BoundTransformation:
-    plan: TransformationPlan
-    output_schema: VariableSchema
-    operation_spans: tuple[SourceSpan, ...]
 
 
 def _typed(literal: SyntaxLiteral) -> TypedValue:
@@ -291,8 +258,8 @@ def bind_spss_syntax(
                     variables[index] = replace(variable, value_labels=labels)
             continue
         raise AssertionError(f"Unknown syntax command: {type(command)!r}")
-    return BoundTransformation(
-        TransformationPlan(tuple(operations), input_alias=input_alias),
-        VariableSchema(tuple(variables)),
-        tuple(spans),
+    plan = TransformationPlan(tuple(operations), input_alias=input_alias)
+    return bind_transformation_plan(
+        plan,
+        schema,
     )
