@@ -1,0 +1,178 @@
+"""Validate canonical transformation plans against an explicit live schema."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Literal
+
+from .errors import frontend_error
+from .plan import (
+    RecodeMatch,
+    RecodeOperation,
+    RecodeResult,
+    ReplaceValueLabelsOperation,
+    SetVariableLabelOperation,
+    TransformationPlan,
+)
+from .schema import (
+    BoundTransformation,
+    StorageKind,
+    VariableDefinition,
+    VariableSchema,
+)
+
+
+ValueType = Literal["binary64", "string"]
+
+
+def _expected_type(storage_kind: StorageKind) -> ValueType:
+    return "binary64" if storage_kind == "numeric" else "string"
+
+
+def _resolve(
+    variables: list[VariableDefinition], name: str
+) -> tuple[int, VariableDefinition]:
+    matches = [
+        (index, variable)
+        for index, variable in enumerate(variables)
+        if variable.name.casefold() == name.casefold()
+    ]
+    if len(matches) != 1:
+        raise frontend_error(
+            "unknown_variable",
+            f"Variable {name!r} is not present in the current schema.",
+            variable=name,
+        )
+    return matches[0]
+
+
+def _validate_match(match: RecodeMatch, source: VariableDefinition) -> None:
+    expected = _expected_type(source.storage_kind)
+    if match.kind == "system_missing":
+        if source.storage_kind == "string":
+            raise frontend_error(
+                "system_missing_for_string",
+                "SYSMIS cannot match a string variable.",
+                variable=source.name,
+            )
+        return
+    if match.kind == "range":
+        if expected != "binary64":
+            raise frontend_error(
+                "type_mismatch",
+                "Ranges require a numeric source.",
+                variable=source.name,
+            )
+        return
+    if any(value.type != expected for value in match.values):
+        raise frontend_error(
+            "type_mismatch",
+            "RECODE match values must match the source storage kind.",
+            variable=source.name,
+            expected_type=expected,
+        )
+
+
+def _result_type(
+    result: RecodeResult, source: VariableDefinition
+) -> ValueType:
+    if result.kind == "copy":
+        return _expected_type(source.storage_kind)
+    if result.kind == "system_missing":
+        if source.storage_kind == "string":
+            raise frontend_error(
+                "system_missing_for_string",
+                "SYSMIS cannot be produced for a string variable.",
+                variable=source.name,
+            )
+        return "binary64"
+    assert result.value is not None
+    return result.value.type
+
+
+def _bind_recode(
+    operation: RecodeOperation, variables: list[VariableDefinition]
+) -> None:
+    _, source = _resolve(variables, operation.source)
+    if operation.target_mode == "create":
+        if operation.target.startswith("__"):
+            raise frontend_error(
+                "reserved_target_name",
+                f"Target name {operation.target!r} is reserved.",
+                target=operation.target,
+            )
+        if any(
+            variable.name.casefold() == operation.target.casefold()
+            for variable in variables
+        ):
+            raise frontend_error(
+                "target_already_exists",
+                f"Target name {operation.target!r} already exists.",
+                target=operation.target,
+            )
+    for rule in operation.rules:
+        _validate_match(rule.match, source)
+    result_types = {
+        _result_type(result, source)
+        for result in [
+            *(rule.result for rule in operation.rules),
+            operation.unmatched,
+        ]
+    }
+    if len(result_types) != 1:
+        raise frontend_error(
+            "mixed_result_types",
+            "All RECODE results, including unmatched behavior, must have one type.",
+            source=source.name,
+            result_types=sorted(result_types),
+        )
+    output_type = next(iter(result_types))
+    if (
+        operation.target_mode == "replace"
+        and output_type != _expected_type(source.storage_kind)
+    ):
+        raise frontend_error(
+            "type_mismatch",
+            "In-place RECODE cannot change the variable storage kind.",
+            variable=source.name,
+        )
+    if operation.target_mode == "create":
+        variables.append(
+            VariableDefinition(
+                operation.target,
+                "numeric" if output_type == "binary64" else "string",
+            )
+        )
+
+
+def bind_transformation_plan(
+    plan: TransformationPlan, schema: VariableSchema
+) -> BoundTransformation:
+    """Validate sequential plan semantics and return the resulting schema."""
+    if not isinstance(plan, TransformationPlan):
+        raise TypeError("plan must be a TransformationPlan.")
+    if not isinstance(schema, VariableSchema):
+        raise TypeError("schema must be a VariableSchema.")
+    variables = list(schema.variables)
+    for operation in plan.operations:
+        if isinstance(operation, RecodeOperation):
+            _bind_recode(operation, variables)
+            continue
+        if isinstance(operation, SetVariableLabelOperation):
+            index, variable = _resolve(variables, operation.variable)
+            variables[index] = replace(variable, variable_label=operation.label)
+            continue
+        if isinstance(operation, ReplaceValueLabelsOperation):
+            index, variable = _resolve(variables, operation.variable)
+            expected = _expected_type(variable.storage_kind)
+            if any(label.value.type != expected for label in operation.labels):
+                raise frontend_error(
+                    "type_mismatch",
+                    "Value-label codes must match the variable storage kind.",
+                    variable=variable.name,
+                    expected_type=expected,
+                )
+            variables[index] = replace(variable, value_labels=operation.labels)
+            continue
+        raise AssertionError(f"Unknown plan operation: {type(operation)!r}")
+    return BoundTransformation(plan, VariableSchema(tuple(variables)))

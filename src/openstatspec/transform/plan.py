@@ -15,7 +15,6 @@ from .errors import frontend_error
 
 
 TRANSFORMATION_PLAN_CONTRACT = "openstatspec-transformation-plan-v0.1"
-SPSS_FRONTEND_CONTRACT = "openstatspec-spss-syntax-frontend-v0.1"
 _BINARY64 = re.compile(r"[0-9a-f]{16}")
 
 

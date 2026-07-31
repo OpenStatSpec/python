@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from typing import Any
@@ -14,8 +16,9 @@ from sqlalchemy import (
 
 from ..transform import (
     RecodeOperation, RecodeResult, ReplaceValueLabelsOperation,
-    SetVariableLabelOperation, TypedValue, ValueLabel, VariableDefinition,
-    VariableSchema, compile_spss_syntax,
+    SetVariableLabelOperation, TransformationPlan, TypedValue, ValueLabel,
+    VariableDefinition, VariableSchema, bind_transformation_plan,
+    transformation_plan_from_dict,
 )
 from .capabilities import effective_profile
 from .normative import catalog as core_catalog
@@ -25,6 +28,20 @@ from .workflow import TransformationError
 
 
 APPLY_CONTRACT = "openstatspec-in-place-transformation-v0.1"
+
+
+@dataclass(frozen=True)
+class InPlacePlanSubmission:
+    """A canonical plan plus compact provenance for one atomic apply."""
+
+    plan: TransformationPlan
+    source_kind: str
+    source_hash: str
+    frontend_contract: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.source_kind or not self.source_hash:
+            raise ValueError("source_kind and source_hash must be non-empty")
 
 
 def in_place_transformation_capabilities() -> dict[str, Any]:
@@ -71,7 +88,9 @@ def apply_audit_catalog(metadata: MetaData) -> Table:
         Column("database_profile", String(32), nullable=False),
         Column("physical_table_schema", String(255)),
         Column("physical_table_name", String(255), nullable=False),
+        Column("source_kind", String(64)),
         Column("source_hash", String(64), nullable=False),
+        Column("frontend_contract", String(128)),
         Column("plan_hash", String(64), nullable=False),
         Column("canonical_plan_json", Text, nullable=False),
         Column("actor", String(255), nullable=False),
@@ -115,11 +134,16 @@ def _match_expression(match: Any, source: Any) -> Any:
 def _input_schema(
     connection: Any,
     dataset_id: str,
+    *,
+    lock_dataset: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], VariableSchema]:
     core = core_catalog(MetaData())
-    dataset = connection.execute(
-        select(core.dataset).where(core.dataset.c.dataset_id == dataset_id)
-    ).mappings().one_or_none()
+    dataset_query = select(core.dataset).where(
+        core.dataset.c.dataset_id == dataset_id
+    )
+    if lock_dataset:
+        dataset_query = dataset_query.with_for_update()
+    dataset = connection.execute(dataset_query).mappings().one_or_none()
     if dataset is None:
         raise TransformationError(
             "dataset_not_found", "The in-place target dataset does not exist."
@@ -174,27 +198,35 @@ def _input_schema(
     return dict(dataset), variables, schema
 
 
-def _catalog_identity_counts(
+def _target_identity_state(
     connection: Any,
-) -> tuple[int, tuple[tuple[str | None, str], ...]]:
+    dataset_id: str,
+    *,
+    lock_dataset: bool = False,
+) -> tuple[str, str | None, str, int]:
+    """Return one locked catalog identity plus its actual relation count."""
     core = core_catalog(MetaData())
-    dataset_rows = connection.execute(
+    query = (
         select(
+            core.dataset.c.dataset_id,
             core.dataset.c.physical_table_schema,
             core.dataset.c.physical_table_name,
         )
-    ).all()
-    identities = tuple(sorted(
-        (
-            (
-                str(schema) if schema is not None else None,
-                str(name),
-            )
-            for schema, name in dataset_rows
-        ),
-        key=lambda item: (item[0] or "", item[1]),
-    ))
-    return len(dataset_rows), identities
+        .where(core.dataset.c.dataset_id == dataset_id)
+    )
+    if lock_dataset:
+        query = query.with_for_update()
+    row = connection.execute(query).one_or_none()
+    if row is None:
+        raise TransformationError(
+            "dataset_not_found", "The in-place target dataset does not exist."
+        )
+    schema = str(row.physical_table_schema) if row.physical_table_schema else None
+    table_name = str(row.physical_table_name)
+    relation_count = int(
+        inspect(connection).has_table(table_name, schema=schema)
+    )
+    return str(row.dataset_id), schema, table_name, relation_count
 
 
 def _legacy_identifiers(dataset: dict[str, Any]) -> tuple[str, str]:
@@ -281,21 +313,35 @@ def _replace_value_labels(
     ).values(value_labels=json.dumps(legacy_json, ensure_ascii=False)))
 
 
-def _apply_on_connection(
+def _apply_plan_on_connection(
     connection: Any,
     *,
     dataset_id: str,
-    source_text: str,
+    submission: InPlacePlanSubmission,
     actor: str,
     database_profile: str,
     allow_schema_change: bool,
     dolt_branch: str | None,
     dolt_head: str | None,
 ) -> dict[str, Any]:
-    before_count, before_tables = _catalog_identity_counts(connection)
+    before_identity = _target_identity_state(
+        connection,
+        dataset_id,
+        lock_dataset=True,
+    )
+    if before_identity[3] != 1:
+        raise TransformationError(
+            "physical_table_missing",
+            "The target dataset's physical wide table does not exist.",
+        )
     dataset, variables, schema = _input_schema(connection, dataset_id)
     legacy_dataset_id, table_name = _legacy_identifiers(dataset)
-    compilation = compile_spss_syntax(source_text, schema, input_alias="parent")
+    plan = submission.plan
+    bound = bind_transformation_plan(plan, schema)
+    output_by_name = {
+        variable.name.casefold(): variable
+        for variable in bound.output_schema.variables
+    }
     audit = apply_audit_catalog(MetaData())
     if not inspect(connection).has_table("transformation_apply"):
         raise TransformationError(
@@ -303,15 +349,41 @@ def _apply_on_connection(
             "The compact transformation_apply audit schema must be installed "
             "before apply.",
         )
+    audit_columns = {
+        str(column["name"])
+        for column in inspect(connection).get_columns("transformation_apply")
+    }
+    required_audit_columns = {"source_kind", "frontend_contract"}
+    if not required_audit_columns.issubset(audit_columns):
+        raise TransformationError(
+            "in_place_audit_schema_outdated",
+            "Re-run install_in_place_transformation_schema before apply.",
+        )
     if not allow_schema_change and any(
         isinstance(operation, RecodeOperation)
         and operation.target_mode == "create"
-        for operation in compilation.plan.operations
+        for operation in plan.operations
     ):
         raise TransformationError(
             "schema_change_not_atomic",
             "This database profile requires RECODE targets to exist before "
             "apply because its DDL is not transaction-atomic.",
+        )
+    unsupported_targets = [
+        operation.target
+        for operation in plan.operations
+        if (
+            isinstance(operation, RecodeOperation)
+            and operation.target_mode == "create"
+            and output_by_name[operation.target.casefold()].storage_kind
+            != "numeric"
+        )
+    ]
+    if unsupported_targets:
+        raise TransformationError(
+            "in_place_target_type_unsupported",
+            "This executor cannot create string targets without an explicit "
+            "storage-width operation.",
         )
     core = core_catalog(MetaData())
     legacy_metadata = MetaData()
@@ -326,15 +398,10 @@ def _apply_on_connection(
     by_name = {str(row["source_name"]).casefold(): row for row in variables}
     used_physical = {str(row["physical_name"]).casefold() for row in variables}
 
-    for operation in compilation.plan.operations:
+    for operation in plan.operations:
         if isinstance(operation, RecodeOperation):
             source_variable = by_name[operation.source.casefold()]
             if operation.target_mode == "create":
-                if str(source_variable["storage_kind"]) != "numeric":
-                    raise TransformationError(
-                        "in_place_target_type_unsupported",
-                        "This profile creates only numeric RECODE targets.",
-                    )
                 target_physical = physical_name(operation.target, used_physical)
                 quote = connection.dialect.identifier_preparer.quote
                 numeric_type = (
@@ -418,11 +485,12 @@ def _apply_on_connection(
                 "operation_not_supported", "Unsupported in-place plan operation."
             )
 
-    after_count, after_tables = _catalog_identity_counts(connection)
-    if (after_count, after_tables) != (before_count, before_tables):
+    after_identity = _target_identity_state(connection, dataset_id)
+    if after_identity != before_identity:
         raise TransformationError(
             "dataset_identity_changed",
-            "In-place apply changed dataset or physical data-table identity.",
+            "In-place apply changed the target dataset or its physical "
+            "data-table identity.",
         )
     apply_id = str(uuid4())
     started = _now()
@@ -433,15 +501,17 @@ def _apply_on_connection(
         database_profile=database_profile,
         physical_table_schema=dataset.get("physical_table_schema"),
         physical_table_name=table_name,
-        source_hash=compilation.source_hash,
-        plan_hash=compilation.plan_hash,
-        canonical_plan_json=compilation.plan.canonical_json(),
+        source_kind=submission.source_kind,
+        source_hash=submission.source_hash,
+        frontend_contract=submission.frontend_contract,
+        plan_hash=plan.sha256(),
+        canonical_plan_json=plan.canonical_json(),
         actor=actor,
         status="succeeded",
         dolt_branch=dolt_branch,
         dolt_head_before=dolt_head,
         dolt_head_after=dolt_head,
-        operation_count=len(compilation.plan.operations),
+        operation_count=len(plan.operations),
         started_at=started,
         completed_at=_now(),
     ))
@@ -464,8 +534,10 @@ def _apply_on_connection(
         "database_profile": database_profile,
         "physical_table_schema": dataset.get("physical_table_schema"),
         "physical_table_name": table_name,
-        "source_hash": compilation.source_hash,
-        "plan_hash": compilation.plan_hash,
+        "source_kind": submission.source_kind,
+        "source_hash": submission.source_hash,
+        "frontend_contract": submission.frontend_contract,
+        "plan_hash": plan.sha256(),
         "dolt_branch": dolt_branch,
         "dolt_head_before": dolt_head,
         "dolt_head_after": dolt_head,
@@ -488,20 +560,40 @@ def install_in_place_transformation_schema(*, database_url: str) -> None:
     try:
         with engine.begin() as connection:
             apply_audit_catalog(MetaData()).create(connection, checkfirst=True)
+            columns = {
+                str(column["name"])
+                for column in inspect(connection).get_columns("transformation_apply")
+            }
+            additions = {
+                "source_kind": "VARCHAR(64) NULL",
+                "frontend_contract": "VARCHAR(128) NULL",
+            }
+            quote = connection.dialect.identifier_preparer.quote
+            for name, sql_type in additions.items():
+                if name not in columns:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {quote('transformation_apply')} "
+                        f"ADD COLUMN {quote(name)} {sql_type}"
+                    )
     finally:
         engine.dispose()
 
 
-def apply_spss_in_place(
+def load_transformation_schema(connection: Any, dataset_id: str) -> VariableSchema:
+    """Read the live canonical variable schema within the caller's transaction."""
+    return _input_schema(connection, dataset_id)[2]
+
+
+def _run_in_place_submission(
     *,
     database_url: str,
     dataset_id: str,
-    source_text: str,
     actor: str,
+    prepare: Callable[[Any, str], InPlacePlanSubmission],
     expected_branch: str | None = None,
     expected_head: str | None = None,
 ) -> dict[str, Any]:
-    """Apply one plan to the same dataset/table; never create undo or copies."""
+    """Prepare and apply one canonical plan in the same controlled transaction."""
     if not actor:
         raise TransformationError(
             "actor_required", "A non-empty actor identity is mandatory.",
@@ -534,10 +626,13 @@ def apply_spss_in_place(
                         "dolt_working_set_dirty",
                         "The Dolt working set must be clean before in-place apply.",
                     )
-            result = _apply_on_connection(
+            submission = prepare(connection, dataset_id)
+            if not isinstance(submission, InPlacePlanSubmission):
+                raise TypeError("prepare must return InPlacePlanSubmission")
+            result = _apply_plan_on_connection(
                 connection,
                 dataset_id=dataset_id,
-                source_text=source_text,
+                submission=submission,
                 actor=actor,
                 database_profile=profile.name,
                 allow_schema_change=profile.name in {"sqlite", "postgresql"},
@@ -554,3 +649,34 @@ def apply_spss_in_place(
             return result
     finally:
         engine.dispose()
+
+
+def apply_transformation_plan_in_place(
+    *,
+    database_url: str,
+    dataset_id: str,
+    plan: TransformationPlan | Mapping[str, Any],
+    actor: str,
+    expected_branch: str | None = None,
+    expected_head: str | None = None,
+) -> dict[str, Any]:
+    """Apply a canonical plan without knowing which frontend produced it."""
+    normalized = (
+        plan
+        if isinstance(plan, TransformationPlan)
+        else transformation_plan_from_dict(plan)
+    )
+    plan_hash = normalized.sha256()
+    submission = InPlacePlanSubmission(
+        plan=normalized,
+        source_kind="canonical_plan",
+        source_hash=plan_hash,
+    )
+    return _run_in_place_submission(
+        database_url=database_url,
+        dataset_id=dataset_id,
+        actor=actor,
+        prepare=lambda _connection, _dataset_id: submission,
+        expected_branch=expected_branch,
+        expected_head=expected_head,
+    )

@@ -5,19 +5,28 @@ import os
 from pathlib import Path
 
 import pytest
+from openstatspec.frontends.spss import (
+    bind_spss_syntax,
+    compile_spss_syntax,
+    normalize_spss_source,
+    parse_spss_syntax,
+    spss_source_hash,
+)
 from openstatspec.transform import (
+    RecodeMatch,
+    RecodeOperation,
+    RecodeResult,
+    RecodeRule,
+    SetVariableLabelOperation,
+    TransformationPlan,
     TransformationFrontendError,
     TypedValue,
     ValueLabel,
     VariableDefinition,
     VariableSchema,
-    bind_spss_syntax,
+    bind_transformation_plan,
     canonical_plan_hash,
     canonical_plan_json,
-    compile_spss_syntax,
-    normalize_spss_source,
-    parse_spss_syntax,
-    spss_source_hash,
     transformation_plan_from_dict,
 )
 
@@ -328,3 +337,31 @@ def test_custom_nonempty_input_alias_is_canonical() -> None:
         input_alias="survey",
     ).plan
     assert plan.input_alias == "survey"
+
+
+def test_generic_plan_binding_validates_sequential_schema_state() -> None:
+    plan = TransformationPlan((
+        RecodeOperation(
+            source="q1",
+            target="q1_binary",
+            target_mode="create",
+            rules=(
+                RecodeRule(
+                    RecodeMatch("values", (TypedValue.binary64(1),)),
+                    RecodeResult("literal", TypedValue.binary64(1)),
+                ),
+            ),
+            unmatched=RecodeResult("literal", TypedValue.binary64(0)),
+        ),
+        SetVariableLabelOperation("q1_binary", "Binary response"),
+    ))
+
+    bound = bind_transformation_plan(
+        plan, _schema(VariableDefinition("q1", "numeric"))
+    )
+
+    assert [variable.name for variable in bound.output_schema.variables] == [
+        "q1",
+        "q1_binary",
+    ]
+    assert bound.output_schema.variables[-1].variable_label == "Binary response"

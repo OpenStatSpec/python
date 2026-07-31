@@ -20,11 +20,13 @@ from .sql.workflow import (
     remove_derived_relation as _remove_derived_relation,
     retire_derived_dataset as _retire_derived_dataset,
 )
+from .frontends.spss.execution import apply_spss_in_place as _apply_spss_in_place
 from .sql.inplace_transform import (
-    apply_spss_in_place as _apply_spss_in_place,
+    apply_transformation_plan_in_place as _apply_transformation_plan_in_place,
     in_place_transformation_capabilities,
     install_in_place_transformation_schema as _install_in_place_schema,
 )
+from .transform import TransformationPlan
 from .sql.capabilities import (
     SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, active_connection, catalog_binding,
 )
@@ -148,6 +150,23 @@ def apply_spss_in_place(
         database_url=str(database_url),
         dataset_id=dataset_id,
         source_text=source_text,
+        actor=actor,
+        expected_branch=expected_branch,
+        expected_head=expected_head,
+    ))
+
+
+def apply_transformation_plan_in_place(
+    *, database_url: Any, dataset_id: str,
+    plan: TransformationPlan | Mapping[str, Any],
+    actor: str, expected_branch: str | None = None,
+    expected_head: str | None = None,
+) -> Mapping[str, Any]:
+    """Apply a canonical plan to the same logical dataset and physical table."""
+    return result(_apply_transformation_plan_in_place(
+        database_url=str(database_url),
+        dataset_id=dataset_id,
+        plan=plan,
         actor=actor,
         expected_branch=expected_branch,
         expected_head=expected_head,

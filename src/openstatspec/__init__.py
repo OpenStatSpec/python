@@ -1,7 +1,8 @@
 """Public API for the OpenStatSpec Python reference implementation."""
 
 from .api import (
-    apply_spss_in_place, capabilities, capability_matrix, derive_sql_dataset,
+    apply_spss_in_place, apply_transformation_plan_in_place,
+    capabilities, capability_matrix, derive_sql_dataset,
     execute_sql_transformation,
     export_sav, get_dataset, import_sav, inspect,
     install_in_place_transformation_schema, list_datasets,
@@ -11,17 +12,24 @@ from .api import (
 )
 from .core import CapabilityDeclaration, LossReport, UnsupportedOperationError
 from .sql.workflow import TransformationError
+from .frontends.spss import SpssFrontendCompilation, compile_spss_syntax
 from .transform import (
-    SpssFrontendCompilation, TransformationFrontendError,
-    VariableDefinition, VariableSchema, compile_spss_syntax,
+    RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
+    ReplaceValueLabelsOperation, SetVariableLabelOperation,
+    TransformationFrontendError, TransformationPlan, TypedValue, ValueLabel,
+    VariableDefinition, VariableSchema, transformation_plan_from_dict,
 )
 
 __all__ = [
     "CapabilityDeclaration", "LossReport", "SpssFrontendCompilation",
     "TransformationError", "TransformationFrontendError",
-    "VariableDefinition", "VariableSchema",
+    "RecodeMatch", "RecodeOperation", "RecodeResult", "RecodeRule",
+    "ReplaceValueLabelsOperation", "SetVariableLabelOperation",
+    "TransformationPlan", "TypedValue", "ValueLabel",
+    "VariableDefinition", "VariableSchema", "transformation_plan_from_dict",
     "UnsupportedOperationError", "capabilities", "capability_matrix",
-    "apply_spss_in_place", "compile_spss_syntax", "derive_sql_dataset",
+    "apply_spss_in_place", "apply_transformation_plan_in_place",
+    "compile_spss_syntax", "derive_sql_dataset",
     "execute_sql_transformation", "export_sav",
     "get_dataset", "import_sav", "inspect",
     "install_in_place_transformation_schema", "list_datasets",

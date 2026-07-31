@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openstatspec"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reference adapter for the OpenStatSpec relational contract"
 readme = "README.md"
 requires-python = ">=3.11"
