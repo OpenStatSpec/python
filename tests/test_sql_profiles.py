@@ -645,3 +645,43 @@ def test_dolt_operational_write_flag_requires_claimed_driver() -> None:
     assert capabilities.dolt_operational_write_enabled(
         {"driver_eligible": True}, declaration_matched=False,
     ) is False
+
+def test_mysql_preflight_matches_emitted_text_limit() -> None:
+    assert MYSQL.max_text_value_bytes == 65_535
+    variables = [{
+        "ordinal": 1,
+        "source_name": "value",
+        "physical_name": "value",
+        "storage_kind": "string",
+        "string_width": 65_536,
+    }]
+
+    with pytest.raises(UnsupportedOperationError) as error:
+        preflight(MYSQL, variables)
+
+    assert error.value.details["reason"] == "declared_string_width_limit"
+    assert error.value.details["maximum"] == 65_535
+
+
+@pytest.mark.parametrize(
+    ("claimed_supported", "driver_eligible"),
+    [(False, True), (True, False)],
+)
+def test_active_non_dolt_write_flag_requires_version_and_driver(
+    monkeypatch, claimed_supported, driver_eligible,
+) -> None:
+    active = {
+        "profile": "postgresql",
+        "claimed_supported": claimed_supported,
+        "driver_eligible": driver_eligible,
+        "observed": {},
+    }
+    monkeypatch.setattr(
+        capabilities, "active_connection", lambda _url, **_kwargs: active,
+    )
+
+    declaration = capabilities.profile_declarations(
+        "postgresql+psycopg://user@host/database",
+    )["postgresql"]
+
+    assert declaration["operational_write_enabled"] is False
