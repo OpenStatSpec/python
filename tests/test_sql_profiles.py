@@ -10,7 +10,10 @@ from sqlalchemy.schema import CreateTable
 from openstatspec.sql.normative import catalog as normative_catalog
 
 from openstatspec.core import UnsupportedOperationError
-from openstatspec.sql.profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, preflight, profile_for_url
+from openstatspec.sql.profiles import (
+    DOLT, MYSQL, POSTGRESQL, SQLITE, preflight, preflight_identifier,
+    profile_for_url,
+)
 import openstatspec.sql.capabilities as capabilities
 import openstatspec.sql.wide as wide
 import openstatspec.spss.sav as sav
@@ -696,3 +699,15 @@ def test_dolt_validation_requires_longtext_not_generic_text() -> None:
     assert wide._valid_wide_string_type(DOLT, mysql.LONGTEXT()) is True
     assert wide._valid_wide_string_type(DOLT, Text()) is False
     assert wide._valid_wide_string_type(MYSQL, Text()) is True
+
+def test_generated_data_table_identifier_uses_effective_limit() -> None:
+    limited = replace(DOLT, identifier_limit=5)
+
+    with pytest.raises(UnsupportedOperationError) as error:
+        preflight_identifier(
+            limited, "data_dataset", role="physical data-table identifier",
+        )
+
+    assert error.value.details["reason"] == "identifier_limit"
+    assert error.value.details["role"] == "physical data-table identifier"
+    assert error.value.details["maximum"] == 5
