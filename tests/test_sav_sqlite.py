@@ -1,4 +1,5 @@
 import hashlib
+import errno
 import json
 import sqlite3
 import threading
@@ -383,4 +384,31 @@ def test_export_publication_does_not_clobber_intervening_destination(
     assert staged.read_bytes() == b"earlier staged export"
     assert sav_module._path_entry_exists(backup) is False
     assert state["published_identity"] is None
+
+
+def test_export_publication_falls_back_when_hard_links_are_unsupported(
+    tmp_path, monkeypatch,
+) -> None:
+    staged = tmp_path / "staged.sav"
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    staged.write_bytes(b"portable staged export")
+
+    def unsupported_hard_link(*_args, **_kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links are unsupported")
+
+    monkeypatch.setattr(sav_module.os, "link", unsupported_hard_link)
+    state = {}
+    sav_module._publish_staged_destination(
+        staged=staged,
+        destination=destination,
+        backup=backup,
+        state=state,
+    )
+
+    assert destination.read_bytes() == b"portable staged export"
+    assert not staged.exists()
+    assert state["published_identity"] == sav_module._destination_identity(
+        destination,
+    )
 

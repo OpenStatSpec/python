@@ -9,6 +9,7 @@ caller explicitly accepts that exact loss.
 import hashlib
 import os
 import json
+import errno
 import math
 import ctypes
 from contextlib import ExitStack, contextmanager
@@ -352,15 +353,28 @@ def _publish_staged_destination(
         state.update({"had_previous": True, "backup_installed": True})
     else:
         backup.unlink(missing_ok=True)
-
     # The hard-link claim is atomic and fails if another process publishes the
-    # destination after the check above. Staging is on the same filesystem.
-    os.link(staged, destination)
+    # destination after the check above. Some portable filesystems do not
+    # implement hard links; the surrounding export lock serializes those
+    # fallback replacements with every other OpenStatSpec publisher.
+    try:
+        os.link(staged, destination)
+    except OSError as link_error:
+        if link_error.errno not in {
+            errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM, errno.EXDEV,
+        }:
+            raise
+        if _path_entry_exists(destination):
+            raise FileExistsError(
+                "The export destination was published by another operation."
+            ) from link_error
+        os.replace(staged, destination)
+    else:
+        staged.unlink()
     published_identity = _destination_identity(destination)
     if published_identity is None:
         raise FileNotFoundError("The published export destination disappeared.")
     state["published_identity"] = published_identity
-    staged.unlink()
 
 
 @contextmanager
