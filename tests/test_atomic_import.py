@@ -373,3 +373,10 @@ def test_failed_table_create_never_claims_cleanup_ownership() -> None:
         )
 
     assert state["data_table_created"] is False
+
+def test_transactional_profiles_never_run_stale_compensating_cleanup() -> None:
+    assert wide._requires_compensating_import_cleanup("sqlite") is False
+    assert wide._requires_compensating_import_cleanup("postgresql") is False
+    assert wide._requires_compensating_import_cleanup("mysql") is True
+    assert wide._requires_compensating_import_cleanup("mariadb") is True
+    assert wide._requires_compensating_import_cleanup("dolt") is True
