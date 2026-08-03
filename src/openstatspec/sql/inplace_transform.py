@@ -24,7 +24,9 @@ from .capabilities import effective_profile
 from .dolt_conformance import DoltConformanceSource
 from .normative import catalog as core_catalog
 from .wide import catalog as legacy_catalog
-from .wide import normalized_metadata_tables, physical_name
+from .wide import (
+    normalized_metadata_tables, physical_name, require_verified_catalog,
+)
 from .workflow import TransformationError
 
 
@@ -569,6 +571,7 @@ def install_in_place_transformation_schema(
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
+            require_verified_catalog(connection)
             apply_audit_catalog(MetaData()).create(connection, checkfirst=True)
             columns = {
                 str(column["name"])
@@ -615,6 +618,7 @@ def _run_in_place_submission(
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
+            require_verified_catalog(connection)
             branch: str | None = None
             head: str | None = None
             if profile.name == "dolt":
