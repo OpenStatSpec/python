@@ -338,7 +338,7 @@ def _raise_export_cleanup_failed(
         "destination": _path_reference(destination, role="destination"),
         "destination_exists": destination.exists(),
         "backup": _path_reference(backup, role="durable_backup"),
-        "backup_exists": backup.exists(),
+        "backup_exists": _path_entry_exists(backup),
         "staged_export": _path_reference(staged, role="staged_export"),
         "staged_export_exists": staged.exists(),
     }
@@ -366,7 +366,7 @@ def _raise_export_cleanup_failed(
         "cleanup_attempted": True,
         "cleanup_succeeded": False,
         "previous_destination_existed": had_previous,
-        "durable_backup_survives_staging_cleanup": backup.exists(),
+        "durable_backup_survives_staging_cleanup": _path_entry_exists(backup),
     }
     cleanup_audit_operation_id = None
     cleanup_audit_fault = None
@@ -452,7 +452,7 @@ def _mark_export_failed_after_restore(
                     "backup": _path_reference(
                         backup, role="durable_backup",
                     ),
-                    "backup_exists": backup.exists(),
+                    "backup_exists": _path_entry_exists(backup),
                     "operation_id": operation_id,
                 },
                 "deterministic_recovery_evidence": {
@@ -750,21 +750,21 @@ def export_sav_dataset(
                         "backup": _path_reference(
                             backup, role="durable_backup",
                         ),
-                        "backup_exists": backup.exists(),
+                        "backup_exists": _path_entry_exists(backup),
                     },
                     "deterministic_recovery_evidence": {
                         "procedure_id": "openstatspec.export-audit-reconciliation.v1",
                         "operation_terminal_state_verified": False,
                         "automatic_filesystem_recovery_performed": False,
                         "published_file_preserved": destination_path.exists(),
-                        "durable_backup_preserved": backup.exists(),
+                        "durable_backup_preserved": _path_entry_exists(backup),
                         "manual_reconciliation_required": True,
                         "terminal_reporting": "out_of_band_exception",
                     },
                     "success_forbidden": True,
                 },
             ) from finalization_error
-    if backup.exists():
+    if _path_entry_exists(backup):
         try:
             backup.unlink()
         except Exception as cleanup_error:
