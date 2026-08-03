@@ -330,6 +330,32 @@ def _reserve_export_backup(destination: Path) -> Path:
     return Path(name)
 
 
+def _publish_staged_destination(
+    *, staged: Path, destination: Path, backup: Path,
+    state: dict[str, Any],
+) -> None:
+    """Publish without overwriting an entry created during export preparation."""
+    state.update({
+        "had_previous": False,
+        "backup_installed": False,
+        "published_identity": None,
+    })
+    if _path_entry_exists(destination):
+        os.replace(destination, backup)
+        state.update({"had_previous": True, "backup_installed": True})
+    else:
+        backup.unlink(missing_ok=True)
+
+    # The hard-link claim is atomic and fails if another process publishes the
+    # destination after the check above. Staging is on the same filesystem.
+    os.link(staged, destination)
+    published_identity = _destination_identity(destination)
+    if published_identity is None:
+        raise FileNotFoundError("The published export destination disappeared.")
+    state["published_identity"] = published_identity
+    staged.unlink()
+
+
 def _restore_export_destination(
     *, destination: Path, backup: Path, had_previous: bool,
     expected_identity: tuple[int, int] | None | object = (
@@ -651,29 +677,32 @@ def export_sav_dataset(
             raise
         backup_installed = False
         try:
-            if had_previous:
-                os.replace(destination_path, backup)
-                backup_installed = True
-            os.replace(staged_destination, destination_path)
-            published_identity = _destination_identity(destination_path)
-            if published_identity is None:
-                raise FileNotFoundError(
-                    "The published export destination disappeared."
-                )
+            _publish_staged_destination(
+                staged=staged_destination,
+                destination=destination_path,
+                backup=backup,
+                state=publication_state,
+            )
+            had_previous = publication_state["had_previous"]
+            backup_installed = publication_state["backup_installed"]
             publication_state.update({
                 "published": True,
-                "published_identity": published_identity,
                 "backup": backup,
                 "staged": staged_destination,
-                "had_previous": had_previous,
                 "operation_id": operation_id,
             })
         except Exception as publish_error:
+            had_previous = publication_state.get("had_previous", had_previous)
+            backup_installed = publication_state.get(
+                "backup_installed", backup_installed,
+            )
+            published_identity = publication_state.get("published_identity")
             if backup_installed or not had_previous:
                 try:
                     _restore_export_destination(
                         destination=destination_path, backup=backup,
-                        had_previous=had_previous, expected_identity=None,
+                        had_previous=had_previous,
+                        expected_identity=published_identity,
                     )
                 except Exception as cleanup_error:
                     _raise_export_cleanup_failed(
