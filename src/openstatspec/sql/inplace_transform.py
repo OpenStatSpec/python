@@ -21,6 +21,7 @@ from ..transform import (
     transformation_plan_from_dict,
 )
 from .capabilities import effective_profile
+from .dolt_conformance import DoltConformanceSource
 from .normative import catalog as core_catalog
 from .wide import catalog as legacy_catalog
 from .wide import normalized_metadata_tables, physical_name
@@ -554,11 +555,17 @@ def _dolt_state(connection: Any) -> tuple[str, str, int]:
     return branch, head, dirty
 
 
-def install_in_place_transformation_schema(*, database_url: str) -> None:
+def install_in_place_transformation_schema(
+    *,
+    database_url: str,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> None:
     """Install the compact operation audit separately from any data apply."""
     # Resolve the effective profile first so Dolt conformance and explicit
     # driver checks fail closed before an engine transaction can execute DDL.
-    effective_profile(database_url)
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
@@ -595,13 +602,16 @@ def _run_in_place_submission(
     prepare: Callable[[Any, str], InPlacePlanSubmission],
     expected_branch: str | None = None,
     expected_head: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, Any]:
     """Prepare and apply one canonical plan in the same controlled transaction."""
     if not actor:
         raise TransformationError(
             "actor_required", "A non-empty actor identity is mandatory.",
         )
-    profile, _active = effective_profile(database_url)
+    profile, _active = effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
@@ -662,6 +672,7 @@ def apply_transformation_plan_in_place(
     actor: str,
     expected_branch: str | None = None,
     expected_head: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, Any]:
     """Apply a canonical plan without knowing which frontend produced it."""
     normalized = (
@@ -682,4 +693,5 @@ def apply_transformation_plan_in_place(
         prepare=lambda _connection, _dataset_id: submission,
         expected_branch=expected_branch,
         expected_head=expected_head,
+        dolt_conformance_source=dolt_conformance_source,
     )
