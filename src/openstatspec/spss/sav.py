@@ -10,6 +10,7 @@ import hashlib
 import os
 import json
 import math
+import ctypes
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from functools import wraps
@@ -362,30 +363,62 @@ def _publish_staged_destination(
     staged.unlink()
 
 
-
-
 @contextmanager
 def _export_destination_lock(destination: Path):
-    """Serialize export publication and recovery for one destination directory.
+    """Serialize export publication and recovery across cooperating processes."""
+    if fcntl is not None:
+        descriptor = os.open(destination.parent, os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+        return
 
-    The lock covers the existence observation, backup move, publication, and
-    compensating restore. Without it, two exporters could each observe the
-    old destination, and the later exporter could move or delete the newer
-    export while attempting to restore its own failure.
-    """
-    if fcntl is None:  # pragma: no cover - see import guard above.
-        raise UnsupportedOperationError(
-            "SAV export publication requires POSIX advisory file locking."
-        )
-    descriptor = os.open(destination.parent, os.O_RDONLY)
+    kernel32 = _windows_kernel32()
+    path_identity = os.path.normcase(os.path.abspath(os.fspath(destination)))
+    mutex_name = "Global\\OpenStatSpec.SAV." + hashlib.sha256(
+        path_identity.encode("utf-8")
+    ).hexdigest()
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        raise ctypes.WinError()
+    acquired = False
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        wait_result = kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        if wait_result not in {0x00000000, 0x00000080}:
+            raise OSError(
+                f"Windows export mutex wait failed with status {wait_result}."
+            )
+        acquired = True
         yield
     finally:
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            if acquired and not kernel32.ReleaseMutex(handle):
+                raise ctypes.WinError()
         finally:
-            os.close(descriptor)
+            kernel32.CloseHandle(handle)
+
+
+def _windows_kernel32():
+    """Return a typed Win32 mutex API for cross-process export locking."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (
+        ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p,
+    )
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (
+        ctypes.c_void_p, ctypes.c_uint32,
+    )
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel32.ReleaseMutex.restype = ctypes.c_bool
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    return kernel32
 
 
 def _serialize_export_publication(

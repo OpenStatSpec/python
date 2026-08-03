@@ -49,6 +49,45 @@ def test_export_destination_lock_serializes_observation_and_publication(tmp_path
     assert second_entered.is_set()
 
 
+def test_export_destination_lock_uses_windows_mutex_without_fcntl(
+    tmp_path, monkeypatch,
+) -> None:
+    calls = []
+
+    class Kernel32:
+        def CreateMutexW(self, security, initially_owned, name):
+            calls.append(("create", security, initially_owned, name))
+            return 123
+
+        def WaitForSingleObject(self, handle, timeout):
+            calls.append(("wait", handle, timeout))
+            return 0x00000080
+
+        def ReleaseMutex(self, handle):
+            calls.append(("release", handle))
+            return True
+
+        def CloseHandle(self, handle):
+            calls.append(("close", handle))
+            return True
+
+    monkeypatch.setattr(sav_module, "fcntl", None)
+    monkeypatch.setattr(sav_module, "_windows_kernel32", Kernel32)
+    destination = tmp_path / "shared-output.sav"
+
+    with sav_module._export_destination_lock(destination):
+        calls.append(("critical",))
+
+    assert calls[0][:3] == ("create", None, False)
+    assert calls[0][3].startswith("Global\\OpenStatSpec.SAV.")
+    assert calls[1:] == [
+        ("wait", 123, 0xFFFFFFFF),
+        ("critical",),
+        ("release", 123),
+        ("close", 123),
+    ]
+
+
 def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"
     database_path = tmp_path / "dataset.sqlite"
