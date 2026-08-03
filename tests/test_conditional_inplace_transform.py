@@ -325,8 +325,57 @@ def test_dolt_mock_rechecks_clean_state_after_dataset_lock(
     conditional_catalog, monkeypatch,
 ) -> None:
     url, path, dataset_id, table_name = conditional_catalog
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text=SYNTAX,
+        actor="provisioning-stage",
+    )
+    connection = sqlite3.connect(path)
+    before = connection.execute(
+        f'SELECT target FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall()
+    connection.close()
+
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
         lambda _url: (SimpleNamespace(name="dolt"), {}),
     )
+    states = iter([
+        ("main", "abc123", 0),
+        ("main", "abc123", 1),
+    ])
+    observed_states = []
+
+    def next_state(_connection):
+        state = next(states)
+        observed_states.append(state)
+        return state
+
+    monkeypatch.setattr(inplace_transform, "_dolt_state", next_state)
+
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text=SYNTAX,
+            actor="synthetic-test",
+            expected_branch="main",
+            expected_head="abc123",
+        )
+
+    assert caught.value.code == "dolt_working_set_dirty"
+    assert observed_states == [
+        ("main", "abc123", 0),
+        ("main", "abc123", 1),
+    ]
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        f'SELECT target FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == before
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (1,)
+    connection.close()
+
