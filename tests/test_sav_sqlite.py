@@ -241,3 +241,16 @@ def test_export_recovery_preserves_dangling_destination_symlink(tmp_path) -> Non
 
     assert destination.is_symlink()
     assert destination.readlink() == missing_target
+
+def test_successful_export_cleanup_removes_dangling_symlink_backup(
+    tmp_path,
+) -> None:
+    missing_target = tmp_path / "missing-original.sav"
+    backup = tmp_path / ".destination.previous"
+    backup.symlink_to(missing_target)
+
+    assert sav_module._path_entry_exists(backup) is True
+    if sav_module._path_entry_exists(backup):
+        backup.unlink()
+
+    assert sav_module._path_entry_exists(backup) is False
