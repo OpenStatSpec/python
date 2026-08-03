@@ -268,6 +268,13 @@ def effective_profile(
         raise UnsupportedOperationError("The active SQL server does not match the configured profile.")
     if configured is MYSQL and active["profile"] not in MYSQL_WIRE_PROFILES:
         raise UnsupportedOperationError("The active SQL server is not a claimed MySQL-wire product.")
+    if (
+        active["profile"] == "dolt"
+        and make_url(database_url).drivername.lower() != "mysql+pymysql"
+    ):
+        raise UnsupportedOperationError(
+            "Dolt requires an explicit mysql+pymysql URL."
+        )
     dolt_declaration = None
     if active["profile"] == "dolt":
         dolt_declaration = source.require_exact_match(
