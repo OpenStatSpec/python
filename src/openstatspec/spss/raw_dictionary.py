@@ -641,6 +641,12 @@ def _long_name_pairs(payload: bytes, encoding: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def _very_long_string_entries(
+    payload: bytes,
+) -> tuple[list[tuple[str, bytes]], bool]:
+    """Compatibility view for callers that also consumed the terminator flag."""
+    return _very_long_string_pairs(payload), True
+
 def _very_long_string_pairs(payload: bytes) -> list[tuple[str, bytes]]:
     if not payload or not payload.endswith(b"\x00	"):
         raise RawDictionaryError("Invalid SAV very-long-string record terminator.")

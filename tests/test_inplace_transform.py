@@ -61,6 +61,7 @@ def _submission(source_text: str) -> InPlacePlanSubmission:
 def catalog(tmp_path):
     path = tmp_path / "in-place.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     create_wide_dataset(
         database_url=url,
         dataset_id="in_place_source",
@@ -297,6 +298,7 @@ def test_string_source_can_create_numeric_target(tmp_path) -> None:
         "print_format": "[1, 8, 0]",
         "write_format": "[1, 8, 0]",
     })
+    openstatspec.initialize_catalog(database_url=url)
     create_wide_dataset(
         database_url=url,
         dataset_id="string_source",

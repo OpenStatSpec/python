@@ -65,6 +65,7 @@ def test_vls_custom_compatible_name_round_trips_as_one_variable(tmp_path, suffix
     raw_dictionary.write_compatible_names(
         source, {_SOURCE_NAME: _COMPATIBLE_NAME}, encoding="UTF-8",
     )
+    openstatspec.initialize_catalog(database_url=database)
 
     imported = openstatspec.import_sav(
         source, database_url=database, dataset_id=f"vls-{suffix[1:]}",
@@ -119,6 +120,7 @@ def test_malformed_vls_export_removes_output_and_records_no_success(tmp_path, mo
     raw_dictionary.write_compatible_names(
         source, {_SOURCE_NAME: _COMPATIBLE_NAME}, encoding="UTF-8",
     )
+    openstatspec.initialize_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="failed-vls")
     real_write = sav_module.write_compatible_names
 

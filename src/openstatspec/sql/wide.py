@@ -1319,13 +1319,18 @@ def _catalog_state(connection: Any, normative: Any, legacy: Iterable[Table]) -> 
     existing_relations = existing_tables | existing_views
     if normative.catalog_identity.name not in existing_tables:
         return "absent" if not existing_relations else "foreign"
+    try:
+        identities = connection.execute(
+            select(normative.catalog_identity)
+        ).mappings().all()
+    except Exception:
+        return "foreign"
+    if len(identities) != 1:
+        return "ambiguous"
     if not _identity_shape_valid(
         inspector, normative.catalog_identity, key_name="catalog_identity_key",
     ):
         return "foreign"
-    identities = connection.execute(select(normative.catalog_identity)).mappings().all()
-    if len(identities) != 1:
-        return "ambiguous"
     identity = identities[0]
     if (
         identity["catalog_identity_key"] != 1
@@ -1520,8 +1525,8 @@ def initialize_wide_catalog(
         connection.rollback()
         try:
             with connection.begin():
-                metadata.create_all(connection, tables=list(legacy))
                 create_normative_catalog(connection, normative)
+                metadata.create_all(connection, tables=list(legacy))
                 _migrate_catalog_columns(
                     connection, datasets, variables, multiple_response,
                 )
@@ -2511,7 +2516,8 @@ def create_wide_dataset(
             snapshot_connection=mutation_connection,
             pre_dolt_state=pre_dolt_state,
         ) as mutation:
-            with mutation_connection.begin() as connection:
+            with mutation_connection.begin():
+                connection = mutation_connection
                 _require_verified_catalog(connection, normative, legacy)
                 record_normative_operation(
                     connection, normative, operation_id=operation_id,

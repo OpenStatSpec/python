@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version as distribution_version
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -9,8 +11,24 @@ from typing import Any, Mapping
 from ..core import UnsupportedOperationError
 
 
+def _adapter_version() -> str:
+    source_project = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    if source_project.is_file():
+        project = tomllib.loads(source_project.read_text(encoding="utf-8"))
+        value = project.get("project", {}).get("version")
+        if isinstance(value, str) and value:
+            return value
+    try:
+        return distribution_version("openstatspec")
+    except PackageNotFoundError as error:
+        raise RuntimeError(
+            "The openstatspec adapter version is unavailable from both the "
+            "source project and installed distribution metadata."
+        ) from error
+
+
 ADAPTER_IMPLEMENTATION_ID = "openstatspec-python"
-ADAPTER_VERSION = "0.1.0"
+ADAPTER_VERSION = _adapter_version()
 
 
 def _shared_api() -> tuple[Any, Any, Any, Any]:
