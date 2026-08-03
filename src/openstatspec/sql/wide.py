@@ -2367,11 +2367,6 @@ def create_wide_dataset(
     data_table = Table(
         data_table_name(dataset_id), metadata,
         Column("__case_ordinal", BigInteger, primary_key=True, nullable=False),
-        *(Column(
-            item["physical_name"],
-            binary64_type() if item["storage_kind"] == "numeric" else Text,
-            nullable=item["storage_kind"] == "numeric",
-        ) for item in variables),
     )
     audit_relations = {
         fidelity_event_catalog.name, operation_catalog.name,
@@ -2400,6 +2395,12 @@ def create_wide_dataset(
                 case_weight_variable=case_weight_variable,
                 multiple_response_sets=multiple_response_sets,
             )
+            for item in variables:
+                data_table.append_column(Column(
+                    item["physical_name"],
+                    binary64_type() if item["storage_kind"] == "numeric" else Text,
+                    nullable=item["storage_kind"] == "numeric",
+                ))
         except Exception as error:
             try:
                 _record_failed_preflight(
