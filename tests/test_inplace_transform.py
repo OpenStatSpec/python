@@ -654,3 +654,33 @@ def test_schema_installer_upgrades_legacy_apply_audit_columns(catalog) -> None:
         database_url=url, dataset_id=dataset_id, kind="core",
     )["dataset"]["dataset_id"] == dataset_id
 
+def test_public_apply_rejects_divergent_variable_mapping_before_mutation(
+    catalog,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    connection = sqlite3.connect(path)
+    deleted = connection.execute("DELETE FROM variable_catalog")
+    assert deleted.rowcount == 1
+    connection.commit()
+    before = connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall()
+
+    with pytest.raises(
+        openstatspec.UnsupportedOperationError,
+        match="explicit catalog initialization",
+    ):
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="VARIABLE LABELS score 'Changed'.",
+            actor="test-agent",
+        )
+
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == before
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (0,)
+
