@@ -92,13 +92,6 @@ def test_normative_catalog_compiles_for_every_sql_family() -> None:
         ("mysql", "8.4.0", True), ("mysql", "8.4.999", True),
         ("mysql", "9.7.2", True), ("mysql", "8.0.44", False),
         ("mysql", "8.5.0", False), ("mysql", "9.8.0", False),
-        ("dolt", "2.2.2", True), ("dolt", " 2.2.2 ", True),
-        ("dolt", "2.2.3", True), ("dolt", "2.2.999", True),
-        ("dolt", "2.2.0", False), ("dolt", "2.2.1", False),
-        ("dolt", "2.3.0", False), ("dolt", "2.2", False),
-        ("dolt", "2.2.3-rc1", False), ("dolt", "2.2.3+build.1", False),
-        ("dolt", "v2.2.3", False), ("dolt", "2.2.03", False),
-        ("dolt", "garbage", False),
         ("mariadb", "11.4.0-MariaDB", True),
         ("mariadb", "11.4.999-MariaDB", True),
         ("mariadb", "11.8.8-MariaDB", True),
@@ -116,6 +109,18 @@ def test_claimed_server_version_policy_is_explicit(
     assert server_version_supported(profile, version) is supported
 
 
+@pytest.mark.parametrize(
+    "version",
+    [
+        "2.2.2", " 2.2.2 ", "2.2.3", "2.2.999", "2.2.0", "2.2.1",
+        "2.3.0", "2.2", "2.2.3-rc1", "2.2.3+build.1", "v2.2.3",
+        "2.2.03", "garbage",
+    ],
+)
+def test_dolt_without_concrete_declaration_is_not_claimed(version: str) -> None:
+    assert server_version_supported("dolt", version) is False
+
+
 @pytest.mark.services
 @pytest.mark.parametrize(
     ("environment_name", "profile"),
@@ -123,7 +128,6 @@ def test_claimed_server_version_policy_is_explicit(
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
-        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 def test_active_server_identity_matches_claimed_ci_profile(
@@ -137,6 +141,18 @@ def test_active_server_identity_matches_claimed_ci_profile(
     assert active["profile"] == profile
     assert active["claimed_supported"] is True
     assert active["matched_claim"] is not None
+
+
+@pytest.mark.services
+def test_live_dolt_identity_is_observed_but_not_claimed_without_declarations() -> None:
+    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
+    if not database_url:
+        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+
+    active = active_connection(database_url)
+    assert active["profile"] == "dolt"
+    assert active["claimed_supported"] is False
+    assert active["matched_claim"] is None
 
 
 @pytest.mark.services
@@ -200,17 +216,8 @@ def test_server_policy_distinguishes_claimed_families_from_exact_ci_evidence() -
     assert declarations["postgresql"]["ci_tested_server_versions"] == [
         "PostgreSQL 17.10", "PostgreSQL 18.4",
     ]
-    assert declarations["dolt"]["claimed_server_versions"] == ["Dolt 2.2.x"]
-    assert declarations["dolt"]["claimed_version_range"] == {
-        "minimum_inclusive": "2.2.2",
-        "maximum_exclusive": "2.3.0",
-    }
-    assert declarations["dolt"]["ci_tested_server_versions"] == [
-        "Dolt 2.2.2", "Dolt 2.2.3",
-    ]
-    assert declarations["dolt"]["exact_ci_tested_versions"] == [
-        "2.2.2", "2.2.3",
-    ]
+    assert declarations["dolt"]["claimed_server_versions"] == []
+    assert declarations["dolt"]["ci_tested_server_versions"] == []
 
 
 class _ProbeResult:
@@ -256,6 +263,7 @@ def _mock_mysql_probes(monkeypatch, **overrides):
         "select @@version": "8.0.31",
         "select @@version_comment": "Dolt",
         "select DOLT_VERSION()": "2.2.3",
+        "select ACTIVE_BRANCH()": "main",
         "select @@max_allowed_packet": 1_073_741_824,
     }
     responses.update(overrides)
@@ -272,20 +280,21 @@ def test_dolt_identity_is_exact_and_publishes_wire_and_product_versions(monkeypa
     active = active_connection("mysql+pymysql://user@host/database")
 
     assert active["dialect"] == "mysql"
-    assert active["profile"] == active["engine"] == active["product"] == "dolt"
-    assert active["transport"] == "mysql_compatible"
-    assert active["driver"] == "pymysql"
+    assert active["profile"] == active["product"] == "dolt"
     assert active["raw_wire_version"] == "8.0.31"
     assert active["raw_product_version"] == active["raw_server_version"] == "2.2.3"
-    assert active["raw_version_comment"] == "  dOlT  "
+    assert active["raw_version_comment"] == "dOlT"
     assert active["server_version"] == "2.2.3"
-    assert active["identity_source"] == "SELECT @@version, @@version_comment, DOLT_VERSION()"
-    assert active["claimed_supported"] is True
+    assert active["identity_source"] == (
+        "SELECT @@version, @@version_comment, DOLT_VERSION(), ACTIVE_BRANCH()"
+    )
+    assert active["claimed_supported"] is False
+    assert active["matched_claim"] is None
+    assert active["working_set_binding"]["active_branch"] == "main"
     assert connection.calls == [
-        "select @@version", "select @@version_comment",
-        "select DOLT_VERSION()", "select @@max_allowed_packet",
+        "select @@version", "select @@version_comment", "select DOLT_VERSION()",
+        "select ACTIVE_BRANCH()", "select @@max_allowed_packet",
     ]
-
 
 @pytest.mark.parametrize("comment", [None, False, "", "   "])
 def test_mysql_wire_identity_requires_a_nonempty_version_comment(monkeypatch, comment) -> None:
@@ -325,20 +334,22 @@ def test_dolt_comment_requires_a_nonempty_product_version(monkeypatch) -> None:
         "2.2.3-rc1", "2.2.3+build.1", "v2.2.3", "2.2.03", "garbage",
     ],
 )
-def test_dolt_identity_rejects_out_of_range_or_noncanonical_product_versions(
+def test_dolt_identity_observes_but_does_not_claim_unbound_versions(
     monkeypatch, product_version,
 ) -> None:
     connection = _mock_mysql_probes(
         monkeypatch, **{"select DOLT_VERSION()": product_version},
     )
 
-    with pytest.raises(UnsupportedOperationError, match=r">=2\.2\.2,<2\.3\.0"):
-        active_connection("mysql+pymysql://user@host/database")
+    active = active_connection("mysql+pymysql://user@host/database")
 
+    assert active["raw_product_version"] == product_version
+    assert active["claimed_supported"] is False
+    assert active["matched_claim"] is None
     assert connection.calls == [
         "select @@version", "select @@version_comment", "select DOLT_VERSION()",
+        "select ACTIVE_BRANCH()", "select @@max_allowed_packet",
     ]
-
 
 def test_unknown_mysql_wire_product_fails_closed_without_dolt_probe(monkeypatch) -> None:
     connection = _mock_mysql_probes(
@@ -372,77 +383,35 @@ def test_non_dolt_products_never_call_the_dolt_function(monkeypatch) -> None:
     assert "select DOLT_VERSION()" not in connection.calls
 
 
-def test_effective_profile_selects_dolt_without_changing_url_profile(monkeypatch) -> None:
+def test_effective_profile_fails_closed_without_dolt_declarations(monkeypatch) -> None:
     active = {
-        "profile": "dolt", "server_version": "2.2.3", "claimed_supported": True,
-        "observed": {"max_allowed_packet": 1_073_741_824},
+        "profile": "dolt",
+        "raw_product_version": "2.2.3",
     }
-    monkeypatch.setattr(capabilities, "active_connection", lambda _url: active)
+    monkeypatch.setattr(
+        capabilities, "active_connection", lambda _url, **_kwargs: active,
+    )
 
-    profile, observed = effective_profile("mysql+pymysql://user@host/database")
+    with pytest.raises(UnsupportedOperationError, match="no concrete declarations"):
+        effective_profile("mysql+pymysql://user@host/database")
 
-    assert profile is not MYSQL
-    assert profile.name == "dolt"
-    assert profile.url_schemes == ()
-    assert profile.max_physical_variables == 305
-    assert profile.max_text_value_bytes == 65_504
-    assert profile.max_row_bytes == 65_504
-    assert observed is active
-
-
-def test_dolt_declaration_labels_conservative_envelopes() -> None:
+def test_dolt_declaration_is_fail_closed_without_concrete_evidence() -> None:
     declaration = capabilities.profile_declarations()["dolt"]
 
-    assert declaration["dialect"] == "mysql"
-    assert declaration["profile"] == "dolt"
-    assert declaration["engine"] == "dolt"
-    assert declaration["transport"] == "mysql_compatible"
-    assert declaration["claimed_server_versions"] == ["Dolt 2.2.x"]
-    assert declaration["claimed_version_range"] == {
-        "minimum_inclusive": "2.2.2",
-        "maximum_exclusive": "2.3.0",
-    }
-    assert declaration["ci_tested_server_versions"] == [
-        "Dolt 2.2.2", "Dolt 2.2.3",
-    ]
-    assert declaration["exact_ci_tested_versions"] == ["2.2.2", "2.2.3"]
-    assert declaration["proposed_adapter_limits"]["maximum_physical_columns"] == 306
-    assert declaration["proposed_adapter_limits"]["maximum_source_variables"] == 305
-    assert declaration["proposed_adapter_limits"]["maximum_value_bytes"] == 65_504
-    assert declaration["proposed_adapter_limits"]["maximum_row_bytes"] == 65_504
-    assert declaration["theoretical_limits"]["maximum_value_bytes"] == 4_294_967_295
-    assert declaration["observed_limits"]["minimum_observed_physical_columns"] == 307
-    assert declaration["observed_limits"]["identifier_limit"]["value"] == 64
-    assert declaration["observed_limits"]["rejected_identifier_bytes"] == 65
-    assert set(declaration["proposed_adapter_limits"]) == {
-        "maximum_physical_columns", "maximum_source_variables",
-        "maximum_value_bytes", "maximum_row_bytes",
-    }
-    assert declaration["limit_bases"]["maximum_physical_columns"] == "proposed_adapter_envelope"
-    assert declaration["limit_bases"]["identifier_limit"] == "observed_exact_version"
-    assert declaration["limit_bases"]["maximum_value_bytes"] == "observed_exact_version"
-    assert declaration["limit_bases"]["maximum_statement_bytes"] == "active_connection_observation"
+    assert declaration["claimed_server_versions"] == []
+    assert declaration["ci_tested_server_versions"] == []
+    assert declaration["operational_write_enabled"] is False
     assert declaration["effective_limits"] is None
+    assert declaration["effective_limits_status"] == "not_connected"
+    assert declaration["write_conformance"]["declaration_count"] == 0
+    assert declaration["write_conformance"]["write_enabled"] is False
+    assert declaration["adapter_envelope"]["limit_basis"] == "proposed_adapter_envelope"
+    assert declaration["theoretical_limits"]["limit_basis"] == (
+        "server_limits_not_claimed"
+    )
     assert declaration["text_type"] == "LONGTEXT"
-    assert capabilities.profile_declarations()["mysql"]["text_type"] == "LONGTEXT"
-    assert capabilities.profile_declarations()["mariadb"]["text_type"] == "LONGTEXT"
-    assert declaration["ddl_atomic"] is False
-    assert declaration["failure_cleanup"] == "compensating_cleanup"
-    assert declaration["numeric_value_policy"] == {
-        "finite_binary64": "supported",
-        "nan": "rejected_before_ddl",
-        "positive_infinity": "rejected_before_ddl",
-        "negative_infinity": "rejected_before_ddl",
-    }
-    assert declaration["storage_evidence"]["binary64"]["maximum_finite_round_trip_exact"] is True
-    assert declaration["storage_evidence"]["binary64"]["source"]
-    assert declaration["storage_evidence"]["binary64"]["version"] == "2.2.2"
-    assert declaration["storage_evidence"]["text"]["observed_value_bytes"] == 65_504
-    assert declaration["storage_evidence"]["text"]["source"]
-    assert declaration["storage_evidence"]["text"]["version"] == "2.2.2"
-    assert declaration["storage_evidence"]["text"]["unit"] == "bytes"
-    assert declaration["transformation_workflow"] == "unsupported"
-
+    assert capabilities.profile_declarations()["mysql"]["text_type"] == "TEXT"
+    assert capabilities.profile_declarations()["mariadb"]["text_type"] == "TEXT"
 
 def test_dolt_uses_longtext_without_changing_mysql_storage() -> None:
     dolt_table = Table("dolt_text", MetaData(), Column("value", string_type(DOLT)))
@@ -454,17 +423,18 @@ def test_dolt_uses_longtext_without_changing_mysql_storage() -> None:
     assert "LONGTEXT" not in mysql_ddl
 
 
-def test_dolt_row_preflight_counts_utf8_values_against_adapter_envelope() -> None:
+def test_dolt_row_preflight_enforces_configured_utf8_value_limit() -> None:
+    limited = replace(DOLT, max_text_value_bytes=3)
     variables = [{
         "ordinal": 1, "source_name": "value", "physical_name": "value",
-        "storage_kind": "string", "string_width": 65_504,
+        "storage_kind": "string", "string_width": 3,
     }]
-    preflight(DOLT, variables, rows=[{"value": "x" * 65_504}])
+    preflight(limited, variables, rows=[{"value": "xxx"}])
 
     with pytest.raises(UnsupportedOperationError) as error:
-        preflight(DOLT, variables, rows=[{"value": "x" * 65_505}])
+        preflight(limited, variables, rows=[{"value": "xxxx"}])
     assert error.value.details["reason"] == "text_value_limit"
-
+    assert error.value.details["maximum"] == 3
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_dolt_numeric_preflight_rejects_nonfinite_values(value) -> None:
@@ -484,7 +454,7 @@ def test_dolt_numeric_preflight_rejects_nonfinite_values(value) -> None:
 
 
 def test_validate_identity_failure_happens_before_catalog_access(monkeypatch) -> None:
-    def fail_identity(_url):
+    def fail_identity(_url, **_kwargs):
         raise UnsupportedOperationError("identity unavailable")
 
     monkeypatch.setattr(wide, "effective_profile", fail_identity)
@@ -502,7 +472,7 @@ def test_validate_identity_failure_happens_before_catalog_access(monkeypatch) ->
 def test_export_identity_failure_happens_before_read_or_destination(monkeypatch, tmp_path) -> None:
     destination = tmp_path / "blocked.sav"
 
-    def fail_identity(_url):
+    def fail_identity(_url, **_kwargs):
         raise UnsupportedOperationError("identity unavailable")
 
     monkeypatch.setattr(sav, "effective_profile", fail_identity)
