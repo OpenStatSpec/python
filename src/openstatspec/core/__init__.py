@@ -1,12 +1,26 @@
 from .results import Diagnostic, OperationResult
 """Pure OpenStatSpec concepts; no file or database adapter code."""
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
 
 class UnsupportedOperationError(NotImplementedError):
     """Raised when faithful support for a requested operation is unavailable."""
+
+
+def safe_error_identity(error: Exception, *, phase: str) -> dict[str, Any]:
+    """Return a path-free, stable identity for an exception."""
+    code = getattr(error, "code", None)
+    if code is not None and not isinstance(code, (str, int, float, bool)):
+        code = type(code).__name__
+    return {
+        "type": type(error).__name__,
+        "code": code,
+        "phase": phase,
+        "message_sha256": hashlib.sha256(str(error).encode("utf-8")).hexdigest(),
+    }
 
 
 @dataclass(frozen=True)

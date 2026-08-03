@@ -7,7 +7,13 @@ from typing import Any
 from .core.results import result
 from .spss import export_dataset, import_dataset, inspect_source
 from .spss.sav import engine_identity
-from .sql import declared_profiles, validate_dataset
+from .sql import (
+    DoltConformanceSource,
+    declared_profiles,
+    dolt_state_snapshot as _dolt_state_snapshot,
+    initialize_catalog as _initialize_catalog,
+    validate_dataset,
+)
 from .sql.catalog_api import catalog_dataset as _catalog_dataset, catalog_datasets as _catalog_datasets
 from .sql.workflow import (
     derive_dataset as _derive_dataset,
@@ -33,7 +39,11 @@ from .sql.capabilities import (
 
 
 
-def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
+def capability_matrix(
+    database_url: str | None = None,
+    *,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> Mapping[str, Any]:
     """Return the pyspssio-backed SAV/ZSAV fidelity boundary.
 
     supported means that the adapter has a tested faithful path.
@@ -86,9 +96,18 @@ def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
             "maximum_source_file_bytes": None,
             "limit_basis": "runtime memory and active SQL connection limits",
         },
-        "active_connection": active_connection(database_url) if database_url else None,
+        "active_connection": (
+            active_connection(
+                database_url,
+                dolt_conformance_source=dolt_conformance_source,
+            )
+            if database_url else None
+        ),
         "catalog_binding": catalog_binding(database_url) if database_url else None,
-        "sql_profiles": declared_profiles(database_url),
+        "sql_profiles": declared_profiles(
+            database_url,
+            dolt_conformance_source=dolt_conformance_source,
+        ),
         "optional_profiles": {
             "sql_transformation_workflow": transformation_capabilities(database_url),
             "spss_in_place_transformation": (
@@ -98,26 +117,84 @@ def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
     }
     return declaration
 
-def capabilities(database_url: str | None = None) -> Mapping[str, Any]:
-    return capability_matrix(database_url)
+def capabilities(
+    database_url: str | None = None,
+    *,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> Mapping[str, Any]:
+    return capability_matrix(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
 
 
 def inspect(source: str | Path, /, **options: Any) -> Mapping[str, Any]:
     return result(inspect_source(source, **options))
 
 
-def import_sav(source: str | Path, /, *, database_url: Any, dataset_id: str, **options: Any) -> Mapping[str, Any]:
+def dolt_state_snapshot(
+    *,
+    database_url: Any,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> Mapping[str, Any]:
+    """Return read-only Dolt branch, HEAD, status, and diff-summary evidence."""
+    return result(_dolt_state_snapshot(
+        database_url=database_url,
+        dolt_conformance_source=dolt_conformance_source,
+    ))
+
+
+def initialize_catalog(
+    *,
+    database_url: Any,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> Mapping[str, Any]:
+    """Install or explicitly migrate a dedicated OpenStatSpec catalog."""
+    return result(_initialize_catalog(
+        database_url=database_url,
+        dolt_conformance_source=dolt_conformance_source,
+    ))
+
+
+def import_sav(
+    source: str | Path, /, *, database_url: Any, dataset_id: str,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+    **options: Any,
+) -> Mapping[str, Any]:
     """Import one source file into one dedicated wide SQL table."""
-    return result(import_dataset(source, database_url=database_url, dataset_id=dataset_id, **options))
+    return result(import_dataset(
+        source, database_url=database_url, dataset_id=dataset_id,
+        dolt_conformance_source=dolt_conformance_source,
+        **options,
+    ))
 
 
-def export_sav(*, database_url: Any, dataset_id: str, destination: str | Path, **options: Any) -> Mapping[str, Any]:
+def export_sav(
+    *, database_url: Any, dataset_id: str, destination: str | Path,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+    **options: Any,
+) -> Mapping[str, Any]:
     """Export one database-resident conforming dataset to SAV/ZSAV."""
-    return result(export_dataset(database_url=database_url, dataset_id=dataset_id, destination=destination, **options))
+    return result(export_dataset(
+        database_url=database_url, dataset_id=dataset_id,
+        destination=destination,
+        dolt_conformance_source=dolt_conformance_source,
+        **options,
+    ))
 
 
-def validate(*, database_url: Any, dataset_id: str, **options: Any) -> Mapping[str, Any]:
-    return result(validate_dataset(database_url=database_url, dataset_id=dataset_id, **options))
+def validate(
+    *,
+    database_url: Any,
+    dataset_id: str,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+    **options: Any,
+) -> Mapping[str, Any]:
+    return result(validate_dataset(
+        database_url=database_url,
+        dataset_id=dataset_id,
+        dolt_conformance_source=dolt_conformance_source,
+        **options,
+    ))
 
 
 def list_datasets(*, database_url: Any, kind: str | None = None) -> Mapping[str, Any]:

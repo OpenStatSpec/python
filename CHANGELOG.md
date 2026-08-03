@@ -109,6 +109,17 @@ SPSS profile.
 - Export of supported dataset semantics to SAV and ZSAV.
 - SQLite, PostgreSQL, MySQL, and MariaDB profiles, including service-backed
   PostgreSQL 17/18, MySQL 8.4/9.7, and MariaDB 11.4/11.8/12.3 CI coverage.
+- Read-only positive Dolt identity and working-set inspection. Operational
+  Dolt writes load the shared `openstatspec-specification` declaration
+  validator and remain fail-closed because the packaged concrete declaration
+  set is empty.
+- Added explicit packaged/directory conformance-source injection and exact
+  single-match binding across active Dolt product version, adapter
+  implementation and version, and specification commit before mutation.
+- Explicit catalog initialization/migration through `initialize_catalog` and
+  `openstatspec init`; data operations never auto-create catalog relations.
+- Read-only Dolt working-set evidence through `dolt_state_snapshot` and
+  `openstatspec dolt-state`; core performs no Dolt version-control mutations.
 - Preflight checks for target profile limits, atomic imports, validation, a
   command-line interface, and machine-readable capability and loss reports.
 
@@ -121,3 +132,11 @@ SPSS profile.
 - Multiple-response sets, variable alignment, variable sets, and custom
   attributes have explicit capability diagnostics; see the SAV profile.
 - Encrypted SPSS files are not supported.
+- Dolt adapter-envelope values are not claims about Dolt server limits. Failure
+  recovery is compensating and reports deterministic residual inventory; a
+  verified catalog receives a best-effort failed-operation audit when cleanup
+  itself fails.
+- Export publication uses a durable, audit-recorded prior-file backup through
+  SQL finalization. Post-success backup retention is reported separately and
+  does not rewrite a successful export as failed; pre-success failures restore
+  the prior destination and close the running operation as failed.

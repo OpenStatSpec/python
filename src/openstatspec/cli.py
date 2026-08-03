@@ -6,9 +6,9 @@ from pathlib import Path
 
 from .api import (
     apply_spss_in_place, apply_transformation_plan_in_place,
-    capability_matrix, derive_sql_dataset,
+    capability_matrix, derive_sql_dataset, dolt_state_snapshot,
     execute_sql_transformation,
-    export_sav, get_dataset, import_sav, inspect, list_datasets,
+    export_sav, get_dataset, import_sav, initialize_catalog, inspect, list_datasets,
     install_in_place_transformation_schema, register_sql_transformation,
     validate, validate_derived,
 )
@@ -29,6 +29,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     capability_parser = commands.add_parser("capabilities", help="show supported and lossy feature matrix")
     capability_parser.add_argument("--database-url", help="include active connection limits")
+    dolt_state = commands.add_parser("dolt-state", help="show read-only Dolt branch, HEAD, status, and diff evidence")
+    dolt_state.add_argument("--database-url", required=True)
+    initializer = commands.add_parser("init", help="initialize or migrate a dedicated catalog")
+    initializer.add_argument("--database-url", required=True)
     importer = commands.add_parser("import", help="import one SAV/ZSAV file")
     importer.add_argument("source")
     importer.add_argument("--database-url", required=True)
@@ -114,6 +118,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "capabilities":
         output = capability_matrix(database_url=args.database_url)
+    elif args.command == "dolt-state":
+        output = dolt_state_snapshot(database_url=args.database_url)
+    elif args.command == "init":
+        output = initialize_catalog(database_url=args.database_url)
     elif args.command == "import":
         output = import_sav(args.source, database_url=args.database_url, dataset_id=args.dataset_id)
     elif args.command == "export":
