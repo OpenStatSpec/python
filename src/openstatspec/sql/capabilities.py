@@ -111,10 +111,16 @@ def profile_declarations(
     )
     dolt_declaration = None
     if active and active["profile"] == "dolt":
-        dolt_declaration = source.require_exact_match(
-            active_product_version=active["raw_product_version"],
-            specification_commit=_bound_specification_commit(),
-        )
+        try:
+            dolt_declaration = source.require_exact_match(
+                active_product_version=active["raw_product_version"],
+                specification_commit=_bound_specification_commit(),
+            )
+        except UnsupportedOperationError:
+            # Capability inspection is descriptive: preserve the active Dolt
+            # identity while reporting writes as blocked when no exact
+            # declaration can be selected.
+            dolt_declaration = None
     return {
         "sqlite": _profile("sqlite", SQLITE, active, source),
         "mysql": _profile("mysql", MYSQL, active, source),
