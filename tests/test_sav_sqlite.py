@@ -237,6 +237,7 @@ def test_export_recovery_preserves_dangling_destination_symlink(tmp_path) -> Non
         destination=destination,
         backup=backup,
         had_previous=True,
+        expected_identity=sav_module._destination_identity(destination),
     )
 
     assert destination.is_symlink()
@@ -254,3 +255,31 @@ def test_successful_export_cleanup_removes_dangling_symlink_backup(
         backup.unlink()
 
     assert sav_module._path_entry_exists(backup) is False
+
+def test_export_recovery_does_not_replace_newer_concurrent_destination(
+    tmp_path,
+) -> None:
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    later_export = tmp_path / "later-export.sav"
+    backup.write_bytes(b"original destination")
+    destination.write_bytes(b"earlier operation publication")
+    earlier_identity = sav_module._destination_identity(destination)
+
+    later_export.write_bytes(b"later successful export")
+    later_export.replace(destination)
+
+    with pytest.raises(
+        FileExistsError,
+        match="no longer owned by this operation",
+    ):
+        sav_module._restore_export_destination(
+            destination=destination,
+            backup=backup,
+            had_previous=True,
+            expected_identity=earlier_identity,
+        )
+
+    assert destination.read_bytes() == b"later successful export"
+    assert backup.read_bytes() == b"original destination"
+
