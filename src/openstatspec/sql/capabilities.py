@@ -13,7 +13,7 @@ from sqlalchemy.engine import make_url
 from .dolt_conformance import DoltConformanceSource, effective_limits as dolt_effective_limits
 from .normative import catalog
 from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, MYSQL_WIRE_PROFILES, SqlProfile
-from .profiles import profile_for_url
+from .profiles import validate_connection_url
 from ..core import UnsupportedOperationError
 
 # Release/build automation must bind this to the exact commit used to build
@@ -256,7 +256,7 @@ def effective_profile(
 ) -> tuple[SqlProfile, dict[str, Any]]:
     """Resolve and enforce the profile used by import preflight."""
     source = _conformance_source(dolt_conformance_source)
-    configured = profile_for_url(database_url)
+    configured = validate_connection_url(database_url)
     active = active_connection(database_url, dolt_conformance_source=source)
     if configured is not MYSQL and active["profile"] != configured.name:
         raise UnsupportedOperationError("The active SQL server does not match the configured profile.")
@@ -288,6 +288,7 @@ def effective_profile(
     return replace(
         configured,
         name=active["profile"],
+        identifier_limit=int(limits["identifier_limit"]["value"]),
         max_source_variables=int(limits["maximum_source_variables"]),
         max_text_value_bytes=int(limits["maximum_value_bytes"]),
         max_row_bytes=(
