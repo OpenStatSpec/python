@@ -305,6 +305,11 @@ def _path_reference_text(path: Path, *, role: str) -> str:
     )
 
 
+def _path_entry_exists(path: Path) -> bool:
+    """Report directory entries without following a possibly dangling symlink."""
+    return path.exists() or path.is_symlink()
+
+
 def _reserve_export_backup(destination: Path) -> Path:
     descriptor, name = mkstemp(
         dir=destination.parent, prefix=f".{destination.name}.",
@@ -579,7 +584,7 @@ def export_sav_dataset(
             staged_destination, frame, dataset, variables,
             legacy_locale=legacy_locale,
         )
-        had_previous = destination_path.exists()
+        had_previous = _path_entry_exists(destination_path)
         backup = _reserve_export_backup(destination_path)
         if not had_previous:
             backup.unlink()
