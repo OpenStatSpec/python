@@ -582,4 +582,4 @@ def test_in_place_audit_relation_remains_catalog_owned(catalog) -> None:
         kind="core",
     )
 
-    assert dataset["dataset_id"] == dataset_id
+    assert dataset["dataset"]["dataset_id"] == dataset_id
