@@ -12,9 +12,15 @@ import json
 import math
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from tempfile import mkstemp, TemporaryDirectory
-from typing import Any
+from typing import Any, Callable
+
+try:  # POSIX locks let independent export processes share one publication gate.
+    import fcntl
+except ImportError:  # pragma: no cover - the supported CI/runtime is POSIX.
+    fcntl = None
 
 import pandas as pd
 import pyspssio
@@ -356,6 +362,46 @@ def _publish_staged_destination(
     staged.unlink()
 
 
+
+
+@contextmanager
+def _export_destination_lock(destination: Path):
+    """Serialize export publication and recovery for one destination directory.
+
+    The lock covers the existence observation, backup move, publication, and
+    compensating restore. Without it, two exporters could each observe the
+    old destination, and the later exporter could move or delete the newer
+    export while attempting to restore its own failure.
+    """
+    if fcntl is None:  # pragma: no cover - see import guard above.
+        raise UnsupportedOperationError(
+            "SAV export publication requires POSIX advisory file locking."
+        )
+    descriptor = os.open(destination.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _serialize_export_publication(
+    export: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
+    """Guard a complete export, including any post-publication recovery."""
+    @wraps(export)
+    def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        destination = kwargs.get("destination")
+        if destination is None:
+            raise TypeError("export requires a destination keyword argument")
+        with _export_destination_lock(Path(destination)):
+            return export(*args, **kwargs)
+    return guarded
+
+
 def _restore_export_destination(
     *, destination: Path, backup: Path, had_previous: bool,
     expected_identity: tuple[int, int] | None | object = (
@@ -568,6 +614,7 @@ def _export_staging_directory(
         raise
 
 
+@_serialize_export_publication
 def export_sav_dataset(
     *, database_url: str, dataset_id: str, destination: str | Path,
     allow_loss: tuple[str, ...] = (), legacy_locale: str | None = None,

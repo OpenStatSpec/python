@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+import threading
 
 import pandas as pd
 import pyspssio
@@ -14,6 +15,39 @@ from openstatspec.core import UnsupportedOperationError
 _REQUIRED_ENGINE_LOSS = []
 
 _COMPAT_NAME_LOSS = _REQUIRED_ENGINE_LOSS
+
+
+
+def test_export_destination_lock_serializes_observation_and_publication(tmp_path) -> None:
+    """A second exporter cannot replace a destination seen by the first."""
+    destination = tmp_path / "shared-output.sav"
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_export() -> None:
+        with sav_module._export_destination_lock(destination):
+            first_entered.set()
+            release_first.wait(timeout=2)
+
+    def second_export() -> None:
+        first_entered.wait(timeout=2)
+        with sav_module._export_destination_lock(destination):
+            second_entered.set()
+
+    first = threading.Thread(target=first_export)
+    second = threading.Thread(target=second_export)
+    first.start()
+    assert first_entered.wait(timeout=2)
+    second.start()
+    assert not second_entered.wait(timeout=0.1)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+
 
 def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"
