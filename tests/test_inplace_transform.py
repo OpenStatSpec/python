@@ -628,3 +628,29 @@ def test_public_apply_rejects_divergent_catalog_before_mutation(catalog) -> None
         "SELECT COUNT(*) FROM transformation_apply"
     ).fetchone() == (0,)
 
+def test_schema_installer_upgrades_legacy_apply_audit_columns(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "ALTER TABLE transformation_apply DROP COLUMN source_kind"
+    )
+    connection.execute(
+        "ALTER TABLE transformation_apply DROP COLUMN frontend_contract"
+    )
+    connection.commit()
+    connection.close()
+
+    openstatspec.install_in_place_transformation_schema(database_url=url)
+
+    connection = sqlite3.connect(path)
+    columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(transformation_apply)"
+        )
+    }
+    connection.close()
+    assert {"source_kind", "frontend_contract"} <= columns
+    assert openstatspec.get_dataset(
+        database_url=url, dataset_id=dataset_id, kind="core",
+    )["dataset"]["dataset_id"] == dataset_id
+
