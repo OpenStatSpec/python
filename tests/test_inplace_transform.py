@@ -174,7 +174,7 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     ).fetchone()
     assert audit == (
         "spss_syntax",
-        "openstatspec-spss-syntax-frontend-v0.1",
+        "openstatspec-spss-syntax-frontend-v0.2",
     )
 
 
@@ -407,6 +407,7 @@ def test_public_apply_binds_expected_dolt_branch_and_head(
         lambda _url: (SimpleNamespace(name="dolt"), {}),
     )
     states = iter([
+        ("feature/recode", "abc123", 0),
         ("feature/recode", "abc123", 0),
         ("feature/recode", "abc123", 4),
     ])

@@ -14,17 +14,24 @@ from .core import CapabilityDeclaration, LossReport, UnsupportedOperationError
 from .sql.workflow import TransformationError
 from .frontends.spss import SpssFrontendCompilation, compile_spss_syntax
 from .transform import (
+    AssignOperation, BooleanExpression, ComparisonExpression,
+    ConditionalAssignOperation, ExecuteOperation, Operand, PredicateExpression,
     RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
-    ReplaceValueLabelsOperation, SetVariableLabelOperation,
+    ReplaceValueLabelsOperation, SetFormatOperation,
+    SetMeasurementLevelOperation, SetVariableLabelOperation,
     TransformationFrontendError, TransformationPlan, TypedValue, ValueLabel,
     VariableDefinition, VariableSchema, transformation_plan_from_dict,
 )
 
 __all__ = [
+    "AssignOperation", "BooleanExpression", "ComparisonExpression",
+    "ConditionalAssignOperation", "ExecuteOperation", "Operand",
+    "PredicateExpression",
     "CapabilityDeclaration", "LossReport", "SpssFrontendCompilation",
     "TransformationError", "TransformationFrontendError",
     "RecodeMatch", "RecodeOperation", "RecodeResult", "RecodeRule",
-    "ReplaceValueLabelsOperation", "SetVariableLabelOperation",
+    "ReplaceValueLabelsOperation", "SetFormatOperation",
+    "SetMeasurementLevelOperation", "SetVariableLabelOperation",
     "TransformationPlan", "TypedValue", "ValueLabel",
     "VariableDefinition", "VariableSchema", "transformation_plan_from_dict",
     "UnsupportedOperationError", "capabilities", "capability_matrix",

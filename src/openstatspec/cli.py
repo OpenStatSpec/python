@@ -79,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     apply_spss = commands.add_parser(
         "apply-spss",
-        help="compile supported SPSS syntax and apply it in-place",
+        help="compile bounded sequential SPSS syntax and apply it in-place",
     )
     apply_spss.add_argument("--database-url", required=True)
     apply_spss.add_argument("--dataset-id", required=True)

@@ -15,8 +15,9 @@ from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, SqlProfile
 from .profiles import profile_for_url, validate_connection_url
 from ..core import UnsupportedOperationError
 
-SPECIFICATION_COMMIT = "79339ec3d8f8aa81789b7e85f6b8afa6f1374e50"
-SPECIFICATION_RELEASE: str | None = "v0.2.0"
+SPECIFICATION_COMMIT = "e49252c00890aed76dcaabc5d1ab5121b45929db"
+SPECIFICATION_STATUS = "release_candidate"
+SPECIFICATION_RELEASE: str | None = None
 
 _DOLT_2_2_STABLE_VERSION = re.compile(r"2\.2\.(0|[1-9][0-9]*)")
 
@@ -339,7 +340,7 @@ def _profile(
         "dialect": "mysql" if name == "dolt" else name,
         "transport": "mysql_compatible" if name == "dolt" else name,
         "specification_commit": SPECIFICATION_COMMIT,
-        "specification_status": "released",
+        "specification_status": SPECIFICATION_STATUS,
         "specification_release": SPECIFICATION_RELEASE,
         "driver": "psycopg" if name == "postgresql" else "PyMySQL" if name in {"mysql", "mariadb", "dolt"} else "sqlite3",
         "claimed_server_versions": policy["claimed"],

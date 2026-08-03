@@ -10,12 +10,16 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
-    Column, DateTime, Float, Integer, MetaData, String, Table, Text, case,
+    Column, DateTime, Float, Integer, MetaData, String, Table, Text, and_, case,
     create_engine, delete, inspect, insert, literal, null, select, text, update,
+    or_,
 )
 
 from ..transform import (
+    AssignOperation, BooleanExpression, ComparisonExpression,
+    ConditionalAssignOperation, ExecuteOperation, Operand,
     RecodeOperation, RecodeResult, ReplaceValueLabelsOperation,
+    SetFormatOperation, SetMeasurementLevelOperation,
     SetVariableLabelOperation, TransformationPlan, TypedValue, ValueLabel,
     VariableDefinition, VariableSchema, bind_transformation_plan,
     transformation_plan_from_dict,
@@ -27,7 +31,7 @@ from .wide import normalized_metadata_tables, physical_name
 from .workflow import TransformationError
 
 
-APPLY_CONTRACT = "openstatspec-in-place-transformation-v0.1"
+APPLY_CONTRACT = "openstatspec-in-place-transformation-v0.2"
 
 
 @dataclass(frozen=True)
@@ -53,14 +57,15 @@ def in_place_transformation_capabilities() -> dict[str, Any]:
         ],
         "parent_kinds": ["core"],
         "mutation": "same_dataset_same_physical_wide_table",
-        "commands": ["RECODE", "VARIABLE LABELS", "VALUE LABELS"],
+        "commands": ["RECODE", "COMPUTE", "IF", "VARIABLE LABELS",
+                     "VALUE LABELS", "FORMATS", "VARIABLE LEVEL", "EXECUTE"],
         "new_target_column": {
             "sqlite": True,
             "postgresql": True,
             "mysql": False,
             "mariadb": False,
             "dolt": False,
-            "reason": "non-transactional DDL must not make apply partially durable",
+            "reason": "atomic create only on SQLite/PostgreSQL; other profiles require a pre-existing cataloged target",
         },
         "creates_derived_dataset": False,
         "creates_persistent_data_copy": False,
@@ -192,6 +197,21 @@ def _input_schema(
             str(row["storage_kind"]),
             variable_label=row["variable_label"],
             value_labels=tuple(labels_by_variable.get(str(row["variable_id"]), [])),
+            format_family=(
+                "F" if str(row["print_format_family"]).upper() in {"F", "5"}
+                and str(row["storage_kind"]) == "numeric" else None
+            ),
+            format_width=(
+                row["print_format_width"]
+                if str(row["print_format_family"]).upper() in {"F", "5"}
+                and str(row["storage_kind"]) == "numeric" else None
+            ),
+            format_decimals=(
+                row["print_format_decimals"]
+                if str(row["print_format_family"]).upper() in {"F", "5"}
+                and str(row["storage_kind"]) == "numeric" else None
+            ),
+            measurement_level=row["measurement_level"],
         )
         for row in variables
     ))
@@ -313,6 +333,43 @@ def _replace_value_labels(
     ).values(value_labels=json.dumps(legacy_json, ensure_ascii=False)))
 
 
+def _failure_boundary(_name: str) -> None:
+    """Synthetic-test hook for schema/data/catalog/audit failure boundaries."""
+
+
+def _operand_expression(
+    operand: Operand, relation: Table, by_name: Mapping[str, dict[str, Any]],
+) -> Any:
+    if operand.kind == "literal":
+        assert operand.value is not None
+        return literal(_typed_value(operand.value))
+    assert operand.variable is not None
+    variable = by_name[operand.variable.casefold()]
+    return relation.c[str(variable["physical_name"])]
+
+
+def _predicate_expression(
+    expression: ComparisonExpression | BooleanExpression,
+    relation: Table,
+    by_name: Mapping[str, dict[str, Any]],
+) -> Any:
+    if isinstance(expression, BooleanExpression):
+        parts = [
+            _predicate_expression(item, relation, by_name)
+            for item in expression.operands
+        ]
+        return and_(*parts) if expression.operator == "and" else or_(*parts)
+    left = _operand_expression(expression.left, relation, by_name)
+    right = _operand_expression(expression.right, relation, by_name)
+    return {
+        "=": lambda: left == right,
+        "<": lambda: left < right,
+        "<=": lambda: left <= right,
+        ">": lambda: left > right,
+        ">=": lambda: left >= right,
+    }[expression.operator]()
+
+
 def _apply_plan_on_connection(
     connection: Any,
     *,
@@ -323,12 +380,9 @@ def _apply_plan_on_connection(
     allow_schema_change: bool,
     dolt_branch: str | None,
     dolt_head: str | None,
+    mutation_journal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    before_identity = _target_identity_state(
-        connection,
-        dataset_id,
-        lock_dataset=True,
-    )
+    before_identity = _target_identity_state(connection, dataset_id, lock_dataset=True)
     if before_identity[3] != 1:
         raise TransformationError(
             "physical_table_missing",
@@ -346,107 +400,139 @@ def _apply_plan_on_connection(
     if not inspect(connection).has_table("transformation_apply"):
         raise TransformationError(
             "in_place_audit_schema_missing",
-            "The compact transformation_apply audit schema must be installed "
-            "before apply.",
+            "The compact transformation_apply audit schema must be installed before apply.",
         )
     audit_columns = {
         str(column["name"])
         for column in inspect(connection).get_columns("transformation_apply")
     }
-    required_audit_columns = {"source_kind", "frontend_contract"}
-    if not required_audit_columns.issubset(audit_columns):
+    if not {"source_kind", "frontend_contract"}.issubset(audit_columns):
         raise TransformationError(
             "in_place_audit_schema_outdated",
             "Re-run install_in_place_transformation_schema before apply.",
         )
-    if not allow_schema_change and any(
-        isinstance(operation, RecodeOperation)
+    create_operations = [
+        operation for operation in plan.operations
+        if isinstance(operation, (RecodeOperation, AssignOperation))
         and operation.target_mode == "create"
-        for operation in plan.operations
-    ):
+    ]
+    if create_operations and not allow_schema_change:
         raise TransformationError(
             "schema_change_not_atomic",
-            "This database profile requires RECODE targets to exist before "
-            "apply because its DDL is not transaction-atomic.",
+            "This database profile has no coherent new-target strategy.",
         )
     unsupported_targets = [
-        operation.target
-        for operation in plan.operations
-        if (
-            isinstance(operation, RecodeOperation)
-            and operation.target_mode == "create"
-            and output_by_name[operation.target.casefold()].storage_kind
-            != "numeric"
-        )
+        operation.target for operation in create_operations
+        if output_by_name[operation.target.casefold()].storage_kind != "numeric"
     ]
     if unsupported_targets:
         raise TransformationError(
             "in_place_target_type_unsupported",
-            "This executor cannot create string targets without an explicit "
-            "storage-width operation.",
+            "New string targets require an explicit storage-width operation.",
         )
+
     core = core_catalog(MetaData())
     legacy_metadata = MetaData()
     _, legacy_variable, _, _ = legacy_catalog(legacy_metadata)
     _, legacy_labels, _, _ = normalized_metadata_tables(legacy_metadata)
     relation = Table(
-        table_name,
-        MetaData(),
-        schema=dataset.get("physical_table_schema"),
+        table_name, MetaData(), schema=dataset.get("physical_table_schema"),
         autoload_with=connection,
     )
     by_name = {str(row["source_name"]).casefold(): row for row in variables}
     used_physical = {str(row["physical_name"]).casefold() for row in variables}
+    next_ordinal = max(int(row["source_ordinal"]) for row in variables) + 1
+    target_rows: list[dict[str, Any]] = []
+    quote = connection.dialect.identifier_preparer.quote
+    qualified_table = connection.dialect.identifier_preparer.format_table(relation)
+    numeric_type = (
+        "DOUBLE PRECISION" if connection.dialect.name == "postgresql" else "DOUBLE"
+    )
+    if mutation_journal is not None:
+        mutation_journal.update({
+            "table_schema": dataset.get("physical_table_schema"),
+            "legacy_dataset_id": legacy_dataset_id,
+            "table_name": table_name,
+            "added_columns": [],
+            "target_rows": [],
+        })
+
+    if database_profile == "dolt":
+        if dolt_branch is None or dolt_head is None:
+            raise TransformationError(
+                "dolt_context_required",
+                "Dolt mutation requires the preflight branch and HEAD.",
+            )
+        locked_branch, locked_head, locked_dirty = _dolt_state(connection)
+        if locked_branch != dolt_branch:
+            raise TransformationError(
+                "dolt_branch_mismatch",
+                "The active Dolt branch changed after locking the dataset.",
+            )
+        if locked_head != dolt_head:
+            raise TransformationError(
+                "dolt_head_mismatch",
+                "Dolt HEAD changed after locking the dataset.",
+            )
+        if locked_dirty != 0:
+            raise TransformationError(
+                "dolt_working_set_dirty",
+                "The Dolt working set changed after locking the dataset.",
+            )
+
+    # All non-transactional DDL precedes every data/catalog mutation. This makes
+    # Compensation is journal-bounded to target columns and catalog identities
+    # created by this apply, without resetting unrelated database state.
+    for operation in create_operations:
+        target_physical = physical_name(operation.target, used_physical)
+        connection.exec_driver_sql(
+            f"ALTER TABLE {qualified_table} ADD COLUMN "
+            f"{quote(target_physical)} {numeric_type} NULL"
+        )
+        if mutation_journal is not None:
+            mutation_journal["added_columns"].append(target_physical)
+        target_row = {
+            "variable_id": str(uuid4()),
+            "dataset_id": dataset_id,
+            "source_ordinal": next_ordinal,
+            "source_name": operation.target,
+            "physical_name": target_physical,
+            "storage_kind": "numeric",
+            "variable_label": None,
+        }
+        next_ordinal += 1
+        target_rows.append(target_row)
+        if mutation_journal is not None:
+            mutation_journal["target_rows"].append(dict(target_row))
+    if create_operations:
+        _failure_boundary("schema")
+
+    for target_row in target_rows:
+        connection.execute(insert(core.variable).values(**target_row))
+        connection.execute(insert(legacy_variable).values(
+            dataset_id=legacy_dataset_id,
+            ordinal=target_row["source_ordinal"],
+            source_name=target_row["source_name"],
+            physical_name=target_row["physical_name"],
+            storage_kind="numeric",
+            string_width=None,
+            label="",
+            attributes="{}",
+            value_labels="{}",
+            missing_ranges="[]",
+        ))
+        variables.append(target_row)
+        by_name[str(target_row["source_name"]).casefold()] = target_row
+    if target_rows:
+        _failure_boundary("catalog")
+        relation = Table(
+            table_name, MetaData(), schema=dataset.get("physical_table_schema"),
+            autoload_with=connection,
+        )
 
     for operation in plan.operations:
         if isinstance(operation, RecodeOperation):
             source_variable = by_name[operation.source.casefold()]
-            if operation.target_mode == "create":
-                target_physical = physical_name(operation.target, used_physical)
-                quote = connection.dialect.identifier_preparer.quote
-                numeric_type = (
-                    "DOUBLE PRECISION"
-                    if connection.dialect.name == "postgresql"
-                    else "DOUBLE"
-                )
-                qualified_table = connection.dialect.identifier_preparer.format_table(
-                    relation
-                )
-                connection.exec_driver_sql(
-                    f"ALTER TABLE {qualified_table} ADD COLUMN "
-                    f"{quote(target_physical)} {numeric_type} NULL"
-                )
-                new_ordinal = max(int(row["source_ordinal"]) for row in variables) + 1
-                target_variable = {
-                    "variable_id": str(uuid4()),
-                    "dataset_id": dataset_id,
-                    "source_ordinal": new_ordinal,
-                    "source_name": operation.target,
-                    "physical_name": target_physical,
-                    "storage_kind": "numeric",
-                    "variable_label": None,
-                }
-                connection.execute(insert(core.variable).values(**target_variable))
-                connection.execute(insert(legacy_variable).values(
-                    dataset_id=legacy_dataset_id,
-                    ordinal=new_ordinal,
-                    source_name=operation.target,
-                    physical_name=target_physical,
-                    storage_kind="numeric",
-                    string_width=None,
-                    label="",
-                    attributes="{}",
-                    value_labels="{}",
-                    missing_ranges="[]",
-                ))
-                variables.append(target_variable)
-                by_name[operation.target.casefold()] = target_variable
-                relation = Table(
-                    table_name,
-                    MetaData(),
-                    schema=dataset.get("physical_table_schema"),
-                    autoload_with=connection,
-                )
             target_variable = by_name[operation.target.casefold()]
             source_column = relation.c[str(source_variable["physical_name"])]
             target_column = relation.c[str(target_variable["physical_name"])]
@@ -461,6 +547,22 @@ def _apply_plan_on_connection(
                 else_=_result_expression(operation.unmatched, source_column),
             )
             connection.execute(update(relation).values({target_column: expression}))
+            _failure_boundary("data")
+        elif isinstance(operation, AssignOperation):
+            target = by_name[operation.target.casefold()]
+            target_column = relation.c[str(target["physical_name"])]
+            value = _operand_expression(operation.value, relation, by_name)
+            connection.execute(update(relation).values({target_column: value}))
+            _failure_boundary("data")
+        elif isinstance(operation, ConditionalAssignOperation):
+            target = by_name[operation.target.casefold()]
+            target_column = relation.c[str(target["physical_name"])]
+            value = _operand_expression(operation.value, relation, by_name)
+            condition = _predicate_expression(operation.condition, relation, by_name)
+            connection.execute(
+                update(relation).where(condition).values({target_column: value})
+            )
+            _failure_boundary("data")
         elif isinstance(operation, SetVariableLabelOperation):
             variable = by_name[operation.variable.casefold()]
             connection.execute(update(core.variable).where(
@@ -470,6 +572,7 @@ def _apply_plan_on_connection(
                 legacy_variable.c.dataset_id == legacy_dataset_id,
                 legacy_variable.c.ordinal == variable["source_ordinal"],
             ).values(label=operation.label))
+            _failure_boundary("catalog")
         elif isinstance(operation, ReplaceValueLabelsOperation):
             _replace_value_labels(
                 connection,
@@ -480,7 +583,42 @@ def _apply_plan_on_connection(
                 variable=by_name[operation.variable.casefold()],
                 labels=operation.labels,
             )
-        else:  # pragma: no cover - canonical plan type is closed
+            _failure_boundary("catalog")
+        elif isinstance(operation, SetFormatOperation):
+            variable = by_name[operation.variable.casefold()]
+            connection.execute(update(core.variable).where(
+                core.variable.c.variable_id == variable["variable_id"]
+            ).values(
+                print_format_family=operation.family,
+                print_format_width=operation.width,
+                print_format_decimals=operation.decimals,
+                write_format_family=operation.family,
+                write_format_width=operation.width,
+                write_format_decimals=operation.decimals,
+            ))
+            encoded = json.dumps([5, operation.width, operation.decimals])
+            connection.execute(update(legacy_variable).where(
+                legacy_variable.c.dataset_id == legacy_dataset_id,
+                legacy_variable.c.ordinal == variable["source_ordinal"],
+            ).values(
+                format=f"F{operation.width}.{operation.decimals}",
+                print_format=encoded,
+                write_format=encoded,
+            ))
+            _failure_boundary("catalog")
+        elif isinstance(operation, SetMeasurementLevelOperation):
+            variable = by_name[operation.variable.casefold()]
+            connection.execute(update(core.variable).where(
+                core.variable.c.variable_id == variable["variable_id"]
+            ).values(measurement_level=operation.level))
+            connection.execute(update(legacy_variable).where(
+                legacy_variable.c.dataset_id == legacy_dataset_id,
+                legacy_variable.c.ordinal == variable["source_ordinal"],
+            ).values(measure=operation.level))
+            _failure_boundary("catalog")
+        elif isinstance(operation, ExecuteOperation):
+            continue
+        else:  # pragma: no cover
             raise TransformationError(
                 "operation_not_supported", "Unsupported in-place plan operation."
             )
@@ -489,11 +627,12 @@ def _apply_plan_on_connection(
     if after_identity != before_identity:
         raise TransformationError(
             "dataset_identity_changed",
-            "In-place apply changed the target dataset or its physical "
-            "data-table identity.",
+            "In-place apply changed the target dataset or its physical data-table identity.",
         )
     apply_id = str(uuid4())
     started = _now()
+    if mutation_journal is not None:
+        mutation_journal["apply_id"] = apply_id
     connection.execute(insert(audit).values(
         apply_id=apply_id,
         contract_id=APPLY_CONTRACT,
@@ -515,6 +654,7 @@ def _apply_plan_on_connection(
         started_at=started,
         completed_at=_now(),
     ))
+    _failure_boundary("audit")
     forbidden = {
         name for name in inspect(connection).get_table_names()
         if name.startswith("derived_plan_")
@@ -532,6 +672,7 @@ def _apply_plan_on_connection(
         "status": "succeeded",
         "dataset_id": dataset_id,
         "database_profile": database_profile,
+
         "physical_table_schema": dataset.get("physical_table_schema"),
         "physical_table_name": table_name,
         "source_kind": submission.source_kind,
@@ -584,6 +725,90 @@ def load_transformation_schema(connection: Any, dataset_id: str) -> VariableSche
     return _input_schema(connection, dataset_id)[2]
 
 
+def _compensate_failed_apply(
+    engine: Any,
+    *,
+    journal: Mapping[str, Any],
+) -> None:
+    columns = list(journal.get("added_columns") or ())
+    if not columns:
+        return
+    with engine.begin() as connection:
+
+        core = core_catalog(MetaData())
+        legacy_metadata = MetaData()
+        _, legacy_variable, _, _ = legacy_catalog(legacy_metadata)
+        _, legacy_labels, _, _ = normalized_metadata_tables(legacy_metadata)
+        target_rows = list(journal.get("target_rows") or ())
+        variable_ids = [str(row["variable_id"]) for row in target_rows]
+        ordinals = [int(row["source_ordinal"]) for row in target_rows]
+        if variable_ids:
+            label_set_ids = list(connection.execute(
+                select(core.variable_value_label_set.c.value_label_set_id).where(
+                    core.variable_value_label_set.c.variable_id.in_(variable_ids)
+                )
+            ).scalars())
+            if label_set_ids:
+                connection.execute(delete(core.value_label).where(
+                    core.value_label.c.value_label_set_id.in_(label_set_ids)
+                ))
+                connection.execute(delete(core.variable_value_label_set).where(
+                    core.variable_value_label_set.c.variable_id.in_(variable_ids)
+                ))
+                connection.execute(delete(core.value_label_set).where(
+                    core.value_label_set.c.value_label_set_id.in_(label_set_ids)
+                ))
+            connection.execute(delete(core.variable).where(
+                core.variable.c.variable_id.in_(variable_ids)
+            ))
+        legacy_dataset_id = journal.get("legacy_dataset_id")
+        if legacy_dataset_id is not None and ordinals:
+            connection.execute(delete(legacy_labels).where(
+                legacy_labels.c.dataset_id == legacy_dataset_id,
+                legacy_labels.c.variable_ordinal.in_(ordinals),
+            ))
+            connection.execute(delete(legacy_variable).where(
+                legacy_variable.c.dataset_id == legacy_dataset_id,
+                legacy_variable.c.ordinal.in_(ordinals),
+            ))
+        apply_id = journal.get("apply_id")
+        if apply_id:
+            audit = apply_audit_catalog(MetaData())
+            connection.execute(delete(audit).where(
+                audit.c.apply_id == apply_id
+            ))
+        existing = {
+            str(item["name"]).casefold()
+            for item in inspect(connection).get_columns(
+                str(journal["table_name"]), schema=journal.get("table_schema")
+            )
+        }
+        columns = [column for column in columns if str(column).casefold() in existing]
+        if not columns:
+            return
+        relation = Table(
+            str(journal["table_name"]), MetaData(),
+            schema=journal.get("table_schema"), autoload_with=connection,
+        )
+        quote = connection.dialect.identifier_preparer.quote
+        qualified = connection.dialect.identifier_preparer.format_table(relation)
+        for column in reversed(columns):
+            connection.exec_driver_sql(
+                f"ALTER TABLE {qualified} DROP COLUMN {quote(str(column))}"
+            )
+        remaining = {
+            str(item["name"]).casefold()
+            for item in inspect(connection).get_columns(
+                str(journal["table_name"]), schema=journal.get("table_schema")
+            )
+        }
+        if any(str(column).casefold() in remaining for column in columns):
+            raise TransformationError(
+                "schema_compensation_incomplete",
+                "New target columns remain after compensating cleanup.",
+            )
+
+
 def _run_in_place_submission(
     *,
     database_url: str,
@@ -593,60 +818,81 @@ def _run_in_place_submission(
     expected_branch: str | None = None,
     expected_head: str | None = None,
 ) -> dict[str, Any]:
-    """Prepare and apply one canonical plan in the same controlled transaction."""
+    """Prepare and apply one canonical plan in one controlled operation."""
     if not actor:
         raise TransformationError(
             "actor_required", "A non-empty actor identity is mandatory.",
         )
     profile, _active = effective_profile(database_url)
     engine = create_engine(database_url)
+    journal: dict[str, Any] = {}
+    branch: str | None = None
+    head: str | None = None
     try:
-        with engine.begin() as connection:
-            branch: str | None = None
-            head: str | None = None
-            if profile.name == "dolt":
-                if not expected_branch or not expected_head:
-                    raise TransformationError(
-                        "dolt_context_required",
-                        "Dolt apply requires expected_branch and expected_head.",
+        try:
+            with engine.begin() as connection:
+                if profile.name == "dolt":
+                    if not expected_branch or not expected_head:
+                        raise TransformationError(
+                            "dolt_context_required",
+                            "Dolt apply requires expected_branch and expected_head.",
+                        )
+                    branch, head, dirty = _dolt_state(connection)
+                    if branch != expected_branch:
+                        raise TransformationError(
+                            "dolt_branch_mismatch",
+                            "The active Dolt branch differs from the caller's expectation.",
+                        )
+                    if head != expected_head:
+                        raise TransformationError(
+                            "dolt_head_mismatch",
+                            "The active Dolt HEAD differs from the caller's expectation.",
+                        )
+                    if dirty != 0:
+                        raise TransformationError(
+                            "dolt_working_set_dirty",
+                            "The Dolt working set must be clean before in-place apply.",
+                        )
+                submission = prepare(connection, dataset_id)
+                if not isinstance(submission, InPlacePlanSubmission):
+                    raise TypeError("prepare must return InPlacePlanSubmission")
+                result = _apply_plan_on_connection(
+                    connection,
+                    dataset_id=dataset_id,
+                    submission=submission,
+                    actor=actor,
+                    database_profile=profile.name,
+                    allow_schema_change=profile.name in {"sqlite", "postgresql"},
+                    dolt_branch=branch,
+                    dolt_head=head,
+                    mutation_journal=journal,
+                )
+                if profile.name == "dolt":
+                    after_branch, after_head, dirty_after = _dolt_state(connection)
+                    if after_branch != branch or after_head != head:
+                        raise TransformationError(
+                            "dolt_context_changed",
+                            "Apply must not switch branches or create a Dolt commit.",
+                        )
+                    if dirty_after <= 0:
+                        raise TransformationError(
+                            "dolt_expected_working_set_diff_missing",
+                            "A successful Dolt apply must leave an inspectable working-set diff.",
+                        )
+                return result
+        except Exception:
+            if journal.get("added_columns"):
+                try:
+                    _compensate_failed_apply(
+                        engine,
+                        journal=journal,
                     )
-                branch, head, dirty = _dolt_state(connection)
-                if branch != expected_branch:
+                except Exception as cleanup_error:
                     raise TransformationError(
-                        "dolt_branch_mismatch",
-                        "The active Dolt branch differs from the caller's expectation.",
-                    )
-                if head != expected_head:
-                    raise TransformationError(
-                        "dolt_head_mismatch",
-                        "The active Dolt HEAD differs from the caller's expectation.",
-                    )
-                if dirty != 0:
-                    raise TransformationError(
-                        "dolt_working_set_dirty",
-                        "The Dolt working set must be clean before in-place apply.",
-                    )
-            submission = prepare(connection, dataset_id)
-            if not isinstance(submission, InPlacePlanSubmission):
-                raise TypeError("prepare must return InPlacePlanSubmission")
-            result = _apply_plan_on_connection(
-                connection,
-                dataset_id=dataset_id,
-                submission=submission,
-                actor=actor,
-                database_profile=profile.name,
-                allow_schema_change=profile.name in {"sqlite", "postgresql"},
-                dolt_branch=branch,
-                dolt_head=head,
-            )
-            if profile.name == "dolt":
-                after_branch, after_head, _dirty_after = _dolt_state(connection)
-                if after_branch != branch or after_head != head:
-                    raise TransformationError(
-                        "dolt_context_changed",
-                        "Apply must not switch branches or create a Dolt commit.",
-                    )
-            return result
+                        "in_place_compensation_failed",
+                        "Apply failed and compensating cleanup did not complete.",
+                    ) from cleanup_error
+            raise
     finally:
         engine.dispose()
 

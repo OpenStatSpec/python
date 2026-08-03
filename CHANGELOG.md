@@ -2,6 +2,38 @@
 
 All notable changes to this reference implementation are documented here.
 
+## 0.5.0 — 2026-07-31
+
+### Added
+
+- Added bounded typed expressions with variable references, numeric literals,
+  parentheses, `=`, `<`, `<=`, `>`, `>=`, `AND`, and `OR`. String comparison
+  and v0.2 string assignment fail closed pending exact portable semantics.
+- Added sequential SPSS-like `COMPUTE` and `IF` assignment operations plus
+  `FORMATS`, `VARIABLE LEVEL`, and `EXECUTE`.
+- Added atomic numeric target creation on SQLite and PostgreSQL. MySQL,
+  MariaDB, and Dolt fail closed on `target_mode=create`; their targets must be
+  provisioned physically and in the catalog by a separate versioned stage
+  before this executor applies assignment and metadata operations.
+- Added synthetic exact-program, catalog, failure-boundary, and pre-existing
+  target regression coverage.
+
+### Changed
+
+- Bumped the canonical transformation-plan and SPSS frontend contracts to
+  `v0.2`; canonical JSON and hashes include every sequential operation.
+- In-place apply now records variable label, value labels, `F` print/write
+  format, and measurement level in both normative and compatibility catalogs.
+- Dolt still requires an exact branch, exact HEAD, and clean working set;
+  successful apply leaves an inspectable diff and never calls `DOLT_COMMIT`.
+
+### Specification basis
+
+- Release validation is pinned to the untagged OpenStatSpec specification
+  release candidate at immutable commit
+  `e49252c00890aed76dcaabc5d1ab5121b45929db`. Its
+  `specification_release` remains null until that commit receives a stable tag.
+
 ## 0.4.0 — 2026-07-31
 
 ### Added

@@ -14,7 +14,9 @@ import rfc8785
 from .errors import frontend_error
 
 
-TRANSFORMATION_PLAN_CONTRACT = "openstatspec-transformation-plan-v0.1"
+TRANSFORMATION_PLAN_V1_CONTRACT = "openstatspec-transformation-plan-v0.1"
+TRANSFORMATION_PLAN_CONTRACT = "openstatspec-transformation-plan-v0.2"
+_TRANSFORMATION_PLAN_CONTRACTS = {TRANSFORMATION_PLAN_V1_CONTRACT, TRANSFORMATION_PLAN_CONTRACT}
 _BINARY64 = re.compile(r"[0-9a-f]{16}")
 
 
@@ -256,7 +258,209 @@ class ReplaceValueLabelsOperation:
         }
 
 
-PlanOperation = RecodeOperation | SetVariableLabelOperation | ReplaceValueLabelsOperation
+@dataclass(frozen=True)
+class Operand:
+    """One typed literal or one variable reference in a bounded expression."""
+
+    kind: Literal["variable", "literal"]
+    variable: str | None = None
+    value: TypedValue | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind == "variable":
+            if not isinstance(self.variable, str) or not self.variable or self.value is not None:
+                _invalid("A variable operand requires a non-empty variable only.")
+        elif self.kind == "literal":
+            if self.variable is not None or not isinstance(self.value, TypedValue):
+                _invalid("A literal operand requires a typed value only.")
+        else:  # pragma: no cover
+            _invalid("Operand kind must be variable or literal.")
+
+    @classmethod
+    def variable_ref(cls, variable: str) -> "Operand":
+        return cls("variable", variable=variable)
+
+    @classmethod
+    def literal(cls, value: TypedValue) -> "Operand":
+        return cls("literal", value=value)
+
+    def as_dict(self) -> dict[str, Any]:
+        if self.kind == "variable":
+            assert self.variable is not None
+            return {"kind": "variable", "variable": self.variable}
+        assert self.value is not None
+        return {"kind": "literal", "value": self.value.as_dict()}
+
+
+@dataclass(frozen=True)
+class ComparisonExpression:
+    left: Operand
+    operator: Literal["=", "<", "<=", ">", ">="]
+    right: Operand
+    expression: Literal["comparison"] = "comparison"
+
+    def __post_init__(self) -> None:
+        if self.expression != "comparison":
+            _invalid("Comparison expression discriminator is invalid.")
+        if not isinstance(self.left, Operand) or not isinstance(self.right, Operand):
+            _invalid("A comparison requires two typed operands.")
+        if self.operator not in {"=", "<", "<=", ">", ">="}:
+            _invalid("Comparison operator is outside the bounded expression profile.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "expression": self.expression, "left": self.left.as_dict(),
+            "operator": self.operator, "right": self.right.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class BooleanExpression:
+    operator: Literal["and", "or"]
+    operands: tuple["PredicateExpression", ...]
+    expression: Literal["boolean"] = "boolean"
+
+    def __post_init__(self) -> None:
+        if self.expression != "boolean":
+            _invalid("Boolean expression discriminator is invalid.")
+        if self.operator not in {"and", "or"}:
+            _invalid("Boolean operator must be and or or.")
+        if not isinstance(self.operands, tuple) or len(self.operands) < 2:
+            _invalid("A boolean expression requires at least two operands.")
+        if not all(isinstance(item, (ComparisonExpression, BooleanExpression)) for item in self.operands):
+            _invalid("Boolean operands must be predicate expressions.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "expression": self.expression, "operator": self.operator,
+            "operands": [item.as_dict() for item in self.operands],
+        }
+
+
+PredicateExpression = ComparisonExpression | BooleanExpression
+
+
+@dataclass(frozen=True)
+class AssignOperation:
+    target: str
+    target_mode: Literal["create", "replace"]
+    value: Operand
+    op: Literal["assign"] = "assign"
+
+    def __post_init__(self) -> None:
+        if self.op != "assign":
+            _invalid("Assign operation discriminator is invalid.")
+        if not isinstance(self.target, str) or not self.target:
+            _invalid("Assign target must be non-empty text.")
+        if self.target_mode not in {"create", "replace"}:
+            _invalid("Assign target_mode must be create or replace.")
+        if not isinstance(self.value, Operand):
+            _invalid("Assign value must be a typed operand.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "op": self.op, "target": self.target,
+            "target_mode": self.target_mode, "value": self.value.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ConditionalAssignOperation:
+    condition: PredicateExpression
+    target: str
+    value: Operand
+    op: Literal["conditional_assign"] = "conditional_assign"
+
+    def __post_init__(self) -> None:
+        if self.op != "conditional_assign":
+            _invalid("Conditional-assign operation discriminator is invalid.")
+        if not isinstance(self.condition, (ComparisonExpression, BooleanExpression)):
+            _invalid("Conditional assignment requires a predicate expression.")
+        if not isinstance(self.target, str) or not self.target:
+            _invalid("Conditional-assign target must be non-empty text.")
+        if not isinstance(self.value, Operand):
+            _invalid("Conditional-assign value must be a typed operand.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "op": self.op, "condition": self.condition.as_dict(),
+            "target": self.target, "value": self.value.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class SetFormatOperation:
+    variable: str
+    family: str
+    width: int
+    decimals: int
+    op: Literal["set_format"] = "set_format"
+
+    def __post_init__(self) -> None:
+        if self.op != "set_format":
+            _invalid("Format operation discriminator is invalid.")
+        if not isinstance(self.variable, str) or not self.variable:
+            _invalid("Format operation requires a variable.")
+        if self.family != "F":
+            _invalid("The bounded format profile supports numeric F formats only.")
+        if not isinstance(self.width, int) or isinstance(self.width, bool) or not 1 <= self.width <= 40:
+            _invalid("F format width must be an integer from 1 through 40.")
+        if (
+            not isinstance(self.decimals, int)
+            or isinstance(self.decimals, bool)
+            or not 0 <= self.decimals <= 16
+            or (self.decimals != 0 and self.width < self.decimals + 2)
+        ):
+            raise frontend_error(
+                "invalid_format",
+                "F format decimals must be zero through 16 and fit the width.",
+                width=self.width, decimals=self.decimals,
+            )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "op": self.op, "variable": self.variable, "family": self.family,
+            "width": self.width, "decimals": self.decimals,
+        }
+
+
+@dataclass(frozen=True)
+class SetMeasurementLevelOperation:
+    variable: str
+    level: Literal["nominal", "ordinal", "scale"]
+    op: Literal["set_measurement_level"] = "set_measurement_level"
+
+    def __post_init__(self) -> None:
+        if self.op != "set_measurement_level":
+            _invalid("Measurement-level operation discriminator is invalid.")
+        if not isinstance(self.variable, str) or not self.variable:
+            _invalid("Measurement-level operation requires a variable.")
+        if self.level not in {"nominal", "ordinal", "scale"}:
+            _invalid("Measurement level must be nominal, ordinal, or scale.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"op": self.op, "variable": self.variable, "level": self.level}
+
+
+@dataclass(frozen=True)
+class ExecuteOperation:
+    """An explicit SPSS procedure boundary; a deterministic data no-op."""
+
+    op: Literal["execute"] = "execute"
+
+    def __post_init__(self) -> None:
+        if self.op != "execute":
+            _invalid("Execute operation discriminator is invalid.")
+
+    def as_dict(self) -> dict[str, str]:
+        return {"op": self.op}
+
+
+PlanOperation = (
+    RecodeOperation | AssignOperation | ConditionalAssignOperation
+    | SetVariableLabelOperation | ReplaceValueLabelsOperation
+    | SetFormatOperation | SetMeasurementLevelOperation | ExecuteOperation
+)
 
 
 @dataclass(frozen=True)
@@ -266,8 +470,16 @@ class TransformationPlan:
     input_alias: str = "parent"
 
     def __post_init__(self) -> None:
-        if self.contract != TRANSFORMATION_PLAN_CONTRACT:
-            _invalid(f"Plan contract must be {TRANSFORMATION_PLAN_CONTRACT!r}.")
+        if self.contract not in _TRANSFORMATION_PLAN_CONTRACTS:
+            _invalid("Plan contract is not a supported transformation-plan contract.")
+        if self.contract == TRANSFORMATION_PLAN_V1_CONTRACT and any(
+            isinstance(operation, (
+                AssignOperation, ConditionalAssignOperation, SetFormatOperation,
+                SetMeasurementLevelOperation, ExecuteOperation,
+            ))
+            for operation in self.operations
+        ):
+            _invalid("Transformation-plan v0.1 cannot contain v0.2 operations.")
         if not isinstance(self.input_alias, str) or not self.input_alias:
             _invalid("Plan input_alias must be non-empty text.")
         if not isinstance(self.operations, tuple) or not self.operations:
@@ -275,7 +487,11 @@ class TransformationPlan:
         if not all(
             isinstance(
                 operation,
-                (RecodeOperation, SetVariableLabelOperation, ReplaceValueLabelsOperation),
+                (
+                    RecodeOperation, AssignOperation, ConditionalAssignOperation,
+                    SetVariableLabelOperation, ReplaceValueLabelsOperation,
+                    SetFormatOperation, SetMeasurementLevelOperation, ExecuteOperation,
+                ),
             )
             for operation in self.operations
         ):
@@ -306,6 +522,42 @@ def _typed(raw: Any) -> TypedValue:
     if not isinstance(raw, Mapping):
         _invalid("Typed value must be an object.")
     return TypedValue.from_dict(raw)
+
+
+def _operand(raw: Any) -> Operand:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("kind"), str):
+        _invalid("Operand must be an object with a kind.")
+    if raw["kind"] == "variable":
+        _exact(raw, {"kind", "variable"}, "Variable operand")
+        return Operand.variable_ref(raw["variable"])
+    if raw["kind"] == "literal":
+        _exact(raw, {"kind", "value"}, "Literal operand")
+        return Operand.literal(_typed(raw["value"]))
+    _invalid("Unknown operand kind.")
+
+
+def _predicate(raw: Any) -> PredicateExpression:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("expression"), str):
+        _invalid("Predicate expression must be an object with an expression discriminator.")
+    if raw["expression"] == "comparison":
+        _exact(
+            raw, {"expression", "left", "operator", "right"},
+            "Comparison expression",
+        )
+        return ComparisonExpression(
+            _operand(raw["left"]), raw["operator"], _operand(raw["right"]),
+        )
+    if raw["expression"] == "boolean":
+        _exact(raw, {"expression", "operator", "operands"}, "Boolean expression")
+        operands_raw = raw["operands"]
+        if not isinstance(operands_raw, Sequence) or isinstance(
+            operands_raw, (str, bytes)
+        ):
+            _invalid("Boolean operands must be an array.")
+        return BooleanExpression(
+            raw["operator"], tuple(_predicate(item) for item in operands_raw),
+        )
+    _invalid("Unknown predicate expression kind.")
 
 
 def _result(raw: Any) -> RecodeResult:
@@ -341,7 +593,7 @@ def _match(raw: Any) -> RecodeMatch:
 
 
 def transformation_plan_from_dict(raw: Mapping[str, Any]) -> TransformationPlan:
-    """Strictly validate and construct the canonical v0.1 plan document."""
+    """Strictly validate canonical v0.1 or additive v0.2 plan documents."""
     if not isinstance(raw, Mapping):
         _invalid("Transformation plan must be an object.")
     _exact(raw, {"contract", "input_alias", "operations"}, "Transformation plan")
@@ -373,6 +625,47 @@ def transformation_plan_from_dict(raw: Mapping[str, Any]) -> TransformationPlan:
                 target_mode=raw_operation["target_mode"], rules=tuple(rules),
                 unmatched=_result(raw_operation["unmatched"]),
             ))
+        elif operation == "assign":
+            _exact(
+                raw_operation, {"op", "target", "target_mode", "value"},
+                "Assign operation",
+            )
+            operations.append(AssignOperation(
+                target=raw_operation["target"],
+                target_mode=raw_operation["target_mode"],
+                value=_operand(raw_operation["value"]),
+            ))
+        elif operation == "conditional_assign":
+            _exact(
+                raw_operation, {"op", "condition", "target", "value"},
+                "Conditional-assign operation",
+            )
+            operations.append(ConditionalAssignOperation(
+                condition=_predicate(raw_operation["condition"]),
+                target=raw_operation["target"],
+                value=_operand(raw_operation["value"]),
+            ))
+        elif operation == "set_format":
+            _exact(
+                raw_operation,
+                {"op", "variable", "family", "width", "decimals"},
+                "Format operation",
+            )
+            operations.append(SetFormatOperation(
+                variable=raw_operation["variable"], family=raw_operation["family"],
+                width=raw_operation["width"], decimals=raw_operation["decimals"],
+            ))
+        elif operation == "set_measurement_level":
+            _exact(
+                raw_operation, {"op", "variable", "level"},
+                "Measurement-level operation",
+            )
+            operations.append(SetMeasurementLevelOperation(
+                variable=raw_operation["variable"], level=raw_operation["level"],
+            ))
+        elif operation == "execute":
+            _exact(raw_operation, {"op"}, "Execute operation")
+            operations.append(ExecuteOperation())
         elif operation == "set_variable_label":
             _exact(raw_operation, {"op", "variable", "label"}, "Variable-label operation")
             operations.append(SetVariableLabelOperation(
