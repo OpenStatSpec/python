@@ -283,3 +283,31 @@ def test_export_recovery_does_not_replace_newer_concurrent_destination(
     assert destination.read_bytes() == b"later successful export"
     assert backup.read_bytes() == b"original destination"
 
+def test_export_publication_does_not_clobber_intervening_destination(
+    tmp_path, monkeypatch,
+) -> None:
+    staged = tmp_path / "staged.sav"
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    staged.write_bytes(b"earlier staged export")
+    real_link = sav_module.os.link
+
+    def publish_concurrently(source, target):
+        destination.write_bytes(b"intervening successful export")
+        return real_link(source, target)
+
+    monkeypatch.setattr(sav_module.os, "link", publish_concurrently)
+    state = {}
+    with pytest.raises(FileExistsError):
+        sav_module._publish_staged_destination(
+            staged=staged,
+            destination=destination,
+            backup=backup,
+            state=state,
+        )
+
+    assert destination.read_bytes() == b"intervening successful export"
+    assert staged.read_bytes() == b"earlier staged export"
+    assert sav_module._path_entry_exists(backup) is False
+    assert state["published_identity"] is None
+
