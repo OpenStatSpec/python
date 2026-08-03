@@ -59,8 +59,23 @@ def _bound_specification_commit() -> str:
     return SPECIFICATION_COMMIT
 
 
+def _active_driver_eligible(database_url: str, profile_name: str) -> bool:
+    driver = make_url(database_url).drivername.lower()
+    required = {
+        "postgresql": "postgresql+psycopg",
+        "mysql": "mysql+pymysql",
+        "mariadb": "mariadb+mariadbconnector",
+        "dolt": "mysql+pymysql",
+    }
+    return (
+        make_url(database_url).get_backend_name() == "sqlite"
+        if profile_name == "sqlite"
+        else driver == required[profile_name]
+    )
+
+
 def _dolt_driver_eligible(database_url: str) -> bool:
-    return make_url(database_url).drivername.lower() == "mysql+pymysql"
+    return _active_driver_eligible(database_url, "dolt")
 
 
 def dolt_operational_write_enabled(
@@ -246,9 +261,8 @@ def active_connection(
             if profile_name == "dolt" else None
         ),
         "observed": observed,
-        "driver_eligible": (
-            _dolt_driver_eligible(database_url)
-            if profile_name == "dolt" else True
+        "driver_eligible": _active_driver_eligible(
+            database_url, profile_name,
         ),
     }
 
@@ -507,6 +521,11 @@ def _profile(
                 active, declaration_matched=dolt_declaration is not None,
             )
             if dolt_envelope and active and active["profile"] == name
+            else (
+                bool(active["claimed_supported"])
+                and bool(active["driver_eligible"])
+            )
+            if active and active["profile"] == name
             else bool((dolt_status or {}).get("write_enabled"))
             if dolt_envelope else True
         ),
