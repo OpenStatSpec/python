@@ -831,6 +831,12 @@ def _run_in_place_submission(
     try:
         try:
             with engine.begin() as connection:
+                if profile.name == "sqlite":
+                    # Python's sqlite3 legacy transaction mode does not begin a
+                    # transaction for DDL. Start one explicitly so schema and
+                    # catalog mutations roll back together before the write lock
+                    # is released.
+                    connection.exec_driver_sql("BEGIN")
                 if profile.name == "dolt":
                     if not expected_branch or not expected_head:
                         raise TransformationError(
