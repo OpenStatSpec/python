@@ -2,7 +2,7 @@ from decimal import Decimal
 import sqlite3
 
 import pytest
-from sqlalchemy import Table
+from sqlalchemy import MetaData, Table
 
 import openstatspec
 import openstatspec.sql.wide as wide
@@ -457,4 +457,28 @@ def test_import_fidelity_reader_excludes_export_operational_events(tmp_path):
         "detail": "source fidelity",
         "details": {},
     },)
+
+def test_stale_initializer_compensation_preserves_concurrent_verified_catalog(
+    tmp_path,
+):
+    path = tmp_path / "concurrent-init.sqlite"
+    database = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=database)
+    before = _table_names(path)
+    metadata = MetaData()
+    legacy, normative = wide._catalog_layout(metadata)
+    engine = wide.create_engine(database)
+    with engine.begin() as connection:
+        wide._compensate_catalog_initialization(
+            connection,
+            metadata=metadata,
+            before_tables=set(),
+            before_columns={},
+            normative=normative,
+            legacy=legacy,
+        )
+        wide.require_verified_catalog(connection)
+    engine.dispose()
+
+    assert _table_names(path) == before
 
