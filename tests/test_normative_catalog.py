@@ -4,7 +4,7 @@ from uuid import UUID
 
 import pytest
 
-from openstatspec.sql.wide import create_wide_dataset, record_export_operation
+from openstatspec.sql.wide import create_wide_dataset, initialize_wide_catalog, record_export_operation
 from openstatspec.sql.normative import catalog as normative_catalog, create as create_normative
 from sqlalchemy import MetaData, create_engine
 from sqlalchemy.dialects.mysql import dialect as mysql_dialect
@@ -72,6 +72,7 @@ def variables():
 def test_import_writes_complete_normative_catalog(tmp_path):
     database_path = tmp_path / "normative.sqlite"
     database_url = f"sqlite:///{database_path}"
+    initialize_wide_catalog(database_url=database_url)
     result = create_wide_dataset(
         database_url=database_url, dataset_id="wave_1",
         source_name="fixture.sav", source_format="SAV",

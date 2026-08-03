@@ -34,6 +34,15 @@ def binary64_type() -> Float:
     )
 
 
+def lossless_text_type() -> Text:
+    """Use unbounded catalog text on the supported MySQL-wire profiles."""
+    return (
+        Text()
+        .with_variant(mysql.LONGTEXT(), "mysql")
+        .with_variant(mysql.LONGTEXT(), "mariadb")
+    )
+
+
 @dataclass(frozen=True)
 class NormativeTables:
     catalog_identity: Table
@@ -76,7 +85,7 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("physical_table_schema", String(255)),
         Column("physical_table_name", String(255), nullable=False),
         Column("dataset_name", String(255)),
-        Column("dataset_label", Text),
+        Column("dataset_label", lossless_text_type()),
         Column("source_encoding", String(128)),
         Column("source_hash", String(128)),
         Column("source_case_count", BigInteger, nullable=False),
@@ -100,7 +109,7 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("physical_name", String(255), nullable=False),
         Column("storage_kind", String(16), nullable=False),
         Column("declared_string_width", Integer),
-        Column("variable_label", Text),
+        Column("variable_label", lossless_text_type()),
         Column("print_format_family", String(64)),
         Column("print_format_width", Integer),
         Column("print_format_decimals", Integer),
@@ -133,8 +142,8 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("ordinal", Integer, nullable=False),
         Column("code_kind", String(16), nullable=False),
         Column("numeric_code", binary64_type()),
-        Column("string_code", Text),
-        Column("label", Text, nullable=False),
+        Column("string_code", lossless_text_type()),
+        Column("label", lossless_text_type(), nullable=False),
         UniqueConstraint("value_label_set_id", "ordinal"),
     )
     variable_value_label_set = Table(
@@ -150,7 +159,7 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("rule_kind", String(32), nullable=False),
         Column("code_kind", String(16)),
         Column("numeric_value", binary64_type()),
-        Column("string_value", Text),
+        Column("string_value", lossless_text_type()),
         Column("numeric_lower", binary64_type()),
         Column("numeric_upper", binary64_type()),
         Column("lower_special", String(16)),
@@ -163,7 +172,7 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("dataset_id", String(36), ForeignKey("dataset.dataset_id"), nullable=False),
         Column("attribute_name", String(255), nullable=False),
         Column("array_ordinal", Integer, nullable=False, default=1),
-        Column("attribute_value", Text, nullable=False),
+        Column("attribute_value", lossless_text_type(), nullable=False),
         UniqueConstraint("dataset_id", "attribute_name", "array_ordinal"),
     )
     variable_attribute = Table(
@@ -172,7 +181,7 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("variable_id", String(36), ForeignKey("variable.variable_id"), nullable=False),
         Column("attribute_name", String(255), nullable=False),
         Column("array_ordinal", Integer, nullable=False, default=1),
-        Column("attribute_value", Text, nullable=False),
+        Column("attribute_value", lossless_text_type(), nullable=False),
         UniqueConstraint("variable_id", "attribute_name", "array_ordinal"),
     )
     document = Table(
@@ -180,7 +189,7 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("document_id", String(36), primary_key=True),
         Column("dataset_id", String(36), ForeignKey("dataset.dataset_id"), nullable=False),
         Column("source_ordinal", Integer, nullable=False),
-        Column("document_text", Text, nullable=False),
+        Column("document_text", lossless_text_type(), nullable=False),
         UniqueConstraint("dataset_id", "source_ordinal"),
     )
     variable_set = Table(
@@ -205,13 +214,13 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("dataset_id", String(36), ForeignKey("dataset.dataset_id"), nullable=False),
         Column("source_ordinal", Integer, nullable=False),
         Column("set_name", String(255), nullable=False),
-        Column("set_label", Text),
+        Column("set_label", lossless_text_type()),
         Column("set_kind", String(4), nullable=False),
         Column("counted_value_kind", String(16)),
         Column("counted_numeric_value", binary64_type()),
-        Column("counted_string_value", Text),
-        Column("category_label_behavior", Text),
-        Column("label_source", Text),
+        Column("counted_string_value", lossless_text_type()),
+        Column("category_label_behavior", lossless_text_type()),
+        Column("label_source", lossless_text_type()),
         UniqueConstraint("dataset_id", "source_ordinal"),
         UniqueConstraint("dataset_id", "set_name"),
     )
@@ -230,8 +239,8 @@ def catalog(metadata: MetaData) -> NormativeTables:
         Column("direction", String(16), nullable=False),
         Column("severity", String(16), nullable=False),
         Column("event_code", String(128), nullable=False),
-        Column("source_item", Text),
-        Column("detail_json", Text, nullable=False),
+        Column("source_item", lossless_text_type()),
+        Column("detail_json", lossless_text_type(), nullable=False),
         Column("created_at", DateTime, nullable=False),
     )
     return NormativeTables(

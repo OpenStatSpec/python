@@ -28,6 +28,7 @@ def test_attribute_catalog_is_authoritative_for_sav_and_zsav_export(tmp_path, su
         },
     )
 
+    openstatspec.initialize_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="attributes")
     connection = sqlite3.connect(database_path)
     assert connection.execute(
@@ -62,6 +63,7 @@ def test_attribute_catalog_is_authoritative_for_sav_and_zsav_export(tmp_path, su
     assert exported["var_attributes"] == {
         "answer": {"Source": "catalog-variable", "Flag": "yes"},
     }
+    openstatspec.initialize_catalog(database_url=f"sqlite:///{imported_again}")
     openstatspec.import_sav(destination, database_url=f"sqlite:///{imported_again}", dataset_id="again")
     reimported = sqlite3.connect(imported_again)
     assert reimported.execute(
@@ -74,37 +76,41 @@ def test_attribute_catalog_is_authoritative_for_sav_and_zsav_export(tmp_path, su
     ).fetchall() == [("Source", "catalog-variable"), ("Flag", "yes")]
 
 
-def test_attribute_catalog_migrates_old_json_catalog_without_rewriting_it(tmp_path) -> None:
+def test_initializer_rejects_unverified_catalog_without_rewriting_it(tmp_path) -> None:
     source = tmp_path / "legacy.sav"
-    destination = tmp_path / "legacy-out.sav"
     database_path = tmp_path / "legacy.sqlite"
     database = f"sqlite:///{database_path}"
     pyspssio.write_sav(
         str(source), pd.DataFrame({"answer": [1.0]}),
         metadata={"file_attributes": {"File": "legacy"}, "var_attributes": {"answer": {"Var": "legacy"}}},
     )
+    openstatspec.initialize_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="legacy")
     connection = sqlite3.connect(database_path)
     connection.execute("drop table attribute_catalog")
     connection.commit()
+    before = connection.execute(
+        "select type, name, sql from sqlite_master "
+        "where name not like 'sqlite_%' order by type, name"
+    ).fetchall()
+    connection.close()
 
-    # Opening an older catalog additively creates the new table and continues to
-    # use legacy JSON only because that older dataset has no normalized rows.
-    dataset, variables, _ = read_wide_dataset(database_url=database, dataset_id="legacy")
-    assert json.loads(dataset["file_attributes"]) == {"File": "legacy"}
-    assert json.loads(variables[0]["attributes"]) == {"Var": "legacy"}
-    assert connection.execute(
-        "select name from sqlite_master where type = 'table' and name = 'attribute_catalog'"
-    ).fetchone() == ("attribute_catalog",)
-    openstatspec.export_sav(
-        database_url=database, dataset_id="legacy", destination=destination,
-        allow_loss=_REQUIRED_ENGINE_LOSS,
-    )
-    assert pyspssio.read_metadata(str(destination))["file_attributes"] == {"File": "legacy"}
+    with pytest.raises(UnsupportedOperationError, match="verified OpenStatSpec catalog"):
+        openstatspec.initialize_catalog(database_url=database)
+
+    connection = sqlite3.connect(database_path)
+    after = connection.execute(
+        "select type, name, sql from sqlite_master "
+        "where name not like 'sqlite_%' order by type, name"
+    ).fetchall()
+    connection.close()
+    assert after == before
+    assert "attribute_catalog" not in {name for _kind, name, _sql in after}
 
 
 def test_attribute_catalog_preserves_ordered_arrays_through_raw_pyspssio_bridge(tmp_path) -> None:
     database = f"sqlite:///{tmp_path / 'array.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     create_wide_dataset(
         database_url=database, dataset_id="array", source_name="array.sav", source_format="SAV",
         rows=[{"answer": 1.0}],

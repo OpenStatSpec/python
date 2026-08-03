@@ -13,8 +13,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy import inspect as inspect_database
 
 import openstatspec
-from conformance import compare_sav_semantics
-from openstatspec.sql.capabilities import effective_profile
+from openstatspec.sql.profiles import profile_for_url
 
 
 SEMANTIC_EXPECTATIONS = {
@@ -232,6 +231,7 @@ def _assert_round_trip(
     dataset_id = f"official_{profile}_{fixture['id']}_{token}".replace("-", "_")
     destination = tmp_path / f"{dataset_id}{source.suffix}"
 
+    openstatspec.initialize_catalog(database_url=database_url)
     imported = openstatspec.import_sav(
         source, database_url=database_url, dataset_id=dataset_id,
     )
@@ -245,10 +245,9 @@ def _assert_round_trip(
         database_url=database_url, dataset_id=dataset_id, destination=destination,
     )
     assert exported.diagnostics == ()
-    assert compare_sav_semantics(source, destination) == {
-        "equivalent": True,
-        "differences": [],
-    }
+    comparison = openstatspec.compare_sav_semantics(source, destination)
+    assert comparison["equivalent"] is True
+    assert comparison["differences"] == []
 
 
 def test_manifest_required_capabilities_are_declared() -> None:
@@ -276,7 +275,6 @@ def test_official_manifest_round_trips_through_sqlite(
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
-        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 @pytest.mark.parametrize(("fixture", "source"), _round_trip_fixtures())
@@ -300,7 +298,7 @@ def _assert_official_preflight_failure(
     )
     assert fixture["directions"] == ["import"]
     assert set(fixture["expects"]) == PREFLIGHT_EXPECTATIONS
-    maximum = effective_profile(database_url)[0].max_physical_variables
+    maximum = profile_for_url(database_url).max_source_variables
     source = tmp_path / f"preflight-too-wide-{profile}-{uuid4().hex[:8]}.sav"
     columns = [f"v{ordinal:05d}" for ordinal in range(1, maximum + 2)]
     pyspssio.write_sav(
@@ -309,6 +307,7 @@ def _assert_official_preflight_failure(
     )
     dataset_name = f"official_preflight_failure_{profile}_{uuid4().hex[:8]}"
 
+    openstatspec.initialize_catalog(database_url=database_url)
     with pytest.raises(Exception, match="Target capability exceeded"):
         openstatspec.import_sav(
             source, database_url=database_url, dataset_id=dataset_name,
@@ -359,7 +358,6 @@ def test_official_preflight_failure_is_atomic_and_diagnostic(tmp_path: Path) -> 
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
-        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 def test_official_preflight_failure_through_server_profiles(

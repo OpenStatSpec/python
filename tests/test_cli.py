@@ -1,5 +1,4 @@
 import json
-import sqlite3
 
 import openstatspec
 import openstatspec.cli
@@ -13,6 +12,11 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     output = tmp_path / "output.zsav"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
 
+    assert openstatspec.cli.main(["init", "--database-url", database]) == 0
+    initialized = json.loads(capsys.readouterr().out)
+    assert initialized["catalog"] == "verified"
+    assert initialized["profile"] == "sqlite"
+
     assert openstatspec.cli.main(["import", str(source), "--database-url", database, "--dataset-id", "fixture"]) == 0
     imported = json.loads(capsys.readouterr().out)
     assert openstatspec.cli.main(["inspect", str(source)]) == 0
@@ -25,7 +29,9 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert imported["case_count"] == 1
 
     from openstatspec.core.results import OperationResult
-    assert isinstance(openstatspec.import_sav(source, database_url=f"sqlite:///{tmp_path / 'typed.sqlite'}", dataset_id="typed"), OperationResult)
+    typed_database = f"sqlite:///{tmp_path}/typed.sqlite"
+    openstatspec.initialize_catalog(database_url=typed_database)
+    assert isinstance(openstatspec.import_sav(source, database_url=typed_database, dataset_id="typed"), OperationResult)
 
     assert openstatspec.cli.main(["validate", "--database-url", database, "--dataset-id", "fixture"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
@@ -39,9 +45,9 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
-    assert matrix["specification_status"] == "released"
-    assert matrix["specification_release"] == "v0.2.0"
-    assert matrix["specification_commit"] == "79339ec3d8f8aa81789b7e85f6b8afa6f1374e50"
+    assert matrix["specification_status"] == "release_candidate"
+    assert matrix["specification_release"] is None
+    assert matrix["specification_commit"] == "6b9d1fc38f2f083c0ac5cf1c64874a6d07b95045"
     assert matrix["directions"] == ["import", "export", "semantic_round_trip"]
     assert matrix["active_connection"] is None
     assert matrix["engine"]["package"] == "openstatspec-pyspssio"
@@ -96,63 +102,22 @@ def test_capability_matrix_reports_active_sqlite_limits(tmp_path) -> None:
     }
 
 
-def test_cli_installs_schema_and_applies_plan_or_spss(
-    tmp_path, capsys,
-) -> None:
-    source = tmp_path / "transform-source.sav"
-    database_path = tmp_path / "transform.sqlite"
-    database_url = f"sqlite:///{database_path}"
-    pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
-    openstatspec.import_sav(
-        source,
-        database_url=database_url,
-        dataset_id="transform-cli",
+def test_dolt_state_cli_emits_read_only_snapshot(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        openstatspec.cli, "dolt_state_snapshot",
+        lambda **_kwargs: {
+            "profile": "dolt",
+            "server_version": "2.2.2",
+            "read_only": True,
+            "state": {"database": "synthetic_catalog", "snapshot_sha256": "0" * 64},
+        },
     )
-    connection = sqlite3.connect(database_path)
-    live_dataset_id = connection.execute(
-        "SELECT dataset_id FROM dataset"
-    ).fetchone()[0]
 
     assert openstatspec.cli.main([
-        "install-in-place-schema",
-        "--database-url", database_url,
+        "dolt-state",
+        "--database-url", "mysql+pymysql://user@host/synthetic_catalog",
     ]) == 0
-    assert json.loads(capsys.readouterr().out) == {"status": "installed"}
-
-    plan = openstatspec.compile_spss_syntax(
-        "RECODE answer (1 = 2).",
-        openstatspec.VariableSchema((
-            openstatspec.VariableDefinition("answer", "numeric"),
-        )),
-    ).plan
-    plan_file = tmp_path / "plan.json"
-    plan_file.write_text(
-        json.dumps(plan.as_dict()),
-        encoding="utf-8",
-    )
-    assert openstatspec.cli.main([
-        "apply-plan",
-        "--database-url", database_url,
-        "--dataset-id", live_dataset_id,
-        "--actor", "cli-test",
-        "--plan-file", str(plan_file),
-    ]) == 0
-    generic = json.loads(capsys.readouterr().out)
-    assert generic["source_kind"] == "canonical_plan"
-
-    assert openstatspec.cli.main([
-        "apply-spss",
-        "--database-url", database_url,
-        "--dataset-id", live_dataset_id,
-        "--actor", "cli-test",
-        "--syntax", "RECODE answer (2 = 3).",
-    ]) == 0
-    spss = json.loads(capsys.readouterr().out)
-    assert spss["source_kind"] == "spss_syntax"
-
-    table_name = connection.execute(
-        "SELECT physical_table_name FROM dataset"
-    ).fetchone()[0]
-    assert connection.execute(
-        f'SELECT answer FROM "{table_name}"'
-    ).fetchone() == (3.0,)
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered["profile"] == "dolt"
+    assert rendered["read_only"] is True
+    assert rendered["state"]["snapshot_sha256"] == "0" * 64

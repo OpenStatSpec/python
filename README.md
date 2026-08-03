@@ -26,21 +26,20 @@ import.
   capabilities, and loss reports.
 - `openstatspec.sql`: database connection and wide-table/catalog operations.
 - `openstatspec.spss`: SAV/ZSAV adapter boundary.
-- `openstatspec.transform`: canonical plans, frontend-neutral schema concepts,
-  and plan validation.
-- `openstatspec.frontends.spss`: the SPSS-like syntax frontend and convenience
-  execution adapter.
 
 ## Intended workflow
 
 ```python
-from openstatspec import export_sav, import_sav
+from openstatspec import export_sav, import_sav, initialize_catalog
 
-import_sav("responses.sav", database_url="postgresql+psycopg://user:password@server/database", dataset_id="responses-2026")
+database_url = "postgresql+psycopg://user:password@server/database"
+initialize_catalog(database_url=database_url)
+import_sav("responses.sav", database_url=database_url, dataset_id="responses-2026")
 export_sav(database_url="postgresql+psycopg://user:password@server/database", dataset_id="responses-2026", destination="responses-roundtrip.sav")
 ```
 
 ```text
+openstatspec init --database-url postgresql+psycopg://...
 openstatspec import responses.sav --database-url postgresql+psycopg://... --dataset-id responses-2026
 openstatspec export --database-url postgresql+psycopg://... --dataset-id responses-2026 --output responses-roundtrip.sav
 ```
@@ -54,78 +53,67 @@ derived datasets through a public catalog API. It uses a separate profile
 catalog and never presents SQL output as an imported source dataset.
 Workflow operations support SQLite only in this milestone and fail closed on
 PostgreSQL/MySQL/MariaDB; core import/export database support is unchanged.
-The core SQLite import/export profile accepts SQLite `>=3.24.0,<4.0.0`; the
-optional transformation workflow deliberately has the narrower
-`>=3.35.0,<4.0.0` runtime preflight. These independent tiers do not change the
-server-profile matrix. Microsoft SQL Server is not supported; its future
-dialect is scoped only in the specification's
-[MSSQL roadmap](https://github.com/OpenStatSpec/specification/blob/main/docs/mssql-dialect-roadmap.md).
 
 See [the SQL transformation workflow](docs/sql-transformation-workflow.md) for
 Python and CLI examples, migration behavior, hashing, atomicity, and the exact
 implemented capability boundary.
 
-## SPSS-like transformation frontend
-
-The SPSS-like frontend lowers supported `RECODE`, `VARIABLE LABELS`, and
-`VALUE LABELS` syntax into a language-neutral canonical plan. The in-place
-path applies it to the same logical dataset, physical wide table, and metadata
-catalog without a derived dataset, copied table, snapshot, or separate
-rollback/history layer. Dolt remains the sole versioning layer for Dolt-backed
-edits, and the transformer never calls `DOLT_COMMIT`.
-
-See the [dataset transformations manual](docs/transformations.md) for schema
-installation, Python and CLI surfaces, database invariants, audit provenance,
-package layout, and extension guidance. Stata and SAS are unimplemented
-placeholders.
-
-## Current support status
+## 0.1.0 support status
 
 The adapter requires `openstatspec-pyspssio==0.5.1.post2` as its sole SPSS
 engine. Its import module remains `pyspssio`; the exact source commit is recorded
 in operation metadata. There is no fallback reader or writer. It supports unencrypted SAV and ZSAV import and
 SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
 reference path.
-PostgreSQL, MySQL, MariaDB, and Dolt are each covered by separate service-backed CI
-conformance checks. Dolt support is an independent core profile for the
-canonical stable range `>=2.2.2,<2.3.0`; earlier patches, other families,
-noncanonical versions, and unknown MySQL-wire products fail closed.
-
-The supported family claims are broader than the deliberately exact CI
-evidence points: PostgreSQL 17.x/18.x is exercised at 17.10/18.4, MySQL
-8.4.x/9.7.x at 8.4.11/9.7.2, and MariaDB 11.4.x/11.8.x/12.3.x at
-11.4.12/11.8.8/12.3.2. Each service job checks the normalized live server
-version against its exact matrix entry before that run can count as evidence.
-Dolt claims the conservative 2.2.x range `>=2.2.2,<2.3.0`; its full service
-suite is exercised independently at exact versions 2.2.2 and 2.2.3 using
-immutable container-image digests.
-
-| Engine/profile | Runtime supported policy | Exact CI-tested versions |
-| --- | --- | --- |
-| SQLite core / optional workflow | Core `>=3.24.0,<4.0.0`; optional workflow `>=3.35.0,<4.0.0` | Runtime-provided SQLite on Python 3.11–3.14 runners; not a pinned server image |
-| PostgreSQL | 17.x and 18.x | 17.10 and 18.4 |
-| MySQL | 8.4.x and 9.7.x | 8.4.11 and 9.7.2 |
-| MariaDB | 11.4.x, 11.8.x, and 12.3.x | 11.4.12, 11.8.8, and 12.3.2 |
-| Dolt | 2.2.x with `>=2.2.2,<2.3.0` | 2.2.2 and 2.2.3 |
-
-Microsoft SQL Server (MSSQL) remains roadmap-only and is not a supported
-runtime profile; see the specification's [MSSQL roadmap](https://github.com/OpenStatSpec/specification/blob/main/docs/mssql-dialect-roadmap.md).
-
-Use these explicit SQLAlchemy URLs:
+PostgreSQL, MySQL, and MariaDB are each covered by separate service-backed CI
+conformance checks. Use these explicit SQLAlchemy URLs:
 
 - SQLite: `sqlite:///dataset.sqlite`
 - PostgreSQL: `postgresql+psycopg://user:password@host/database`
-- MySQL/MariaDB: `mysql+pymysql://user:password@host/database`
-- Dolt `>=2.2.2,<2.3.0`: `mysql+pymysql://user:password@host/database` (detected by server identity)
+- MySQL/MariaDB/Dolt wire protocol: `mysql+pymysql://user:password@host/database`
 
-The Dolt core profile supports strict wide-table import, validation, and export;
-the separate Transformation Workflow is unsupported.
+Catalog creation and additive migration are explicit: run `initialize_catalog`
+or `openstatspec init` before import, read, validation, or export. Those
+operations fail closed on absent, foreign, ambiguous, unverified, or
+migration-required catalogs and never auto-create catalog relations. Failure
+cleanup uses compensating actions where the server does not provide atomic DDL;
+a cleanup failure produces machine-readable residual inventory and a best-effort
+failed-operation audit in an otherwise verified catalog.
+
+Dolt identity requires an exact `Dolt` version comment, non-empty exact
+`DOLT_VERSION()`, and an explicit active branch. Dolt writes load the
+`openstatspec-specification` companion distribution through
+`DoltConformanceSource.packaged()` by default. The packaged concrete
+declaration directory is intentionally empty, so every operational Dolt write
+path currently fails before mutation. There are no mirrored Python evidence
+maps or validator rules.
+
+Tests and explicitly configured local integrations may inject
+`DoltConformanceSource.from_directory(specification_root)`. The same shared
+validator must then find exactly one concrete declaration matching the active
+Dolt product version, `openstatspec-python`, exact adapter version, and pinned
+specification commit. Missing, invalid, empty, or ambiguous sources all fail
+closed. The proposed 305-source-variable/306-physical-column envelope is not a
+Dolt server limit. The read-only `dolt_state_snapshot()` and
+`openstatspec dolt-state` remain available for the bound database/branch
+working set, HEAD, status, and three diff summaries with deterministic digests.
+Core OpenStatSpec never runs `DOLT_ADD`, `DOLT_COMMIT`, checkout, reset, or
+branch-changing operations.
 
 Run `openstatspec capabilities` before an integration to inspect the
 machine-readable feature matrix. Export is deliberately strict: if known
 dictionary semantics cannot be reproduced, it stops until you pass the exact
 diagnostic code with `--allow-loss`. This avoids silent loss while making an
 intentional lossy export auditable.
+
+Filesystem publication and SQL audit finalization cannot form one atomic 2PC
+transaction. Export therefore records a running operation, destination, and
+unique durable prior-file backup path before publication; it retains that
+backup until the SQL operation reaches `succeeded`. A publication or
+finalization failure restores the prior destination and closes the operation
+as `failed`. Failure to remove the backup after success never rewrites the
+successful operation: it raises `backup_retained` with the durable path and
+appends a warning best-effort, so a confidential duplicate is discoverable.
 
 The matrix is also available to Python callers as
 `openstatspec.capability_matrix()`. It distinguishes supported semantics from

@@ -7,8 +7,9 @@ import pyspssio
 import pytest
 
 import openstatspec
-from conformance import compare_sav_semantics, write_supported_semantics_fixture
+from conformance import write_supported_semantics_fixture
 from openstatspec.core import UnsupportedOperationError
+from openstatspec.sql.wide import initialize_wide_catalog
 
 _REQUIRED_ENGINE_LOSS = []
 
@@ -38,6 +39,7 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
         },
     )
 
+    initialize_wide_catalog(database_url=database)
     imported = openstatspec.import_sav(source, database_url=database, dataset_id="tiny")
     assert imported["case_count"] == 2
     assert imported["data_table"] == "data_tiny"
@@ -89,6 +91,7 @@ def test_file_label_round_trips_through_sqlite_and_export(tmp_path) -> None:
         str(source), pd.DataFrame({"answer": [1.0]}), metadata={"file_label": label}
     )
 
+    initialize_wide_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="label")
     connection = sqlite3.connect(database_path)
     assert connection.execute(
@@ -106,14 +109,27 @@ def test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav
     database_path = tmp_path / f"supported-{suffix[1:]}.sqlite"
     destination = tmp_path / f"supported-roundtrip{suffix}"
     expected = write_supported_semantics_fixture(source)
+    database = f"sqlite:///{database_path}"
 
-    result = openstatspec.import_sav(source, database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")
+    initialize_wide_catalog(database_url=database)
+    result = openstatspec.import_sav(source, database_url=database, dataset_id=f"supported-{suffix[1:]}")
     assert result["case_count"] == 4
     assert openstatspec.validate(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")["valid"] is True
     connection = sqlite3.connect(database_path)
-    assert connection.execute(f"select comment from data_supported_{suffix[1:]} order by __case_ordinal").fetchone() == (expected["long_text"],)
+    assert connection.execute(
+        f"select {expected['long_text_variable']} "
+        f"from data_supported_{suffix[1:]} order by __case_ordinal"
+    ).fetchone() == (expected["long_text"],)
     openstatspec.export_sav(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
-    assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
+    comparison = openstatspec.compare_sav_semantics(source, destination)
+    assert comparison["equivalent"] is True
+    assert comparison["differences"] == []
+    source_metadata = pyspssio.read_metadata(str(source))
+    exported_metadata = pyspssio.read_metadata(str(destination))
+    assert exported_metadata["var_types"][expected["long_text_variable"]] == (
+        source_metadata["var_types"][expected["long_text_variable"]]
+    )
+    assert exported_metadata["var_compat_names"][expected["long_text_variable"]] == expected["compatible_name"]
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
 def test_pyspssio_preserves_supported_metadata_for_both_formats(tmp_path, suffix: str) -> None:
@@ -124,6 +140,7 @@ def test_import_rejects_physical_table_name_collision_without_partial_catalog(tm
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
+    initialize_wide_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="wave-1")
     with pytest.raises(ValueError, match="collides"):
         openstatspec.import_sav(source, database_url=database, dataset_id="wave 1")
@@ -163,6 +180,7 @@ def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arr
         writer.commit_header()
         writer.write_data(pd.DataFrame({"answer": [1.0], "comment": ["yes"]}))
 
+    initialize_wide_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="raw")
     connection = sqlite3.connect(tmp_path / f"raw-{suffix[1:]}.sqlite")
     assert connection.execute(
@@ -201,6 +219,7 @@ def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix
     )
     assert pyspssio.read_metadata(str(source))["var_types"]["comment"] == payload_width
 
+    initialize_wide_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="long")
     connection = sqlite3.connect(database_path)
     assert connection.execute(
