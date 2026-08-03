@@ -489,3 +489,59 @@ def test_export_identity_failure_happens_before_read_or_destination(monkeypatch,
         )
 
     assert not destination.exists()
+
+def test_effective_profile_preserves_explicit_driver_validation(monkeypatch) -> None:
+    def unexpected_active_connection(*_args, **_kwargs):
+        raise AssertionError("active connection must not be probed for a rejected driver")
+
+    monkeypatch.setattr(
+        capabilities, "active_connection", unexpected_active_connection,
+    )
+
+    with pytest.raises(
+        UnsupportedOperationError,
+        match=r"PostgreSQL requires an explicit postgresql\+psycopg URL",
+    ):
+        effective_profile("postgresql+psycopg2://user@host/database")
+
+
+def test_effective_profile_applies_declared_identifier_limit(monkeypatch) -> None:
+    active = {
+        "profile": "postgresql",
+        "claimed_supported": True,
+        "server_version": "17.10",
+        "observed": {},
+    }
+    limits = {
+        "identifier_limit": {"value": 7},
+        "maximum_source_variables": 10,
+        "maximum_value_bytes": 100,
+        "maximum_row_bytes": 200,
+        "maximum_statement_bytes": 300,
+    }
+    monkeypatch.setattr(
+        capabilities, "active_connection", lambda _url, **_kwargs: active,
+    )
+    monkeypatch.setattr(
+        capabilities, "_profile", lambda *_args, **_kwargs: {
+            "effective_limits": limits,
+        },
+    )
+
+    profile, observed = effective_profile(
+        "postgresql+psycopg://user@host/database",
+    )
+
+    assert observed is active
+    assert profile.identifier_limit == 7
+
+
+def test_wide_string_column_uses_effective_dolt_storage() -> None:
+    table = Table(
+        "dolt_wide_text",
+        MetaData(),
+        Column("value", wide._wide_column_type(DOLT, "string")),
+    )
+
+    ddl = str(CreateTable(table).compile(dialect=mysql.dialect())).upper()
+    assert "VALUE LONGTEXT" in ddl
