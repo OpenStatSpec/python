@@ -416,3 +416,12 @@ def test_reflected_mysql_integer_display_width_is_not_semantic():
     assert wide._normalized_sql_type(
         inspector, mysql.VARCHAR(length=255),
     ) == "VARCHAR(255)"
+
+@pytest.mark.parametrize("database_url", ["sqlite://", "sqlite:///:memory:"])
+def test_catalog_initialization_rejects_ephemeral_sqlite_url(database_url):
+    with pytest.raises(
+        UnsupportedOperationError,
+        match="requires a persistent SQLite database URL",
+    ):
+        openstatspec.initialize_catalog(database_url=database_url)
+
