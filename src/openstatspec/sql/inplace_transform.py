@@ -556,6 +556,9 @@ def _dolt_state(connection: Any) -> tuple[str, str, int]:
 
 def install_in_place_transformation_schema(*, database_url: str) -> None:
     """Install the compact operation audit separately from any data apply."""
+    # Resolve the effective profile first so Dolt conformance and explicit
+    # driver checks fail closed before an engine transaction can execute DDL.
+    effective_profile(database_url)
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
