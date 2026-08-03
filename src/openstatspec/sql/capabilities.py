@@ -81,11 +81,11 @@ SERVER_POLICIES = {
     },
     "mysql": {
         "claimed": ["MySQL 8.4.x", "MySQL 9.7.x"],
-        "ci": ["MySQL 8.4.x", "MySQL 9.7.x"],
+        "ci": ["MySQL 8.4.11", "MySQL 9.7.2"],
     },
     "mariadb": {
         "claimed": ["MariaDB 11.4.x", "MariaDB 11.8.x", "MariaDB 12.3.x"],
-        "ci": ["MariaDB 11.4.x", "MariaDB 11.8.x", "MariaDB 12.3.x"],
+        "ci": ["MariaDB 11.4.12", "MariaDB 11.8.8", "MariaDB 12.3.2"],
     },
     "dolt": {
         "claimed": [],
@@ -93,7 +93,7 @@ SERVER_POLICIES = {
     },
     "postgresql": {
         "claimed": ["PostgreSQL 17.x", "PostgreSQL 18.x"],
-        "ci": ["PostgreSQL 17.x", "PostgreSQL 18.x"],
+        "ci": ["PostgreSQL 17.10", "PostgreSQL 18.4"],
     },
 }
 
@@ -479,7 +479,7 @@ def _profile(
                 else "profile_conformance_claim"
             ),
         },
-        "text_type": "LONGTEXT" if name in MYSQL_WIRE_PROFILES else "TEXT",
+        "text_type": "LONGTEXT" if dolt_envelope else "TEXT",
         "ddl_atomic": name not in MYSQL_WIRE_PROFILES,
         "failure_cleanup": "compensating_cleanup" if name in MYSQL_WIRE_PROFILES else "transaction_rollback",
         "physical_table_mapping": "dataset.physical_table_schema + dataset.physical_table_name",
