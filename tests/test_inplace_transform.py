@@ -512,7 +512,7 @@ def test_capability_declares_dolt_owned_versioning() -> None:
 def test_schema_install_fails_before_engine_or_ddl_when_profile_is_rejected(
     monkeypatch,
 ) -> None:
-    def reject_profile(_database_url):
+    def reject_profile(_database_url, **_kwargs):
         raise openstatspec.UnsupportedOperationError("Dolt declaration mismatch")
 
     def unexpected_engine(_database_url):
@@ -528,3 +528,47 @@ def test_schema_install_fails_before_engine_or_ddl_when_profile_is_rejected(
         inplace_transform.install_in_place_transformation_schema(
             database_url="mysql+pymysql://user@host/database",
         )
+
+def test_schema_install_forwards_explicit_dolt_conformance_source(
+    monkeypatch,
+) -> None:
+    sentinel = object()
+    captured = []
+
+    def capture_profile(_database_url, *, dolt_conformance_source):
+        captured.append(dolt_conformance_source)
+        raise openstatspec.UnsupportedOperationError("stop after gate")
+
+    monkeypatch.setattr(inplace_transform, "effective_profile", capture_profile)
+
+    with pytest.raises(openstatspec.UnsupportedOperationError, match="stop after gate"):
+        inplace_transform.install_in_place_transformation_schema(
+            database_url="mysql+pymysql://user@host/database",
+            dolt_conformance_source=sentinel,
+        )
+
+    assert captured == [sentinel]
+
+
+def test_plan_apply_forwards_explicit_dolt_conformance_source(monkeypatch) -> None:
+    sentinel = object()
+    captured = []
+
+    def capture_submission(**kwargs):
+        captured.append(kwargs["dolt_conformance_source"])
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        inplace_transform, "_run_in_place_submission", capture_submission,
+    )
+
+    result = inplace_transform.apply_transformation_plan_in_place(
+        database_url="sqlite://",
+        dataset_id="synthetic",
+        plan=_plan("RECODE score (1 = 2)."),
+        actor="test-agent",
+        dolt_conformance_source=sentinel,
+    )
+
+    assert result == {"ok": True}
+    assert captured == [sentinel]
