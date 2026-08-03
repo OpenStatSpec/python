@@ -280,7 +280,8 @@ def test_dolt_identity_is_exact_and_publishes_wire_and_product_versions(monkeypa
     active = active_connection("mysql+pymysql://user@host/database")
 
     assert active["dialect"] == "mysql"
-    assert active["profile"] == active["product"] == "dolt"
+    assert active["profile"] == "dolt"
+    assert active["product"] == "Dolt"
     assert active["raw_wire_version"] == "8.0.31"
     assert active["raw_product_version"] == active["raw_server_version"] == "2.2.3"
     assert active["raw_version_comment"] == "dOlT"
