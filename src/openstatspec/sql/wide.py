@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import delete, BigInteger, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
 from sqlalchemy.dialects import mysql
+from sqlalchemy.engine import make_url
 from ..core import UnsupportedOperationError, safe_error_identity as _safe_error_identity
 from .capabilities import (
     active_connection, dolt_operational_write_enabled, effective_profile,
@@ -1226,9 +1227,11 @@ def _catalog_missing_columns(
 
 def _catalog_missing_columns_are_migratable(
     missing: Mapping[str, set[str]],
+    *, allowed: Mapping[str, set[str]] | None = None,
 ) -> bool:
+    allowed_columns = _MIGRATABLE_CATALOG_COLUMNS if allowed is None else allowed
     return bool(missing) and all(
-        columns <= _MIGRATABLE_CATALOG_COLUMNS.get(table_name, set())
+        columns <= allowed_columns.get(table_name, set())
         for table_name, columns in missing.items()
     )
 
@@ -1353,7 +1356,10 @@ def _catalog_dataset_bijection_state(
     return "valid" if set(legacy_rows) == set(normative_rows) else "unverified"
 
 
-def _catalog_state(connection: Any, normative: Any, legacy: Iterable[Table]) -> str:
+def _catalog_state(
+    connection: Any, normative: Any, legacy: Iterable[Table],
+    *, allowed_migrations: Mapping[str, set[str]] | None = None,
+) -> str:
     inspector = inspect(connection)
     existing_tables = set(inspector.get_table_names())
     existing_views = set(inspector.get_view_names())
@@ -1408,7 +1414,9 @@ def _catalog_state(connection: Any, normative: Any, legacy: Iterable[Table]) -> 
     if missing_columns:
         return (
             "migration_required"
-            if _catalog_missing_columns_are_migratable(missing_columns)
+            if _catalog_missing_columns_are_migratable(
+                missing_columns, allowed=allowed_migrations,
+            )
             else "unverified"
         )
     mapping_state = _catalog_dataset_bijection_state(
@@ -1421,19 +1429,32 @@ def _catalog_state(connection: Any, normative: Any, legacy: Iterable[Table]) -> 
 
 def _require_verified_catalog(
     connection: Any, normative: Any, legacy: Iterable[Table],
+    *, allowed_migrations: Mapping[str, set[str]] | None = None,
 ) -> None:
-    state = _catalog_state(connection, normative, legacy)
-    if state != "verified":
+    state = _catalog_state(
+        connection, normative, legacy, allowed_migrations=allowed_migrations,
+    )
+    accepted_states = (
+        {"verified", "migration_required"}
+        if allowed_migrations is not None
+        else {"verified"}
+    )
+    if state not in accepted_states:
         raise UnsupportedOperationError(
             f"The selected OpenStatSpec catalog is {state}; run explicit catalog initialization first."
         )
 
 
-def require_verified_catalog(connection: Any) -> None:
-    """Require full OpenStatSpec catalog ownership, shape, and dataset bijection."""
+def require_verified_catalog(
+    connection: Any,
+    *, allowed_migrations: Mapping[str, set[str]] | None = None,
+) -> None:
+    """Require catalog ownership, shape, bijection, and only explicit migrations."""
     metadata = MetaData()
     legacy, normative = _catalog_layout(metadata)
-    _require_verified_catalog(connection, normative, legacy)
+    _require_verified_catalog(
+        connection, normative, legacy, allowed_migrations=allowed_migrations,
+    )
 
 
 def _catalog_snapshot(
@@ -1554,6 +1575,14 @@ def initialize_wide_catalog(
 ) -> dict[str, Any]:
     """Install or explicitly migrate a dedicated catalog after server preflight."""
     validate_connection_url(database_url)
+    parsed_url = make_url(database_url)
+    if (
+        parsed_url.get_backend_name() == "sqlite"
+        and parsed_url.database in {None, "", ":memory:"}
+    ):
+        raise UnsupportedOperationError(
+            "Catalog initialization requires a persistent SQLite database URL."
+        )
     profile, active = effective_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
