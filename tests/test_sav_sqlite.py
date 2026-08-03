@@ -7,6 +7,7 @@ import pyspssio
 import pytest
 
 import openstatspec
+import openstatspec.spss.sav as sav_module
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 from openstatspec.core import UnsupportedOperationError
 
@@ -222,3 +223,21 @@ def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix
     frame, metadata = pyspssio.read_sav(str(destination), convert_datetimes=False)
     assert metadata["var_types"]["comment"] == payload_width
     assert frame["comment"].tolist() == [payload, "short"]
+
+def test_export_recovery_preserves_dangling_destination_symlink(tmp_path) -> None:
+    missing_target = tmp_path / "missing-target.sav"
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    destination.symlink_to(missing_target)
+
+    assert sav_module._path_entry_exists(destination) is True
+    destination.replace(backup)
+    destination.write_bytes(b"staged export")
+    sav_module._restore_export_destination(
+        destination=destination,
+        backup=backup,
+        had_previous=True,
+    )
+
+    assert destination.is_symlink()
+    assert destination.readlink() == missing_target
