@@ -579,6 +579,7 @@ def test_in_place_audit_relation_remains_catalog_owned(catalog) -> None:
     dataset = openstatspec.get_dataset(
         database_url=url,
         dataset_id=dataset_id,
+        kind="core",
     )
 
     assert dataset["dataset_id"] == dataset_id
