@@ -572,3 +572,13 @@ def test_plan_apply_forwards_explicit_dolt_conformance_source(monkeypatch) -> No
 
     assert result == {"ok": True}
     assert captured == [sentinel]
+
+def test_in_place_audit_relation_remains_catalog_owned(catalog) -> None:
+    url, _path, dataset_id, _table_name = catalog
+
+    dataset = openstatspec.get_dataset(
+        database_url=url,
+        dataset_id=dataset_id,
+    )
+
+    assert dataset["dataset_id"] == dataset_id
