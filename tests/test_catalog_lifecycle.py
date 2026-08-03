@@ -1,3 +1,4 @@
+from decimal import Decimal
 import sqlite3
 
 import pytest
@@ -214,6 +215,26 @@ def test_cleanup_failure_has_machine_readable_error(tmp_path, monkeypatch):
         "select code, dataset_id from fidelity_event_catalog"
     ).fetchall() == [("cleanup_failed", None)]
     connection.close()
+
+
+def test_database_decimal_numeric_wrappers_are_restored_to_binary64():
+    variables = [{
+        "physical_name": "score",
+        "storage_kind": "numeric",
+    }]
+    rows = wide._canonicalize_database_numeric_rows(
+        [
+            {"score": Decimal("1.5000000000"), "name": "alpha"},
+            {"score": None, "name": "missing"},
+        ],
+        variables,
+    )
+
+    assert rows == [
+        {"score": 1.5, "name": "alpha"},
+        {"score": None, "name": "missing"},
+    ]
+    assert isinstance(rows[0]["score"], float)
 
 
 def test_bounded_batches_never_exceed_statement_payload_limit():
