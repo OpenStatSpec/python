@@ -19,7 +19,10 @@ from .capabilities import (
     active_connection, dolt_operational_write_enabled, effective_profile,
 )
 from .dolt_conformance import DoltConformanceSource
-from .profiles import preflight, statement_payload_bytes, validate_connection_url
+from .profiles import (
+    preflight, preflight_identifier, statement_payload_bytes,
+    validate_connection_url,
+)
 from .normative import (
     binary64_type,
     CATALOG_CONTRACT_ID,
@@ -2410,6 +2413,9 @@ def create_wide_dataset(
         )
         preflight_connection.rollback()
         try:
+            preflight_identifier(
+                profile, data_table.name, role="physical data-table identifier",
+            )
             preflight(profile, variables, rows=source_rows)
             validate_spss_catalog(
                 variables,
