@@ -307,7 +307,9 @@ def statement_payload_bytes(
     size = 32
     for variable in variables:
         if variable.get("storage_kind") == "numeric":
-            size += 8
+            # PyMySQL serializes binary64 parameters as decimal wire text;
+            # the longest finite literal is 24 bytes (including its sign).
+            size += 24
         else:
             value = row.get(str(variable["physical_name"]), "")
             size += len(str(value).encode("utf-8")) + 8

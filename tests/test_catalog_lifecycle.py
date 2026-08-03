@@ -277,6 +277,19 @@ def test_bounded_batches_never_exceed_statement_payload_limit():
     assert batches == [rows[:2], rows[2:]]
 
 
+def test_bounded_batches_budget_numeric_pymysql_wire_literals():
+    variables = [{
+        "source_name": "value",
+        "physical_name": "value",
+        "storage_kind": "numeric",
+    }]
+    rows = [{"value": -1.7976931348623157e+308}] * 2
+
+    assert wide.statement_payload_bytes(rows[0], variables) == 56
+    assert list(_bounded_batches(rows, variables, 111)) == [[rows[0]], [rows[1]]]
+    assert list(_bounded_batches(rows, variables, 112)) == [rows]
+
+
 def test_duplicate_import_failure_preserves_existing_dataset(tmp_path):
     path = tmp_path / "duplicate.sqlite"
     database = f"sqlite:///{path}"
