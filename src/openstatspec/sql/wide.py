@@ -2877,7 +2877,10 @@ def read_fidelity_events(
         _require_verified_catalog(connection, normative, legacy)
         events = connection.execute(
             select(fidelity_event_catalog)
-            .where(fidelity_event_catalog.c.dataset_id == dataset_id)
+            .where(
+                fidelity_event_catalog.c.dataset_id == dataset_id,
+                fidelity_event_catalog.c.direction == "import",
+            )
             .order_by(fidelity_event_catalog.c.code)
         ).mappings().all()
     return tuple({
