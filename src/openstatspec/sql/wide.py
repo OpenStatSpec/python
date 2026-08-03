@@ -1622,6 +1622,36 @@ def dolt_state_snapshot(
     }
 
 
+@contextmanager
+def _catalog_initialization_serialization(
+    connection: Any, *, profile_name: str,
+):
+    """Serialize non-transactional catalog DDL on one database server."""
+    if profile_name not in MYSQL_WIRE_PROFILES:
+        yield
+        return
+    lock_name = "openstatspec.catalog-initialize.v1"
+    acquired = connection.execute(
+        text("SELECT GET_LOCK(:lock_name, 30)"), {"lock_name": lock_name},
+    ).scalar_one()
+    connection.commit()
+    if acquired != 1:
+        raise UnsupportedOperationError(
+            "Could not acquire the catalog initialization lock."
+        )
+    try:
+        yield
+    finally:
+        try:
+            connection.execute(
+                text("SELECT RELEASE_LOCK(:lock_name)"),
+                {"lock_name": lock_name},
+            )
+            connection.commit()
+        except Exception:
+            connection.invalidate()
+
+
 def initialize_wide_catalog(
     *,
     database_url: str,
@@ -1645,48 +1675,99 @@ def initialize_wide_catalog(
     legacy, normative = _catalog_layout(metadata)
     datasets, variables, multiple_response = legacy[:3]
     with engine.connect() as connection:
-        state = _catalog_state(connection, normative, legacy)
-        if state not in {"absent", "verified", "migration_required"}:
-            raise UnsupportedOperationError(
-                f"The selected database catalog is {state}; initialization is not permitted."
-            )
-        before_tables, before_columns = _catalog_snapshot(connection)
-        pre_dolt_state = _capture_dolt_state(
-            connection, profile_name=profile.name, audit_relations=set(),
-        )
-        _require_dolt_working_set_binding(
-            pre_dolt_state, active, phase="catalog initialization preflight",
-        )
-        connection.rollback()
-        try:
-            with connection.begin():
-                create_normative_catalog(connection, normative)
-                metadata.create_all(connection, tables=list(legacy))
-                _migrate_catalog_columns(
-                    connection, datasets, variables, multiple_response,
+        with _catalog_initialization_serialization(
+            connection, profile_name=profile.name,
+        ):
+            state = _catalog_state(connection, normative, legacy)
+            if state not in {"absent", "verified", "migration_required"}:
+                raise UnsupportedOperationError(
+                    f"The selected database catalog is {state}; initialization is not permitted."
                 )
-                _require_verified_catalog(connection, normative, legacy)
-            post_dolt_state = _capture_dolt_state(
+            before_tables, before_columns = _catalog_snapshot(connection)
+            pre_dolt_state = _capture_dolt_state(
                 connection, profile_name=profile.name, audit_relations=set(),
             )
             _require_dolt_working_set_binding(
-                post_dolt_state, active, phase="catalog initialization completion",
+                pre_dolt_state, active, phase="catalog initialization preflight",
             )
-            _require_dolt_success_identity(
-                pre_dolt_state, post_dolt_state, phase="catalog initialization",
-            )
-        except Exception as install_error:
+            connection.rollback()
             try:
                 with connection.begin():
-                    _compensate_catalog_initialization(
-                        connection, metadata=metadata, before_tables=before_tables,
-                        before_columns=before_columns, normative=normative,
-                        legacy=legacy,
+                    create_normative_catalog(connection, normative)
+                    metadata.create_all(connection, tables=list(legacy))
+                    _migrate_catalog_columns(
+                        connection, datasets, variables, multiple_response,
                     )
-            except Exception as cleanup_error:
-                inventory = _catalog_residual_inventory(
-                    engine, before_tables=before_tables, before_columns=before_columns,
+                    _require_verified_catalog(connection, normative, legacy)
+                post_dolt_state = _capture_dolt_state(
+                    connection, profile_name=profile.name, audit_relations=set(),
                 )
+                _require_dolt_working_set_binding(
+                    post_dolt_state, active, phase="catalog initialization completion",
+                )
+                _require_dolt_success_identity(
+                    pre_dolt_state, post_dolt_state, phase="catalog initialization",
+                )
+            except Exception as install_error:
+                try:
+                    with connection.begin():
+                        _compensate_catalog_initialization(
+                            connection, metadata=metadata, before_tables=before_tables,
+                            before_columns=before_columns, normative=normative,
+                            legacy=legacy,
+                        )
+                except Exception as cleanup_error:
+                    inventory = _catalog_residual_inventory(
+                        engine, before_tables=before_tables, before_columns=before_columns,
+                    )
+                    try:
+                        after_dolt_state = _capture_dolt_state(
+                            connection, profile_name=profile.name, audit_relations=set(),
+                        )
+                        dolt_boundary = _dolt_failure_boundary_evidence(
+                            pre_dolt_state, after_dolt_state,
+                        )
+                    except Exception as snapshot_error:
+                        dolt_boundary = {
+                            "applicable": profile.name == "dolt",
+                            "verified": False,
+                            "snapshot_fault": _safe_error_identity(
+                                snapshot_error, phase="post_catalog_cleanup_dolt_state_capture",
+                            ),
+                        }
+                    raise ImportRecoveryError(
+                        "cleanup_failed",
+                        "Catalog initialization failed and its DDL compensation also failed.",
+                        details={
+                            "subcode": "catalog_install_cleanup_failed",
+                            "original_cause": _safe_error_identity(
+                                install_error, phase="catalog_initialization",
+                            ),
+                            "cleanup_fault": _safe_error_identity(
+                                cleanup_error, phase="catalog_compensation",
+                            ),
+                            "residual_object_inventory": inventory,
+                            "deterministic_recovery_evidence": {
+                                "procedure_id": "openstatspec.catalog-init-compensation.v1",
+                                "action_id": _canonical_sha256({
+                                    "namespace": active["catalog_binding"]["namespace"],
+                                    "before_tables": sorted(before_tables),
+                                }),
+                                "targets": {
+                                    "namespace": active["catalog_binding"]["namespace"],
+                                    "catalog_relations": sorted(
+                                        table.name for table in metadata.tables.values()
+                                    ),
+                                },
+                                "residual_inventory_sha256": _canonical_sha256(inventory),
+                                "cleanup_attempted": True,
+                                "cleanup_succeeded": False,
+                                "preexisting_unverified_catalog_mutation_forbidden": True,
+                                "dolt_failure_boundary": dolt_boundary,
+                            },
+                            "success_forbidden": True,
+                        },
+                    ) from cleanup_error
                 try:
                     after_dolt_state = _capture_dolt_state(
                         connection, profile_name=profile.name, audit_relations=set(),
@@ -1695,125 +1776,77 @@ def initialize_wide_catalog(
                         pre_dolt_state, after_dolt_state,
                     )
                 except Exception as snapshot_error:
-                    dolt_boundary = {
-                        "applicable": profile.name == "dolt",
-                        "verified": False,
-                        "snapshot_fault": _safe_error_identity(
-                            snapshot_error, phase="post_catalog_cleanup_dolt_state_capture",
-                        ),
-                    }
-                raise ImportRecoveryError(
-                    "cleanup_failed",
-                    "Catalog initialization failed and its DDL compensation also failed.",
-                    details={
-                        "subcode": "catalog_install_cleanup_failed",
-                        "original_cause": _safe_error_identity(
-                            install_error, phase="catalog_initialization",
-                        ),
-                        "cleanup_fault": _safe_error_identity(
-                            cleanup_error, phase="catalog_compensation",
-                        ),
-                        "residual_object_inventory": inventory,
-                        "deterministic_recovery_evidence": {
-                            "procedure_id": "openstatspec.catalog-init-compensation.v1",
-                            "action_id": _canonical_sha256({
-                                "namespace": active["catalog_binding"]["namespace"],
-                                "before_tables": sorted(before_tables),
-                            }),
-                            "targets": {
-                                "namespace": active["catalog_binding"]["namespace"],
-                                "catalog_relations": sorted(
-                                    table.name for table in metadata.tables.values()
-                                ),
-                            },
-                            "residual_inventory_sha256": _canonical_sha256(inventory),
-                            "cleanup_attempted": True,
-                            "cleanup_succeeded": False,
-                            "preexisting_unverified_catalog_mutation_forbidden": True,
-                            "dolt_failure_boundary": dolt_boundary,
+                    inventory = _catalog_residual_inventory(
+                        engine, before_tables=before_tables, before_columns=before_columns,
+                    )
+                    recovery = {
+                        "procedure_id": "openstatspec.dolt-failure-boundary.v1",
+                        "action_id": _canonical_sha256({
+                            "namespace": active["catalog_binding"]["namespace"],
+                            "before_tables": sorted(before_tables),
+                        }),
+                        "targets": {
+                            "namespace": active["catalog_binding"]["namespace"],
+                            "catalog_relations": sorted(metadata.tables),
                         },
-                        "success_forbidden": True,
-                    },
-                ) from cleanup_error
-            try:
-                after_dolt_state = _capture_dolt_state(
-                    connection, profile_name=profile.name, audit_relations=set(),
-                )
-                dolt_boundary = _dolt_failure_boundary_evidence(
-                    pre_dolt_state, after_dolt_state,
-                )
-            except Exception as snapshot_error:
-                inventory = _catalog_residual_inventory(
-                    engine, before_tables=before_tables, before_columns=before_columns,
-                )
-                recovery = {
-                    "procedure_id": "openstatspec.dolt-failure-boundary.v1",
-                    "action_id": _canonical_sha256({
-                        "namespace": active["catalog_binding"]["namespace"],
-                        "before_tables": sorted(before_tables),
-                    }),
-                    "targets": {
-                        "namespace": active["catalog_binding"]["namespace"],
-                        "catalog_relations": sorted(metadata.tables),
-                    },
-                    "residual_inventory_sha256": _canonical_sha256(inventory),
-                    "dolt_failure_boundary": {
-                        "applicable": profile.name == "dolt",
-                        "verified": False,
-                    },
-                }
-                raise ImportRecoveryError(
-                    "cleanup_failed",
-                    "Catalog compensation completed but Dolt state could not be verified.",
-                    details={
-                        "subcode": "dolt_state_capture_failed",
-                        "original_cause": _safe_error_identity(
-                            install_error, phase="catalog_initialization",
-                        ),
-                        "cleanup_fault": _safe_error_identity(
-                            snapshot_error, phase="post_catalog_cleanup_dolt_state_capture",
-                        ),
-                        "residual_object_inventory": inventory,
-                        "deterministic_recovery_evidence": recovery,
-                        "success_forbidden": True,
-                    },
-                ) from snapshot_error
-            if dolt_boundary.get("applicable") and not dolt_boundary.get("verified"):
-                inventory = _catalog_residual_inventory(
-                    engine, before_tables=before_tables, before_columns=before_columns,
-                )
-                recovery = {
-                    "procedure_id": "openstatspec.dolt-failure-boundary.v1",
-                    "action_id": _canonical_sha256({
-                        "namespace": active["catalog_binding"]["namespace"],
-                        "before_tables": sorted(before_tables),
-                    }),
-                    "targets": {
-                        "namespace": active["catalog_binding"]["namespace"],
-                        "catalog_relations": sorted(metadata.tables),
-                    },
-                    "residual_inventory_sha256": _canonical_sha256(inventory),
-                    "dolt_failure_boundary": dolt_boundary,
-                }
-                raise ImportRecoveryError(
-                    "cleanup_failed",
-                    "Catalog compensation did not preserve Dolt failure-boundary invariants.",
-                    details={
-                        "subcode": "dolt_state_invariant_failed",
-                        "original_cause": _safe_error_identity(
-                            install_error, phase="catalog_initialization",
-                        ),
-                        "cleanup_fault": _verification_fault_identity(
-                            "dolt_state_invariant_failed",
-                            phase="post_catalog_cleanup_dolt_state_verification",
-                            evidence=dolt_boundary,
-                        ),
-                        "residual_object_inventory": inventory,
-                        "deterministic_recovery_evidence": recovery,
-                        "success_forbidden": True,
-                    },
-                ) from install_error
-            raise
+                        "residual_inventory_sha256": _canonical_sha256(inventory),
+                        "dolt_failure_boundary": {
+                            "applicable": profile.name == "dolt",
+                            "verified": False,
+                        },
+                    }
+                    raise ImportRecoveryError(
+                        "cleanup_failed",
+                        "Catalog compensation completed but Dolt state could not be verified.",
+                        details={
+                            "subcode": "dolt_state_capture_failed",
+                            "original_cause": _safe_error_identity(
+                                install_error, phase="catalog_initialization",
+                            ),
+                            "cleanup_fault": _safe_error_identity(
+                                snapshot_error, phase="post_catalog_cleanup_dolt_state_capture",
+                            ),
+                            "residual_object_inventory": inventory,
+                            "deterministic_recovery_evidence": recovery,
+                            "success_forbidden": True,
+                        },
+                    ) from snapshot_error
+                if dolt_boundary.get("applicable") and not dolt_boundary.get("verified"):
+                    inventory = _catalog_residual_inventory(
+                        engine, before_tables=before_tables, before_columns=before_columns,
+                    )
+                    recovery = {
+                        "procedure_id": "openstatspec.dolt-failure-boundary.v1",
+                        "action_id": _canonical_sha256({
+                            "namespace": active["catalog_binding"]["namespace"],
+                            "before_tables": sorted(before_tables),
+                        }),
+                        "targets": {
+                            "namespace": active["catalog_binding"]["namespace"],
+                            "catalog_relations": sorted(metadata.tables),
+                        },
+                        "residual_inventory_sha256": _canonical_sha256(inventory),
+                        "dolt_failure_boundary": dolt_boundary,
+                    }
+                    raise ImportRecoveryError(
+                        "cleanup_failed",
+                        "Catalog compensation did not preserve Dolt failure-boundary invariants.",
+                        details={
+                            "subcode": "dolt_state_invariant_failed",
+                            "original_cause": _safe_error_identity(
+                                install_error, phase="catalog_initialization",
+                            ),
+                            "cleanup_fault": _verification_fault_identity(
+                                "dolt_state_invariant_failed",
+                                phase="post_catalog_cleanup_dolt_state_verification",
+                                evidence=dolt_boundary,
+                            ),
+                            "residual_object_inventory": inventory,
+                            "deterministic_recovery_evidence": recovery,
+                            "success_forbidden": True,
+                        },
+                    ) from install_error
+                raise
     return {
         "profile": profile.name,
         "server_version": active["server_version"],
