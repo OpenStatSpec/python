@@ -448,6 +448,77 @@ def test_strict_plan_loader_rejects_runtime_type_confusion() -> None:
     assert caught.value.code == "invalid_transformation_plan"
 
 
+def test_strict_plan_loader_rejects_unhashable_enum_values() -> None:
+    typed_value = TypedValue.binary64(1).as_dict()
+    literal = {"kind": "literal", "value": typed_value}
+    variable = {"kind": "variable", "variable": "q1"}
+    comparison = {
+        "expression": "comparison",
+        "left": variable,
+        "operator": "=",
+        "right": literal,
+    }
+    invalid_operations = [
+        {
+            "op": "conditional_assign",
+            "condition": {**comparison, "operator": []},
+            "target": "q1",
+            "value": literal,
+        },
+        {
+            "op": "conditional_assign",
+            "condition": {
+                "expression": "boolean",
+                "operator": {},
+                "operands": [comparison, comparison],
+            },
+            "target": "q1",
+            "value": literal,
+        },
+        {
+            "op": "assign",
+            "target": "q2",
+            "target_mode": [],
+            "value": literal,
+        },
+        {
+            "op": "set_measurement_level",
+            "variable": "q1",
+            "level": {},
+        },
+        {
+            "op": "recode",
+            "source": "q1",
+            "target": "q2",
+            "target_mode": [],
+            "rules": [{
+                "match": {"kind": "values", "values": [typed_value]},
+                "result": {"kind": "literal", "value": typed_value},
+            }],
+            "unmatched": {"kind": "copy"},
+        },
+    ]
+
+    raw_plans = [
+        {
+            "contract": "openstatspec-transformation-plan-v0.2",
+            "input_alias": "parent",
+            "operations": [operation],
+        }
+        for operation in invalid_operations
+    ]
+    raw_plans.append({
+        "contract": [],
+        "input_alias": "parent",
+        "operations": [{"op": "execute"}],
+    })
+
+    for raw in raw_plans:
+        with pytest.raises(TransformationFrontendError) as caught:
+            transformation_plan_from_dict(raw)
+        assert caught.value.code == "invalid_transformation_plan"
+
+
 def test_v02_plan_and_schema_reject_decimal_format_that_cannot_fit() -> None:
     raw = {
         "contract": "openstatspec-transformation-plan-v0.2",
