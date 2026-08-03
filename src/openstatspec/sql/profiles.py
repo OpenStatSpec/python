@@ -225,16 +225,11 @@ def preflight(
                         )
                 if value is not None and not math.isfinite(float(value)):
                     raise _exceeded(
-                        "numeric_value_not_finite",
+                        "nonfinite_numeric_value",
                         f"row {row_ordinal} value for {variable['source_name']!r} "
                         "is not finite; non-finite adapter inputs are rejected.",
                         row_ordinal=row_ordinal,
                         source_name=variable["source_name"],
-                        classification=(
-                            "nan" if math.isnan(float(value))
-                            else "positive_infinity" if float(value) > 0
-                            else "negative_infinity"
-                        ),
                     )
                 row_bytes += 8
                 continue
