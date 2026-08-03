@@ -508,14 +508,15 @@ def test_capability_declares_dolt_owned_versioning() -> None:
     assert declaration["openstatspec_rollback_or_version_history"] is False
     assert declaration["performs_dolt_commit"] is False
 
-def test_postgresql_rollback_skips_unlocked_compensation(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("profile_name", ["sqlite", "postgresql"])
+def test_transactional_ddl_rollback_skips_unlocked_compensation(
+    tmp_path, monkeypatch, profile_name,
 ) -> None:
-    database_url = f"sqlite:///{tmp_path / 'postgres-rollback.sqlite'}"
+    database_url = f"sqlite:///{tmp_path / 'transactional-rollback.sqlite'}"
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="postgresql"), {}),
+        lambda _url: (SimpleNamespace(name=profile_name), {}),
     )
 
     def fail_after_schema_change(
@@ -531,7 +532,7 @@ def test_postgresql_rollback_skips_unlocked_compensation(
         inplace_transform,
         "_compensate_failed_apply",
         lambda *_args, **_kwargs: pytest.fail(
-            "PostgreSQL rollback must not run unlocked compensation"
+            "Transactional rollback must not run unlocked compensation"
         ),
     )
 
