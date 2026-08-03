@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -48,9 +49,12 @@ def _replace_expected_member_tokens(
     updated = []
     for payload in payloads:
         for old_name, new_name in replacements.items():
-            old = old_name.encode("ascii")
-            assert payload.count(old) <= 1
-            payload = payload.replace(old, new_name.encode("ascii"))
+            pattern = rb"(?i)(?<!\S)" + re.escape(old_name.encode("ascii")) + rb"(?!\S)"
+            matches = list(re.finditer(pattern, payload))
+            assert len(matches) <= 1
+            if matches:
+                match = matches[0]
+                payload = payload[:match.start()] + new_name.encode("ascii") + payload[match.end():]
         updated.append(payload)
     return tuple(updated)
 
@@ -89,8 +93,12 @@ def _replace_reference_payload_bytes(
     assert len(matches) == 1
     record = matches[0]
     payload = bytes(data[record.start + 16 : record.end])
-    assert payload.count(old) == 1
-    data[record.start + 16 : record.end] = payload.replace(old, new, 1)
+    matches = list(re.finditer(re.escape(old), payload, flags=re.IGNORECASE))
+    assert len(matches) == 1
+    match = matches[0]
+    data[record.start + 16 : record.end] = (
+        payload[:match.start()] + new + payload[match.end():]
+    )
     path.write_bytes(data)
 
 
@@ -500,7 +508,7 @@ def test_unknown_subtype_19_member_fails_without_source_change(
     )
     original = source.read_bytes()
 
-    with pytest.raises(RawDictionaryError, match="references unknown compatible variable"):
+    with pytest.raises(RawDictionaryError, match="references unknown variable"):
         write_compatible_names(
             source, {source_names[1]: "MEMBER2"}, encoding="UTF-8",
         )
@@ -526,7 +534,7 @@ def test_combined_zsav_reference_rewrite_preserves_offsets_and_semantics(
         for name in text_names:
             writer._add_var(name, 8)  # pylint: disable=protected-access
         writer._add_var(vls_name, 300)  # pylint: disable=protected-access
-        writer.var_sets = {"All analysis variables": all_names}
+        writer.var_sets = {"Analysis": all_names}
         writer.mrsets = {
             "$categories": {"label": "Categories", "variable_list": numeric_names[:2]},
             "$dichotomies": {
@@ -696,7 +704,7 @@ def test_legacy_source_unicode_export_uses_actual_output_encoding_for_raw_rewrit
     source = tmp_path / "legacy-source.sav"
     destination = tmp_path / "unicode-output.sav"
     database = f"sqlite:///{tmp_path / 'legacy-to-unicode.sqlite'}"
-    source_names = ["küsimuse_pikk_nimi", "teine_pikk_nimi"]
+    source_names = ["kusimuse_pikk_nimi", "teine_pikk_nimi"]
     mr_label = "Mitmikvalik – küsimus"
     frame = pd.DataFrame({source_names[0]: [1.0, 0.0], source_names[1]: [0.0, 1.0]})
     pyspssio.write_sav(

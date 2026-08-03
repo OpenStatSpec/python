@@ -266,18 +266,6 @@ def preflight(
                     row_ordinal=row_ordinal, source_name=variable["source_name"],
                     encoded_bytes=encoded_bytes, maximum=profile.max_text_value_bytes,
                 )
-            declared_width = variable.get("string_width")
-            if declared_width is not None and encoded_bytes > declared_width:
-                raise _exceeded(
-                    "text_value_declared_width",
-                    f"row {row_ordinal} value for {variable['source_name']!r} is "
-                    f"{encoded_bytes} UTF-8 bytes; its declared SPSS width is "
-                    f"{declared_width}.",
-                    row_ordinal=row_ordinal,
-                    source_name=variable["source_name"],
-                    encoded_bytes=encoded_bytes,
-                    string_width=declared_width,
-                )
             row_bytes += 20 if profile.name in MYSQL_WIRE_PROFILES else encoded_bytes
         if profile.max_row_bytes is not None and row_bytes > profile.max_row_bytes:
             raise _exceeded(

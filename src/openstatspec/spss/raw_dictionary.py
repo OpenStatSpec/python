@@ -176,6 +176,7 @@ def write_compatible_names(
         encoding=encoding,
         compatible_replacements=replacements,
         known_compatible_names=[name for _record, name in primary_variables],
+        known_long_names=[long_name for _short_name, long_name in pairs],
     )
     record_replacements.update(reference_replacements)
 
@@ -419,9 +420,39 @@ def _assert_dictionary_semantics(
         raise RawDictionaryError("Multiple-response Reader readback changed semantics.")
 
 
+def _rewrite_reference_member(
+    raw_member: bytes,
+    *,
+    subtype: int,
+    encoding: str,
+    known_compatible: dict[str, str],
+    known_long: dict[str, str],
+    encoded_replacements: dict[str, bytes],
+) -> bytes:
+    try:
+        compatible = raw_member.decode("ascii")
+        _validated_compatible_name(compatible)
+    except (UnicodeDecodeError, RawDictionaryError):
+        compatible = None
+    if compatible is not None and compatible.casefold() in known_compatible:
+        return encoded_replacements.get(compatible.casefold(), raw_member)
+    try:
+        long_name = raw_member.decode(encoding)
+    except UnicodeDecodeError as error:
+        raise RawDictionaryError(
+            f"Invalid subtype-{subtype} variable member token."
+        ) from error
+    if long_name.casefold() in known_long:
+        return raw_member
+    raise RawDictionaryError(
+        f"Subtype-{subtype} references unknown variable {long_name!r}."
+    )
+
+
 def _rewrite_reference_records(
     data: bytes, *, byte_order: str, records: list[_Record], encoding: str,
     compatible_replacements: dict[str, str], known_compatible_names: Iterable[str],
+    known_long_names: Iterable[str],
 ) -> tuple[dict[int, bytes], dict[int, tuple[bytes, ...]]]:
     known_names = list(known_compatible_names)
     _require_unique_names(known_names, "reference-compatible variable")
@@ -429,6 +460,9 @@ def _rewrite_reference_records(
     encoded_replacements = {
         key: value.encode("ascii") for key, value in compatible_replacements.items()
     }
+    long_names = list(known_long_names)
+    _require_unique_names(long_names, "reference long variable")
+    known_long = {name.casefold(): name for name in long_names}
     replacements: dict[int, bytes] = {}
     expected: dict[int, list[bytes]] = {5: [], 7: [], 19: []}
     seen_variable_sets: dict[str, str] = {}
@@ -463,19 +497,14 @@ def _rewrite_reference_records(
             seen[set_key] = set_name
             members: list[bytes] = []
             for raw_member in parsed.members:
-                try:
-                    member = raw_member.decode("ascii")
-                    _validated_compatible_name(member)
-                except (UnicodeDecodeError, RawDictionaryError) as error:
-                    raise RawDictionaryError(
-                        f"Invalid subtype-{subtype} compatible member token."
-                    ) from error
-                member_key = member.casefold()
-                if member_key not in known:
-                    raise RawDictionaryError(
-                        f"Subtype-{subtype} references unknown compatible variable {member!r}."
-                    )
-                members.append(encoded_replacements.get(member_key, raw_member))
+                members.append(_rewrite_reference_member(
+                    raw_member,
+                    subtype=subtype,
+                    encoding=encoding,
+                    known_compatible=known,
+                    known_long=known_long,
+                    encoded_replacements=encoded_replacements,
+                ))
             updated_lines.append(_ReferenceLine(
                 set_name=parsed.set_name,
                 segments=parsed.segments,
@@ -648,7 +677,7 @@ def _very_long_string_entries(
     return _very_long_string_pairs(payload), True
 
 def _very_long_string_pairs(payload: bytes) -> list[tuple[str, bytes]]:
-    if not payload or not payload.endswith(b"\x00	"):
+    if not payload or not payload.endswith(b"	"):
         raise RawDictionaryError("Invalid SAV very-long-string record terminator.")
     raw_pairs = payload.split(b"	")
     if raw_pairs[-1] != b"":
@@ -722,6 +751,7 @@ def _assert_compatible_name_rewrite(
         encoding=encoding,
         compatible_replacements={},
         known_compatible_names=expected_primary_names,
+        known_long_names=[long_name for _short_name, long_name in pairs],
     )
     if observed_reference_payloads != expected_reference_payloads:
         raise RawDictionaryError(
@@ -844,7 +874,7 @@ def _document_record(lines: Iterable[str], *, encoding: str, byte_order: str) ->
 
 
 def _records(data: bytes) -> tuple[str, list[_Record]]:
-    if len(data) < _HEADER_SIZE or data[:4] not in {b"$FL2", b"$FL3"}:
+    if len(data) < _HEADER_SIZE or bytes(data[:4]) not in {b"$FL2", b"$FL3"}:
         raise RawDictionaryError("Not a supported SAV or ZSAV system file.")
     byte_order = _byte_order(data)
     offset = _HEADER_SIZE
