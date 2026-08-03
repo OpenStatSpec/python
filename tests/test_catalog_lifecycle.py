@@ -184,6 +184,11 @@ def test_cleanup_failure_has_machine_readable_error(tmp_path, monkeypatch):
     def fail_mutation(*_args, **_kwargs):
         raise RuntimeError("injected mutation failure")
 
+    # Exercise the non-transactional MySQL-wire compensation path while
+    # retaining SQLite as the dependency-free test transport.
+    monkeypatch.setattr(
+        wide, "effective_profile", lambda _url, **_kwargs: (MYSQL, {}),
+    )
     monkeypatch.setattr(wide, "_cleanup_import_state", fail_cleanup)
     monkeypatch.setattr(wide, "store_normative_dataset", fail_mutation)
     with pytest.raises(ImportRecoveryError) as error:
