@@ -162,11 +162,19 @@ def test_validate_wide_dataset_propagates_explicit_source(
 ) -> None:
     sentinel = object()
     calls: list[object] = []
+    profile_calls: list[object] = []
+
+    def capture_effective_profile(
+        _database_url: str, *, dolt_conformance_source: object,
+    ) -> tuple[object, dict[str, object]]:
+        profile_calls.append(dolt_conformance_source)
+        return object(), {}
 
     def stop_after_read_preflight(**kwargs: object) -> tuple[object, object, object]:
         calls.append(kwargs["dolt_conformance_source"])
         raise UnsupportedOperationError("stop after propagation check")
 
+    monkeypatch.setattr(wide, "effective_profile", capture_effective_profile)
     monkeypatch.setattr(wide, "read_wide_dataset", stop_after_read_preflight)
     with pytest.raises(UnsupportedOperationError, match="propagation check"):
         wide.validate_wide_dataset(
@@ -174,6 +182,7 @@ def test_validate_wide_dataset_propagates_explicit_source(
             dataset_id="synthetic",
             dolt_conformance_source=sentinel,
         )
+    assert profile_calls == [sentinel]
     assert calls == [sentinel]
 
 
