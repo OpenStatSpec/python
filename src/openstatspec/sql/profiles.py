@@ -57,7 +57,7 @@ POSTGRESQL = SqlProfile(
 )
 MYSQL = SqlProfile(
     "mysql", ("mysql", "mariadb"), 1_016, 64, True, True,
-    4_294_967_295, 65_535, True, ("PyMySQL",),
+    65_535, 65_535, True, ("PyMySQL",),
 )
 DOLT = SqlProfile(
     "dolt", (), 305, 64, True, True,
