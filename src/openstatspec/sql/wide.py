@@ -284,11 +284,6 @@ def _bound_catalog_transaction(
             audit_relations=audit_relations,
         )
         _require_dolt_working_set_binding(before, active, phase=f"{phase} preflight")
-        if profile_name == "dolt":
-            raise UnsupportedOperationError(
-                "Dolt audit-only mutation is blocked until operation-scoped "
-                "append/update and immutable-history evidence is implemented."
-            )
         connection.rollback()
         with connection.begin():
             yield connection
