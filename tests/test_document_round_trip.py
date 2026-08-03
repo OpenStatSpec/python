@@ -25,6 +25,7 @@ def test_document_lines_round_trip_through_sqlite(destination_suffix: str, tmp_p
     source = tmp_path / "source.sav"
     destination = tmp_path / f"destination{destination_suffix}"
     database = f"sqlite:///{tmp_path / 'documents.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     expected = ["Imported from a validated source.", "A second document line."]
     _source_with_documents(source, expected)
 
@@ -61,6 +62,7 @@ def test_document_lines_import_from_zsav_and_export_to_sav(tmp_path: Path) -> No
     source = tmp_path / "source.zsav"
     destination = tmp_path / "destination.sav"
     database = f"sqlite:///{tmp_path / 'documents.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     expected = ["ZSAV document line."]
     _zsav_with_documents(source, expected, tmp_path / "temporary.sav")
 
@@ -77,6 +79,7 @@ def test_document_and_compatible_name_round_trip_to_zsav(tmp_path: Path) -> None
     source = tmp_path / "source.sav"
     destination = tmp_path / "destination.zsav"
     database = f"sqlite:///{tmp_path / 'combined.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     source_name = "long_variable_name"
     pyspssio.write_sav(str(source), pd.DataFrame({source_name: [7.0]}))
     write_document_lines(source, ["Combined dictionary fixture."], encoding="UTF-8")
@@ -109,6 +112,7 @@ def test_windows_1252_values_and_documents_round_trip_when_locale_is_available(
     source = tmp_path / "source.sav"
     destination = tmp_path / "destination.zsav"
     database = f"sqlite:///{tmp_path / 'cp1252.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     value = "Müller €"
     documents = ["Töö €"]
     pyspssio.write_sav(
