@@ -1356,6 +1356,52 @@ def _catalog_dataset_bijection_state(
     return "valid" if set(legacy_rows) == set(normative_rows) else "unverified"
 
 
+def _catalog_variable_bijection_state(
+    connection: Any, *, normative: Any, legacy: Iterable[Table],
+) -> str:
+    """Require exact legacy-to-normative variable identity mappings."""
+    variables = tuple(legacy)[1]
+    legacy_rows = [
+        (
+            row["dataset_id"], row["ordinal"], row["source_name"],
+            row["physical_name"],
+        )
+        for row in connection.execute(select(
+            variables.c.dataset_id, variables.c.ordinal,
+            variables.c.source_name, variables.c.physical_name,
+        )).mappings()
+    ]
+    normative_rows = [
+        (
+            row["dataset_name"], row["source_ordinal"], row["source_name"],
+            row["physical_name"],
+        )
+        for row in connection.execute(
+            select(
+                normative.dataset.c.dataset_name,
+                normative.variable.c.source_ordinal,
+                normative.variable.c.source_name,
+                normative.variable.c.physical_name,
+            ).join(
+                normative.variable,
+                normative.variable.c.dataset_id == normative.dataset.c.dataset_id,
+            )
+        ).mappings()
+    ]
+    for rows in (legacy_rows, normative_rows):
+        if any(
+            not isinstance(dataset_name, str) or not dataset_name.strip()
+            or not isinstance(ordinal, int) or ordinal < 1
+            or not isinstance(source_name, str) or not source_name.strip()
+            or not isinstance(physical_name, str) or not physical_name.strip()
+            for dataset_name, ordinal, source_name, physical_name in rows
+        ):
+            return "unverified"
+        if len(set(rows)) != len(rows):
+            return "ambiguous"
+    return "valid" if set(legacy_rows) == set(normative_rows) else "unverified"
+
+
 def _catalog_state(
     connection: Any, normative: Any, legacy: Iterable[Table],
     *, allowed_migrations: Mapping[str, set[str]] | None = None,
@@ -1424,6 +1470,11 @@ def _catalog_state(
     )
     if mapping_state != "valid":
         return mapping_state
+    variable_mapping_state = _catalog_variable_bijection_state(
+        connection, normative=normative, legacy=legacy,
+    )
+    if variable_mapping_state != "valid":
+        return variable_mapping_state
     return "verified"
 
 
@@ -1472,9 +1523,12 @@ def _catalog_snapshot(
 
 def _compensate_catalog_initialization(
     connection: Any, *, metadata: MetaData, before_tables: set[str],
-    before_columns: Mapping[str, set[str]],
+    before_columns: Mapping[str, set[str]], normative: Any,
+    legacy: Iterable[Table],
 ) -> None:
-    """Restore the pre-initialization relation/column inventory after DDL failure."""
+    """Restore only when no concurrent initializer completed the catalog."""
+    if _catalog_state(connection, normative, legacy) == "verified":
+        return
     current_tables = set(inspect(connection).get_table_names())
     for table in reversed(metadata.sorted_tables):
         if table.name in current_tables and table.name not in before_tables:
@@ -1626,7 +1680,8 @@ def initialize_wide_catalog(
                 with connection.begin():
                     _compensate_catalog_initialization(
                         connection, metadata=metadata, before_tables=before_tables,
-                        before_columns=before_columns,
+                        before_columns=before_columns, normative=normative,
+                        legacy=legacy,
                     )
             except Exception as cleanup_error:
                 inventory = _catalog_residual_inventory(
