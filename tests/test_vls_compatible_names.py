@@ -61,6 +61,7 @@ def test_vls_custom_compatible_name_round_trips_as_one_variable(tmp_path, suffix
     source = tmp_path / f"source{suffix}"
     destination = tmp_path / f"destination{suffix}"
     database = f"sqlite:///{tmp_path / f'vls-{suffix[1:]}.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     _write_vls_source(source)
     raw_dictionary.write_compatible_names(
         source, {_SOURCE_NAME: _COMPATIBLE_NAME}, encoding="UTF-8",
@@ -115,6 +116,7 @@ def test_malformed_vls_export_removes_output_and_records_no_success(tmp_path, mo
     destination = tmp_path / "failed.sav"
     database_path = tmp_path / "failed.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     _write_vls_source(source)
     raw_dictionary.write_compatible_names(
         source, {_SOURCE_NAME: _COMPATIBLE_NAME}, encoding="UTF-8",
