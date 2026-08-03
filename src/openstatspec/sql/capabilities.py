@@ -285,7 +285,7 @@ def effective_profile(
         raise UnsupportedOperationError("The active SQL server is not a claimed MySQL-wire product.")
     if (
         active["profile"] == "dolt"
-        and not active["driver_eligible"]
+        and not _dolt_driver_eligible(database_url)
     ):
         raise UnsupportedOperationError(
             "Dolt requires an explicit mysql+pymysql URL."
