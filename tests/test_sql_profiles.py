@@ -545,3 +545,75 @@ def test_wide_string_column_uses_effective_dolt_storage() -> None:
 
     ddl = str(CreateTable(table).compile(dialect=mysql.dialect())).upper()
     assert "VALUE LONGTEXT" in ddl
+
+def test_capability_inspection_reports_unbound_dolt_as_disabled(monkeypatch) -> None:
+    active = {
+        "profile": "dolt",
+        "raw_product_version": "2.2.3",
+        "observed": {"max_allowed_packet": 1_073_741_824},
+    }
+    monkeypatch.setattr(
+        capabilities, "active_connection", lambda _url, **_kwargs: active,
+    )
+
+    declaration = capabilities.profile_declarations(
+        "mysql+pymysql://user@host/database",
+    )["dolt"]
+
+    assert declaration["operational_write_enabled"] is False
+    assert declaration["effective_limits"] is None
+    assert declaration["effective_limits_status"] == (
+        "blocked_pending_pinned_live_conformance"
+    )
+
+
+def test_bound_catalog_transaction_allows_gated_dolt_audit(monkeypatch) -> None:
+    class TransactionConnection:
+        def __init__(self):
+            self.rollback_called = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def rollback(self):
+            self.rollback_called = True
+
+        def begin(self):
+            return self
+
+    class TransactionEngine:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def connect(self):
+            return self.connection
+
+    connection = TransactionConnection()
+    monkeypatch.setattr(
+        wide, "_capture_dolt_state", lambda *_args, **_kwargs: {"profile": "dolt"},
+    )
+    monkeypatch.setattr(
+        wide, "_require_dolt_working_set_binding", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        wide, "_require_dolt_success_identity", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        wide,
+        "_dolt_failure_boundary_evidence",
+        lambda *_args, **_kwargs: {"applicable": False},
+    )
+
+    with wide._bound_catalog_transaction(
+        engine=TransactionEngine(connection),
+        profile_name="dolt",
+        active={"profile": "dolt"},
+        audit_relations={"operation"},
+        phase="test export audit",
+    ) as yielded:
+        assert yielded is connection
+
+    assert connection.rollback_called is True
