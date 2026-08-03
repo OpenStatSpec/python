@@ -1429,6 +1429,13 @@ def _require_verified_catalog(
         )
 
 
+def require_verified_catalog(connection: Any) -> None:
+    """Require full OpenStatSpec catalog ownership, shape, and dataset bijection."""
+    metadata = MetaData()
+    legacy, normative = _catalog_layout(metadata)
+    _require_verified_catalog(connection, normative, legacy)
+
+
 def _catalog_snapshot(
     connection: Any,
 ) -> tuple[set[str], dict[str, set[str]]]:
