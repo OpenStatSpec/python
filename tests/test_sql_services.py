@@ -43,6 +43,7 @@ def test_live_profile_import_validate_and_export(environment_name, dataset_id, s
     database_url = os.environ.get(environment_name)
     if not database_url:
         pytest.skip(f"{environment_name} is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     runtime_dataset_id = f"{dataset_id}_{uuid4().hex[:8]}"
     imported = openstatspec.import_sav(
         source_sav, database_url=database_url, dataset_id=runtime_dataset_id,
@@ -76,6 +77,7 @@ def test_live_profile_preserves_supported_sav_semantics(environment_name, datase
     database_url = os.environ.get(environment_name)
     if not database_url:
         pytest.skip(f"{environment_name} is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     runtime_dataset_id = f"{dataset_id}_{suffix[1:]}_{uuid4().hex[:8]}"
     source = tmp_path / f"{runtime_dataset_id}{suffix}"
     destination = tmp_path / f"{runtime_dataset_id}-roundtrip{suffix}"
@@ -97,6 +99,7 @@ def test_live_dolt_conservative_source_width_envelope(tmp_path) -> None:
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:
         pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     token = uuid4().hex[:8]
     accepted_id = f"dolt_width_accepted_{token}"
     rejected_id = f"dolt_width_rejected_{token}"
@@ -162,6 +165,7 @@ def test_live_dolt_post_ddl_fault_has_complete_compensating_cleanup(
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:
         pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     dataset_id = f"dolt_cleanup_{uuid4().hex[:8]}"
     source = tmp_path / f"{dataset_id}.sav"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
@@ -204,6 +208,7 @@ def test_live_dolt_adapter_value_boundary_is_atomic() -> None:
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:
         pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     token = uuid4().hex[:8]
     accepted_id = f"dolt_value_accepted_{token}"
     rejected_id = f"dolt_value_rejected_{token}"
