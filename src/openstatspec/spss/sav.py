@@ -42,6 +42,7 @@ from ..core import (
     UnsupportedOperationError,
     safe_error_identity as _export_error_identity,
 )
+from ..sql.capabilities import effective_profile
 from ..sql.dolt_conformance import DoltConformanceSource
 from ..sql.wide import (
     create_wide_dataset,
@@ -522,6 +523,9 @@ def export_sav_dataset(
     destination_path = Path(destination)
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
         raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     dataset, variables, rows = read_wide_dataset(
         database_url=database_url, dataset_id=dataset_id,
         dolt_conformance_source=dolt_conformance_source,
