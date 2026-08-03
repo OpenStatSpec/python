@@ -18,7 +18,7 @@ from ..core import UnsupportedOperationError
 
 # Release/build automation must bind this to the exact commit used to build
 # openstatspec-specification. An uncommitted source tree has no truthful pin.
-SPECIFICATION_COMMIT = "28bd6817261d1e55e51bb25076fb93e732ab1c74"
+SPECIFICATION_COMMIT = "e707636180c3aafd64cc60aa274549212d2c05a7"
 SPECIFICATION_RELEASE = "v0.2.0"
 
 DOLT_WRITE_CONFORMANCE = {
