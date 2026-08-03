@@ -7,6 +7,7 @@ from sqlalchemy import Table
 import openstatspec
 import openstatspec.sql.wide as wide
 from openstatspec.core import UnsupportedOperationError
+from openstatspec.sql.profiles import MYSQL, TargetCapabilityExceededError, preflight
 from openstatspec.sql.wide import (
     ImportRecoveryError,
     _bounded_batches,
@@ -235,6 +236,24 @@ def test_database_decimal_numeric_wrappers_are_restored_to_binary64():
         {"score": None, "name": "missing"},
     ]
     assert isinstance(rows[0]["score"], float)
+
+
+@pytest.mark.parametrize(
+    "value", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+)
+def test_database_decimal_nonfinite_wrappers_remain_rejected(value):
+    variables = [{
+        "ordinal": 1,
+        "source_name": "score",
+        "physical_name": "score",
+        "storage_kind": "numeric",
+    }]
+    rows = wide._canonicalize_database_numeric_rows([{"score": value}], variables)
+
+    with pytest.raises(TargetCapabilityExceededError) as error:
+        preflight(MYSQL, variables, rows=rows)
+
+    assert error.value.details["reason"] == "nonfinite_numeric_value"
 
 
 def test_bounded_batches_never_exceed_statement_payload_limit():
