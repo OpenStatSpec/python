@@ -61,6 +61,11 @@ def string_type(profile: Any) -> Text:
     return mysql.LONGTEXT() if profile.name == "dolt" else Text()
 
 
+def _wide_column_type(profile: Any, storage_kind: str) -> Any:
+    """Select the physical value type from the effective SQL profile."""
+    return binary64_type() if storage_kind == "numeric" else string_type(profile)
+
+
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -2398,7 +2403,7 @@ def create_wide_dataset(
             for item in variables:
                 data_table.append_column(Column(
                     item["physical_name"],
-                    binary64_type() if item["storage_kind"] == "numeric" else Text,
+                    _wide_column_type(profile, item["storage_kind"]),
                     nullable=item["storage_kind"] == "numeric",
                 ))
         except Exception as error:
