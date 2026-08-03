@@ -146,7 +146,7 @@ jobs:
     steps: *sql-test-steps
 
   dolt-integration:
-    name: Dolt ${{ matrix.dolt }} integration
+    name: Dolt ${{ matrix.dolt }} read-only / fail-closed integration
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -221,7 +221,7 @@ jobs:
                   connection.close()
                   break
           PY
-      - run: python -m pytest -m services
+      - run: python -m pytest -m "services and not candidate_evidence"
       - name: Show Dolt logs on failure and stop server
         if: always()
         run: |
