@@ -221,6 +221,7 @@ def apply_spss_in_place(
     *, database_url: Any, dataset_id: str, source_text: str,
     actor: str, expected_branch: str | None = None,
     expected_head: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> Mapping[str, Any]:
     """Apply supported SPSS-like syntax to the same SQL dataset/table."""
     return result(_apply_spss_in_place(
@@ -230,6 +231,7 @@ def apply_spss_in_place(
         actor=actor,
         expected_branch=expected_branch,
         expected_head=expected_head,
+        dolt_conformance_source=dolt_conformance_source,
     ))
 
 
@@ -238,6 +240,7 @@ def apply_transformation_plan_in_place(
     plan: TransformationPlan | Mapping[str, Any],
     actor: str, expected_branch: str | None = None,
     expected_head: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> Mapping[str, Any]:
     """Apply a canonical plan to the same logical dataset and physical table."""
     return result(_apply_transformation_plan_in_place(
@@ -247,12 +250,20 @@ def apply_transformation_plan_in_place(
         actor=actor,
         expected_branch=expected_branch,
         expected_head=expected_head,
+        dolt_conformance_source=dolt_conformance_source,
     ))
 
 
-def install_in_place_transformation_schema(*, database_url: Any) -> None:
+def install_in_place_transformation_schema(
+    *,
+    database_url: Any,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> None:
     """Install the compact apply-audit relation before the first apply."""
-    _install_in_place_schema(database_url=str(database_url))
+    _install_in_place_schema(
+        database_url=str(database_url),
+        dolt_conformance_source=dolt_conformance_source,
+    )
 
 
 def validate_derived(*, database_url: Any, derived_dataset_id: str) -> Mapping[str, Any]:
