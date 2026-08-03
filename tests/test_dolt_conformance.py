@@ -120,6 +120,7 @@ def test_effective_profile_requires_bound_spec_commit_before_mutation(
             "observed": {"max_allowed_packet": 1_000_000},
         },
     )
+    monkeypatch.setattr(capability_module, "SPECIFICATION_COMMIT", None)
     assert capability_module.SPECIFICATION_COMMIT is None
     with pytest.raises(UnsupportedOperationError, match="not bound"):
         capability_module.effective_profile(
