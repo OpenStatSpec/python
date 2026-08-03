@@ -61,16 +61,16 @@ def _bound_specification_commit() -> str:
 
 def _active_driver_eligible(database_url: str, profile_name: str) -> bool:
     driver = make_url(database_url).drivername.lower()
-    required = {
-        "postgresql": "postgresql+psycopg",
-        "mysql": "mysql+pymysql",
-        "mariadb": "mariadb+mariadbconnector",
-        "dolt": "mysql+pymysql",
+    eligible = {
+        "postgresql": {"postgresql+psycopg"},
+        "mysql": {"mysql+pymysql", "mariadb+mariadbconnector"},
+        "mariadb": {"mysql+pymysql", "mariadb+mariadbconnector"},
+        "dolt": {"mysql+pymysql"},
     }
     return (
         make_url(database_url).get_backend_name() == "sqlite"
         if profile_name == "sqlite"
-        else driver == required[profile_name]
+        else driver in eligible[profile_name]
     )
 
 
