@@ -583,3 +583,49 @@ def test_in_place_audit_relation_remains_catalog_owned(catalog) -> None:
     )
 
     assert dataset["dataset"]["dataset_id"] == dataset_id
+
+def test_schema_install_requires_initialized_verified_catalog(tmp_path) -> None:
+    path = tmp_path / "empty.sqlite"
+    url = f"sqlite:///{path}"
+
+    with pytest.raises(
+        openstatspec.UnsupportedOperationError,
+        match="explicit catalog initialization",
+    ):
+        openstatspec.install_in_place_transformation_schema(database_url=url)
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall() == []
+
+
+def test_public_apply_rejects_divergent_catalog_before_mutation(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "DELETE FROM dataset_catalog WHERE dataset_id = ?", (dataset_id,)
+    )
+    connection.commit()
+    before = connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall()
+
+    with pytest.raises(
+        openstatspec.UnsupportedOperationError,
+        match="explicit catalog initialization",
+    ):
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="RECODE score (1 = 9).",
+            actor="test-agent",
+        )
+
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == before
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (0,)
+
