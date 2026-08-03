@@ -59,6 +59,10 @@ def _bound_specification_commit() -> str:
     return SPECIFICATION_COMMIT
 
 
+def _dolt_driver_eligible(database_url: str) -> bool:
+    return make_url(database_url).drivername.lower() == "mysql+pymysql"
+
+
 def _dolt_write_enabled(
     source: DoltConformanceSource | None = None,
     *,
@@ -235,6 +239,10 @@ def active_connection(
             if profile_name == "dolt" else None
         ),
         "observed": observed,
+        "driver_eligible": (
+            _dolt_driver_eligible(database_url)
+            if profile_name == "dolt" else True
+        ),
     }
 
 
@@ -270,7 +278,7 @@ def effective_profile(
         raise UnsupportedOperationError("The active SQL server is not a claimed MySQL-wire product.")
     if (
         active["profile"] == "dolt"
-        and make_url(database_url).drivername.lower() != "mysql+pymysql"
+        and not active["driver_eligible"]
     ):
         raise UnsupportedOperationError(
             "Dolt requires an explicit mysql+pymysql URL."
@@ -488,7 +496,7 @@ def _profile(
             }
         ),
         "operational_write_enabled": (
-            dolt_declaration is not None
+            dolt_declaration is not None and bool(active["driver_eligible"])
             if dolt_envelope and active and active["profile"] == name
             else bool((dolt_status or {}).get("write_enabled"))
             if dolt_envelope else True
