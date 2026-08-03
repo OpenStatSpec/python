@@ -508,3 +508,23 @@ def test_capability_declares_dolt_owned_versioning() -> None:
     assert declaration["creates_persistent_data_copy"] is False
     assert declaration["openstatspec_rollback_or_version_history"] is False
     assert declaration["performs_dolt_commit"] is False
+
+def test_schema_install_fails_before_engine_or_ddl_when_profile_is_rejected(
+    monkeypatch,
+) -> None:
+    def reject_profile(_database_url):
+        raise openstatspec.UnsupportedOperationError("Dolt declaration mismatch")
+
+    def unexpected_engine(_database_url):
+        raise AssertionError("engine creation would permit DDL")
+
+    monkeypatch.setattr(inplace_transform, "effective_profile", reject_profile)
+    monkeypatch.setattr(inplace_transform, "create_engine", unexpected_engine)
+
+    with pytest.raises(
+        openstatspec.UnsupportedOperationError,
+        match="Dolt declaration mismatch",
+    ):
+        inplace_transform.install_in_place_transformation_schema(
+            database_url="mysql+pymysql://user@host/database",
+        )
