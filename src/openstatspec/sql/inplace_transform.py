@@ -571,7 +571,14 @@ def install_in_place_transformation_schema(
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
-            require_verified_catalog(connection)
+            require_verified_catalog(
+                connection,
+                allowed_migrations={
+                    "transformation_apply": {
+                        "source_kind", "frontend_contract",
+                    },
+                },
+            )
             apply_audit_catalog(MetaData()).create(connection, checkfirst=True)
             columns = {
                 str(column["name"])
@@ -588,6 +595,7 @@ def install_in_place_transformation_schema(
                         f"ALTER TABLE {quote('transformation_apply')} "
                         f"ADD COLUMN {quote(name)} {sql_type}"
                     )
+            require_verified_catalog(connection)
     finally:
         engine.dispose()
 
