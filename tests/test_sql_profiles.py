@@ -3,7 +3,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import Column, MetaData, Table
+from sqlalchemy import Column, MetaData, Table, Text
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.schema import CreateTable
 
@@ -685,3 +685,14 @@ def test_active_non_dolt_write_flag_requires_version_and_driver(
     )["postgresql"]
 
     assert declaration["operational_write_enabled"] is False
+
+def test_mariadb_accepts_tested_pymysql_driver_for_capability_flag() -> None:
+    assert capabilities._active_driver_eligible(
+        "mysql+pymysql://user@host/database", "mariadb",
+    ) is True
+
+
+def test_dolt_validation_requires_longtext_not_generic_text() -> None:
+    assert wide._valid_wide_string_type(DOLT, mysql.LONGTEXT()) is True
+    assert wide._valid_wide_string_type(DOLT, Text()) is False
+    assert wide._valid_wide_string_type(MYSQL, Text()) is True
