@@ -334,3 +334,40 @@ def test_multiple_catalog_identities_are_ambiguous_and_never_mutated(tmp_path):
     ).fetchall() == before
     assert _table_names(path) == {"catalog_identity"}
     connection.close()
+
+
+@pytest.mark.parametrize(
+    ("reflected", "expected"),
+    [
+        (
+            "((contract_id)::text = "
+            "'openstatspec-strict-wide-table-v1'::text)",
+            "contract_id = 'openstatspec-strict-wide-table-v1'",
+        ),
+        (
+            "(`contract_id` = _utf8mb4'openstatspec-strict-wide-table-v1')",
+            "contract_id = 'openstatspec-strict-wide-table-v1'",
+        ),
+        ("((catalog_identity_key)::integer = 1)", "catalog_identity_key = 1"),
+    ],
+)
+def test_reflected_check_normalization_removes_only_noop_dialect_syntax(
+    reflected, expected,
+):
+    assert wide._normalized_check_sql(reflected) == expected
+
+
+def test_reflected_mysql_integer_display_width_is_not_semantic():
+    from types import SimpleNamespace
+    from sqlalchemy.dialects import mysql
+
+    inspector = SimpleNamespace(bind=SimpleNamespace(dialect=mysql.dialect()))
+    assert wide._normalized_sql_type(
+        inspector, mysql.INTEGER(display_width=11),
+    ) == "INTEGER"
+    assert wide._normalized_sql_type(
+        inspector, mysql.BIGINT(display_width=20),
+    ) == "BIGINT"
+    assert wide._normalized_sql_type(
+        inspector, mysql.VARCHAR(length=255),
+    ) == "VARCHAR(255)"
