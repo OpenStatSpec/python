@@ -15,7 +15,9 @@ from typing import Any
 from sqlalchemy import delete, BigInteger, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
 from sqlalchemy.dialects import mysql
 from ..core import UnsupportedOperationError, safe_error_identity as _safe_error_identity
-from .capabilities import active_connection, effective_profile
+from .capabilities import (
+    active_connection, dolt_operational_write_enabled, effective_profile,
+)
 from .dolt_conformance import DoltConformanceSource
 from .profiles import preflight, statement_payload_bytes, validate_connection_url
 from .normative import (
@@ -1507,9 +1509,8 @@ def dolt_state_snapshot(
         "profile": "dolt",
         "server_version": active["server_version"],
         "read_only": True,
-        "operational_write_enabled": (
-            bool(active["claimed_supported"])
-            and bool(active["driver_eligible"])
+        "operational_write_enabled": dolt_operational_write_enabled(
+            active, declaration_matched=bool(active["claimed_supported"]),
         ),
         "working_set_binding": binding,
         "state": state,
