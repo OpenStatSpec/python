@@ -7,7 +7,9 @@ from sqlalchemy import MetaData, Table
 import openstatspec
 import openstatspec.sql.wide as wide
 from openstatspec.core import UnsupportedOperationError
-from openstatspec.sql.profiles import MYSQL, TargetCapabilityExceededError, preflight
+from openstatspec.sql.profiles import (
+    MYSQL, POSTGRESQL, TargetCapabilityExceededError, preflight,
+)
 from openstatspec.sql.wide import (
     ImportRecoveryError,
     _bounded_batches,
@@ -513,4 +515,24 @@ def test_mysql_catalog_initialization_lock_spans_mutation_boundary():
         "SELECT RELEASE_LOCK(:lock_name)",
         "commit",
     ]
+
+def test_postgresql_initializer_relies_on_transaction_rollback(tmp_path, monkeypatch):
+    path = tmp_path / "postgresql-rollback.sqlite"
+
+    def fail_migration(*_args, **_kwargs):
+        raise RuntimeError("injected catalog migration failure")
+
+    def compensation_must_not_run(*_args, **_kwargs):
+        raise AssertionError("PostgreSQL must not use stale DDL compensation")
+
+    monkeypatch.setattr(
+        wide, "effective_profile", lambda _url, **_kwargs: (POSTGRESQL, {}),
+    )
+    monkeypatch.setattr(wide, "_migrate_catalog_columns", fail_migration)
+    monkeypatch.setattr(
+        wide, "_compensate_catalog_initialization", compensation_must_not_run,
+    )
+
+    with pytest.raises(RuntimeError, match="injected catalog migration failure"):
+        openstatspec.initialize_catalog(database_url=f"sqlite:///{path}")
 

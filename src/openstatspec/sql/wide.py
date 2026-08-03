@@ -1550,6 +1550,11 @@ def _compensate_catalog_initialization(
             ))
 
 
+def _requires_compensating_catalog_cleanup(profile_name: str) -> bool:
+    """Only PostgreSQL rolls back catalog DDL without stale compensation."""
+    return profile_name != "postgresql"
+
+
 def _catalog_residual_inventory(
     engine: Any, *, before_tables: set[str],
     before_columns: Mapping[str, set[str]],
@@ -1709,14 +1714,18 @@ def initialize_wide_catalog(
                     pre_dolt_state, post_dolt_state, phase="catalog initialization",
                 )
             except Exception as install_error:
-                try:
-                    with connection.begin():
-                        _compensate_catalog_initialization(
-                            connection, metadata=metadata, before_tables=before_tables,
-                            before_columns=before_columns, normative=normative,
-                            legacy=legacy,
-                        )
-                except Exception as cleanup_error:
+                cleanup_error = None
+                if _requires_compensating_catalog_cleanup(profile.name):
+                    try:
+                        with connection.begin():
+                            _compensate_catalog_initialization(
+                                connection, metadata=metadata, before_tables=before_tables,
+                                before_columns=before_columns, normative=normative,
+                                legacy=legacy,
+                            )
+                    except Exception as error:
+                        cleanup_error = error
+                if cleanup_error is not None:
                     inventory = _catalog_residual_inventory(
                         engine, before_tables=before_tables, before_columns=before_columns,
                     )
