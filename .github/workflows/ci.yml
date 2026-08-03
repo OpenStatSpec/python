@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v7
         with: &specification-checkout
           repository: OpenStatSpec/specification
-          ref: agent/dolt-declaration-validator
+          ref: 28bd6817261d1e55e51bb25076fb93e732ab1c74
           path: openstatspec-specification
       - name: Checkout required SPSS engine
         uses: actions/checkout@v7
