@@ -603,9 +603,8 @@ def test_schema_install_requires_initialized_verified_catalog(tmp_path) -> None:
 def test_public_apply_rejects_divergent_catalog_before_mutation(catalog) -> None:
     url, path, dataset_id, table_name = catalog
     connection = sqlite3.connect(path)
-    connection.execute(
-        "DELETE FROM dataset_catalog WHERE dataset_id = ?", (dataset_id,)
-    )
+    deleted = connection.execute("DELETE FROM dataset_catalog")
+    assert deleted.rowcount == 1
     connection.commit()
     before = connection.execute(
         f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
