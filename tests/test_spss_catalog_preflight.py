@@ -44,10 +44,12 @@ def test_import_catalog_preflight_rejects_invalid_weight_atomically(
     database_path = tmp_path / "weight.sqlite"
     variables = _variables()
     mutate(variables)
+    database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
 
     with pytest.raises(CatalogPreflightError) as error:
         create_wide_dataset(
-            database_url=f"sqlite:///{database_path}", dataset_id="weight",
+            database_url=database, dataset_id="weight",
             source_name="weight.sav", source_format="SAV",
             rows=[{"weight": 1.0, "answer": 1.0, "text": "ok"}],
             variables=variables, case_weight_variable=weight_name,
@@ -87,8 +89,10 @@ def test_import_catalog_preflight_rejects_invalid_weight_atomically(
 def test_numeric_weight_does_not_require_scale_measurement_level(tmp_path) -> None:
     variables = _variables()
     variables[1] = {**variables[1], "measure": "nominal"}
+    database = f"sqlite:///{tmp_path / 'weight-nominal.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     result = create_wide_dataset(
-        database_url=f"sqlite:///{tmp_path / 'weight-nominal.sqlite'}",
+        database_url=database,
         dataset_id="weight_nominal", source_name="weight.sav", source_format="SAV",
         rows=[{"weight": 1.0, "answer": 2.0, "text": "ok"}],
         variables=variables, case_weight_variable="answer",
@@ -97,6 +101,7 @@ def test_numeric_weight_does_not_require_scale_measurement_level(tmp_path) -> No
 
 
 def _create_valid_dataset(database: str) -> None:
+    openstatspec.initialize_catalog(database_url=database)
     create_wide_dataset(
         database_url=database, dataset_id="mr", source_name="mr.sav", source_format="SAV",
         rows=[{"weight": 1.0, "answer": 1.0, "text": "yes"}],
