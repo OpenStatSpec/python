@@ -482,3 +482,35 @@ def test_stale_initializer_compensation_preserves_concurrent_verified_catalog(
 
     assert _table_names(path) == before
 
+def test_mysql_catalog_initialization_lock_spans_mutation_boundary():
+    events = []
+
+    class Result:
+        @staticmethod
+        def scalar_one():
+            return 1
+
+    class Connection:
+        def execute(self, statement, parameters):
+            events.append((str(statement), parameters["lock_name"]))
+            return Result()
+
+        def commit(self):
+            events.append(("commit", None))
+
+        def invalidate(self):
+            raise AssertionError("healthy lock connection must not be invalidated")
+
+    with wide._catalog_initialization_serialization(
+        Connection(), profile_name="mysql",
+    ):
+        events.append(("mutation", None))
+
+    assert [event[0] for event in events] == [
+        "SELECT GET_LOCK(:lock_name, 30)",
+        "commit",
+        "mutation",
+        "SELECT RELEASE_LOCK(:lock_name)",
+        "commit",
+    ]
+
