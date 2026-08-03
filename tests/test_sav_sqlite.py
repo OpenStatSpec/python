@@ -18,6 +18,7 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     exported = tmp_path / "roundtrip.zsav"
     pyspssio.write_sav(
         str(source),
@@ -83,6 +84,7 @@ def test_file_label_round_trips_through_sqlite_and_export(tmp_path) -> None:
     source = tmp_path / "label-source.sav"
     database_path = tmp_path / "label.sqlite"
     database = "sqlite:///{}".format(database_path)
+    openstatspec.initialize_catalog(database_url=database)
     destination = tmp_path / "label-destination.sav"
     label = "OpenStatSpec label fixture"
     pyspssio.write_sav(
@@ -106,13 +108,15 @@ def test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav
     database_path = tmp_path / f"supported-{suffix[1:]}.sqlite"
     destination = tmp_path / f"supported-roundtrip{suffix}"
     expected = write_supported_semantics_fixture(source)
+    database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
 
-    result = openstatspec.import_sav(source, database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")
+    result = openstatspec.import_sav(source, database_url=database, dataset_id=f"supported-{suffix[1:]}")
     assert result["case_count"] == 4
-    assert openstatspec.validate(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")["valid"] is True
+    assert openstatspec.validate(database_url=database, dataset_id=f"supported-{suffix[1:]}")["valid"] is True
     connection = sqlite3.connect(database_path)
     assert connection.execute(f"select comment from data_supported_{suffix[1:]} order by __case_ordinal").fetchone() == (expected["long_text"],)
-    openstatspec.export_sav(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
+    openstatspec.export_sav(database_url=database, dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
@@ -123,6 +127,7 @@ def test_import_rejects_physical_table_name_collision_without_partial_catalog(tm
     source = tmp_path / "fixture.sav"
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
     openstatspec.import_sav(source, database_url=database, dataset_id="wave-1")
     with pytest.raises(ValueError, match="collides"):
@@ -145,6 +150,7 @@ def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arr
     source = tmp_path / f"raw-source{suffix}"
     destination = tmp_path / f"raw-destination{suffix}"
     database = f"sqlite:///{tmp_path / f'raw-{suffix[1:]}.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     with pyspssio.Writer(str(source), mode="w") as writer:
         writer.compression = 2 if suffix == ".zsav" else 1
         writer._add_var("answer", 0)  # pylint: disable=protected-access
@@ -196,6 +202,7 @@ def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix
     destination = tmp_path / f"long-destination{suffix}"
     database_path = tmp_path / f"long-{suffix[1:]}.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     pyspssio.write_sav(
         str(source), pd.DataFrame({"comment": [payload, "short"]}),
     )
