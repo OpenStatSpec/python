@@ -1797,6 +1797,14 @@ def _delete_normative_import_state(
     ))
 
 
+def _create_operation_owned_data_table(
+    connection: Any, data_table: Table, state: dict[str, Any],
+) -> None:
+    """Mark ownership only after this operation successfully creates the table."""
+    data_table.create(connection)
+    state["data_table_created"] = True
+
+
 def _cleanup_import_state(
     connection: Any, *, dataset_id: str, operation_id: str, data_table: Table,
     state: Mapping[str, Any], normative: Any, legacy: tuple[Table, ...],
@@ -1824,7 +1832,7 @@ def _cleanup_import_state(
         fidelity_events.c.operation_id == operation_id
     ))
     connection.execute(delete(operations).where(operations.c.operation_id == operation_id))
-    if state["data_table_creation_attempted"]:
+    if state["data_table_created"]:
         data_table.drop(connection, checkfirst=True)
 
 
@@ -2028,7 +2036,7 @@ def _import_cleanup_guard(
     snapshot_connection: Any, pre_dolt_state: dict[str, Any] | None,
 ) -> Iterable[dict[str, Any]]:
     state: dict[str, Any] = {
-        "data_table_creation_attempted": False,
+        "data_table_created": False,
         "legacy_dataset_created": False,
         "normative_dataset_creation_attempted": False,
         "normative_dataset_id": None,
@@ -2377,7 +2385,7 @@ def create_wide_dataset(
         normative.fidelity_event.name, normative.operation.name,
     }
     preflight_state = {
-        "data_table_creation_attempted": False,
+        "data_table_created": False,
         "legacy_dataset_created": False,
         "normative_dataset_creation_attempted": False,
         "normative_dataset_id": None,
@@ -2554,8 +2562,9 @@ def create_wide_dataset(
                     raise ValueError(f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset.")
                 if connection.execute(select(datasets.c.dataset_id).where(datasets.c.data_table == data_table.name)).first():
                     raise ValueError(f"Dataset ID {dataset_id!r} collides with an existing physical data-table name; import was not started.")
-                mutation["data_table_creation_attempted"] = True
-                data_table.create(connection)
+                _create_operation_owned_data_table(
+                    connection, data_table, mutation,
+                )
                 materialized = [
                     {"__case_ordinal": ordinal, **row}
                     for ordinal, row in enumerate(source_rows, start=1)
