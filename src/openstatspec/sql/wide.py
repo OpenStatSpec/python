@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import delete, BigInteger, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
+from sqlalchemy.dialects import mysql
 from ..core import UnsupportedOperationError, safe_error_identity as _safe_error_identity
 from .capabilities import active_connection, effective_profile
 from .dolt_conformance import DoltConformanceSource
@@ -52,6 +53,11 @@ class ImportRecoveryError(UnsupportedOperationError):
 
 def _catalog_error(code: str, detail: str, **details: Any) -> CatalogPreflightError:
     return CatalogPreflightError(code, detail, details=details)
+
+
+def string_type(profile: Any) -> Text:
+    """Use Dolt's tested LONGTEXT storage without changing MySQL/MariaDB DDL."""
+    return mysql.LONGTEXT() if profile.name == "dolt" else Text()
 
 
 def _canonical_sha256(value: Any) -> str:
