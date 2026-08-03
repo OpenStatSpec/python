@@ -383,7 +383,7 @@ def _migrate_catalog_columns(
     """
     inspector = inspect(connection)
     text_declaration = str(
-        Text.compile(dialect=connection.dialect)
+        Text().compile(dialect=connection.dialect)
     )
     additions = {
         datasets.name: {
