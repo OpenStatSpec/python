@@ -1507,7 +1507,10 @@ def dolt_state_snapshot(
         "profile": "dolt",
         "server_version": active["server_version"],
         "read_only": True,
-        "operational_write_enabled": bool(active["claimed_supported"]),
+        "operational_write_enabled": (
+            bool(active["claimed_supported"])
+            and bool(active["driver_eligible"])
+        ),
         "working_set_binding": binding,
         "state": state,
     }
