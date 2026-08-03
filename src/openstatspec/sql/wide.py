@@ -1000,6 +1000,11 @@ def _normalized_sql_type(inspector: Any, value: Any) -> str:
     if inspector.bind.dialect.name in {"mysql", "mariadb"}:
         if compiled in {"BOOL", "BOOLEAN", "TINYINT(1)"}:
             return "BOOLEAN/TINYINT(1)"
+        compiled = re.sub(
+            r"\b(TINYINT|SMALLINT|MEDIUMINT|INTEGER|INT|BIGINT)\(\d+\)",
+            r"\1",
+            compiled,
+        )
     return compiled
 
 
@@ -1064,6 +1069,13 @@ def _normalized_check_sql(value: Any) -> str:
     result = " ".join(str(value).strip().casefold().split())
     result = result.replace("`", "").replace('"', "")
     result = re.sub(r"\[([^]]+)\]", r"\1", result)
+    result = re.sub(r"(?<![a-z0-9])_[a-z0-9]+(?=')", "", result)
+    result = re.sub(
+        r"::\s*(?:character varying|varchar|text|integer|bigint|smallint|boolean)\b",
+        "",
+        result,
+    )
+    result = re.sub(r"\(([a-z_][a-z0-9_]*)\)", r"\1", result)
     while result.startswith("(") and result.endswith(")"):
         result = result[1:-1].strip()
     return result
