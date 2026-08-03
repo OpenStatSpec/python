@@ -102,6 +102,23 @@ def _exceeded(reason: str, message: str, **details: Any) -> TargetCapabilityExce
     )
 
 
+def preflight_identifier(
+    profile: SqlProfile, identifier: str, *, role: str,
+) -> None:
+    """Validate one generated identifier against the effective profile."""
+    identifier_bytes = len(identifier.encode("utf-8"))
+    if identifier_bytes > profile.identifier_limit:
+        raise _exceeded(
+            "identifier_limit",
+            f"{role} {identifier!r} is {identifier_bytes} bytes; "
+            f"{profile.name} permits {profile.identifier_limit}.",
+            identifier=identifier,
+            identifier_bytes=identifier_bytes,
+            maximum=profile.identifier_limit,
+            role=role,
+        )
+
+
 def preflight(
     profile: SqlProfile,
     variables_or_count: int | Iterable[Mapping[str, Any]],
@@ -143,15 +160,9 @@ def preflight(
                 source_name=source_name, expected_physical_name=expected_name,
                 actual_physical_name=actual_name,
             )
-        identifier_bytes = len(expected_name.encode("utf-8"))
-        if identifier_bytes > profile.identifier_limit:
-            raise _exceeded(
-                "identifier_limit",
-                f"identifier {expected_name!r} is {identifier_bytes} bytes; "
-                f"{profile.name} permits {profile.identifier_limit}.",
-                identifier=expected_name, identifier_bytes=identifier_bytes,
-                maximum=profile.identifier_limit,
-            )
+        preflight_identifier(
+            profile, expected_name, role="physical variable identifier",
+        )
         if variable.get("storage_kind") == "string":
             declared_width = variable.get("string_width")
             if declared_width is not None and (
