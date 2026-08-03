@@ -425,3 +425,36 @@ def test_catalog_initialization_rejects_ephemeral_sqlite_url(database_url):
     ):
         openstatspec.initialize_catalog(database_url=database_url)
 
+def test_import_fidelity_reader_excludes_export_operational_events(tmp_path):
+    path = tmp_path / "fidelity-directions.sqlite"
+    database = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=database)
+    create_wide_dataset(
+        database_url=database,
+        dataset_id="sample",
+        source_name="fixture.sav",
+        source_format="SAV",
+        rows=[{"name": "ok"}],
+        variables=_variables(),
+    )
+    connection = sqlite3.connect(path)
+    connection.executemany(
+        "INSERT INTO fidelity_event_catalog "
+        "(operation_id, ordinal, dataset_id, direction, severity, detail, "
+        "details, code) VALUES (?, 1, 'sample', ?, 'error', ?, '{}', ?)",
+        [
+            ("import-event", "import", "source fidelity", "source_loss"),
+            ("export-event", "export", "transient export failure", "export_failed"),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    assert wide.read_fidelity_events(
+        database_url=database, dataset_id="sample",
+    ) == ({
+        "code": "source_loss",
+        "detail": "source fidelity",
+        "details": {},
+    },)
+
