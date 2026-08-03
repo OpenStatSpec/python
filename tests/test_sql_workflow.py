@@ -73,6 +73,7 @@ def _variables():
 def catalog(tmp_path):
     path = tmp_path / "workflow.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     create_wide_dataset(
         database_url=url, dataset_id="source", source_name="source.sav",
         source_format="SAV", source_sha256="a" * 64,
