@@ -1303,6 +1303,17 @@ def _registered_physical_relations(
                 physical_tables.add(name)
     elif workflow_tables & existing_tables:
         return static_tables, declared_tables, physical_tables, physical_views, "foreign"
+
+    # The compact in-place apply audit is optional but catalog-owned. Import
+    # locally because inplace_transform depends on this module at load time.
+    from .inplace_transform import (  # pylint: disable=import-outside-toplevel
+        apply_audit_catalog,
+    )
+    apply_audit = apply_audit_catalog(MetaData())
+    if apply_audit.name in existing_tables:
+        declared_tables += (apply_audit,)
+        static_tables.add(apply_audit.name)
+
     return static_tables, declared_tables, physical_tables, physical_views, "valid"
 
 
