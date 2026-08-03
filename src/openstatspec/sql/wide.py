@@ -7,6 +7,7 @@ import re
 import sys
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -2646,6 +2647,34 @@ def _endpoint_from_row(row: Mapping[str, Any], *, prefix: str) -> Any:
     return row[f"{prefix}_numeric"] if endpoint_type == "numeric" else row[f"{prefix}_text"]
 
 
+def _canonicalize_database_numeric_rows(
+    rows: Iterable[Mapping[str, Any]],
+    variables: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert exact numeric driver wrappers at the SQL read boundary.
+
+    MySQL-family drivers may return DOUBLE columns as Decimal instances. The
+    public adapter contract remains binary64-only, so database-native decimal
+    wrappers are converted back to their declared physical representation
+    before strict preflight validation. Other unexpected values are preserved
+    so preflight can reject them with its machine-readable diagnostic.
+    """
+    numeric_names = {
+        str(variable["physical_name"])
+        for variable in variables
+        if variable.get("storage_kind") == "numeric"
+    }
+    normalized: list[dict[str, Any]] = []
+    for source_row in rows:
+        row = dict(source_row)
+        for physical_name in numeric_names:
+            value = row.get(physical_name)
+            if isinstance(value, Decimal):
+                row[physical_name] = float(value)
+        normalized.append(row)
+    return normalized
+
+
 def read_wide_dataset(
     *,
     database_url: str,
@@ -2675,9 +2704,12 @@ def read_wide_dataset(
         variables = [dict(item) for item in connection.execute(
             select(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id).order_by(variable_catalog.c.ordinal)
         ).mappings().all()]
-        rows = [dict(item) for item in connection.execute(
-            select(data_table).order_by(data_table.c.__case_ordinal)
-        ).mappings().all()]
+        rows = _canonicalize_database_numeric_rows(
+            connection.execute(
+                select(data_table).order_by(data_table.c.__case_ordinal)
+            ).mappings().all(),
+            variables,
+        )
         document_rows_result = connection.execute(
             select(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id)
             .order_by(documents_catalog.c.ordinal)
