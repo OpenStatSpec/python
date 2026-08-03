@@ -63,6 +63,13 @@ def _dolt_driver_eligible(database_url: str) -> bool:
     return make_url(database_url).drivername.lower() == "mysql+pymysql"
 
 
+def dolt_operational_write_enabled(
+    active: Mapping[str, Any], *, declaration_matched: bool,
+) -> bool:
+    """Require both exact declaration and claimed active driver for writes."""
+    return declaration_matched and bool(active.get("driver_eligible", False))
+
+
 def _dolt_write_enabled(
     source: DoltConformanceSource | None = None,
     *,
@@ -496,7 +503,9 @@ def _profile(
             }
         ),
         "operational_write_enabled": (
-            dolt_declaration is not None and bool(active["driver_eligible"])
+            dolt_operational_write_enabled(
+                active, declaration_matched=dolt_declaration is not None,
+            )
             if dolt_envelope and active and active["profile"] == name
             else bool((dolt_status or {}).get("write_enabled"))
             if dolt_envelope else True
