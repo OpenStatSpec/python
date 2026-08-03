@@ -229,11 +229,10 @@ def test_active_identity_recognizes_only_exact_trimmed_casefolded_dolt_comment(m
         "database": "catalog",
         "active_branch": "feature/synthetic",
     }
-    declaration = capability_module.profile_declarations(
-        "mysql+pymysql://user@host/catalog"
-    )["dolt"]
-    assert declaration["effective_limits"] is None
-    assert declaration["effective_limits_status"] == "blocked_pending_pinned_live_conformance"
+    with pytest.raises(UnsupportedOperationError, match="not bound"):
+        capability_module.profile_declarations(
+            "mysql+pymysql://user@host/catalog"
+        )
 
 
 def test_active_identity_does_not_guess_dolt_from_nonexact_comment(monkeypatch):
@@ -448,7 +447,7 @@ def test_public_dolt_state_snapshot_is_read_only(monkeypatch):
     connection = _FakeDoltStateConnection()
     monkeypatch.setattr(
         wide, "active_connection",
-        lambda _url: {
+        lambda _url, **_kwargs: {
             "profile": "dolt",
             "server_version": "2.2.2",
             "working_set_binding": {
@@ -472,7 +471,7 @@ def test_public_dolt_state_snapshot_is_read_only(monkeypatch):
 
 def test_dolt_operational_profile_fails_closed_without_live_conformance(monkeypatch):
     _fake_mysql_identity(monkeypatch)
-    with pytest.raises(UnsupportedOperationError, match="no concrete declarations"):
+    with pytest.raises(UnsupportedOperationError, match="not bound"):
         capability_module.effective_profile(
             "mysql+pymysql://user@host/catalog"
         )
