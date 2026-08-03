@@ -617,3 +617,20 @@ def test_bound_catalog_transaction_allows_gated_dolt_audit(monkeypatch) -> None:
         assert yielded is connection
 
     assert connection.rollback_called is True
+
+def test_effective_profile_rechecks_driver_after_dolt_identity(monkeypatch) -> None:
+    active = {
+        "profile": "dolt",
+        "raw_product_version": "2.2.3",
+    }
+    monkeypatch.setattr(
+        capabilities, "active_connection", lambda _url, **_kwargs: active,
+    )
+
+    with pytest.raises(
+        UnsupportedOperationError,
+        match=r"Dolt requires an explicit mysql\+pymysql URL",
+    ):
+        effective_profile(
+            "mariadb+mariadbconnector://user@host/database",
+        )
