@@ -68,6 +68,15 @@ def _wide_column_type(profile: Any, storage_kind: str) -> Any:
     return binary64_type() if storage_kind == "numeric" else string_type(profile)
 
 
+def _valid_wide_string_type(profile: Any, column_type: Any) -> bool:
+    """Require Dolt's declared LONGTEXT boundary during reflected validation."""
+    return (
+        isinstance(column_type, mysql.LONGTEXT)
+        if profile.name == "dolt"
+        else isinstance(column_type, Text)
+    )
+
+
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -3244,6 +3253,9 @@ def validate_wide_dataset(
     dataset_id: str,
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, Any]:
+    profile, _active = effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     dataset, variables, rows = read_wide_dataset(
         database_url=database_url,
         dataset_id=dataset_id,
@@ -3274,7 +3286,7 @@ def validate_wide_dataset(
         if item["storage_kind"] == "numeric":
             if not isinstance(column.type, Float) or not column.nullable:
                 raise ValueError(f"Numeric variable {item['source_name']!r} must be a nullable binary64 column.")
-        elif not isinstance(column.type, Text) or column.nullable:
+        elif not _valid_wide_string_type(profile, column.type) or column.nullable:
             raise ValueError(f"String variable {item['source_name']!r} must be a non-null text column.")
     if [row["__case_ordinal"] for row in rows] != list(range(1, len(rows) + 1)):
         raise ValueError("Case ordinals are not contiguous source order.")
