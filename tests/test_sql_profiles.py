@@ -634,3 +634,14 @@ def test_effective_profile_rechecks_driver_after_dolt_identity(monkeypatch) -> N
         effective_profile(
             "mariadb+mariadbconnector://user@host/database",
         )
+
+def test_dolt_operational_write_flag_requires_claimed_driver() -> None:
+    assert capabilities.dolt_operational_write_enabled(
+        {"driver_eligible": True}, declaration_matched=True,
+    ) is True
+    assert capabilities.dolt_operational_write_enabled(
+        {"driver_eligible": False}, declaration_matched=True,
+    ) is False
+    assert capabilities.dolt_operational_write_enabled(
+        {"driver_eligible": True}, declaration_matched=False,
+    ) is False
