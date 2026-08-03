@@ -406,7 +406,7 @@ def test_public_apply_binds_expected_dolt_branch_and_head(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     states = iter([
         ("feature/recode", "abc123", 0),
@@ -436,7 +436,7 @@ def test_public_apply_rejects_dirty_dolt_working_set_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -472,7 +472,7 @@ def test_public_apply_rejects_dolt_context_mismatch_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     monkeypatch.setattr(
         inplace_transform, "_dolt_state", lambda _connection: state
