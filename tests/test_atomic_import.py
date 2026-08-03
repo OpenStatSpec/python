@@ -359,3 +359,17 @@ def test_nonatomic_failure_during_final_completion_still_cleans_dataset(
     assert connection.execute(
         "select code, dataset_id from fidelity_event_catalog"
     ).fetchall() == [("import_failed", None)]
+
+def test_failed_table_create_never_claims_cleanup_ownership() -> None:
+    class ConcurrentTable:
+        def create(self, _connection):
+            raise RuntimeError("table already created by concurrent import")
+
+    state = {"data_table_created": False}
+
+    with pytest.raises(RuntimeError, match="concurrent import"):
+        wide._create_operation_owned_data_table(
+            object(), ConcurrentTable(), state,
+        )
+
+    assert state["data_table_created"] is False
