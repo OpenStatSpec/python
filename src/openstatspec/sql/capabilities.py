@@ -151,10 +151,12 @@ def active_connection(
             observed = {}
         elif dialect in {"mysql", "mariadb"}:
             wire_version = _required_identity_text(
-                connection.execute(text("select @@version")).scalar_one(), "@@version",
+                _identity_scalar(connection, "select @@version", "@@version"), "@@version",
             )
             comment = _required_identity_text(
-                connection.execute(text("select @@version_comment")).scalar_one(),
+                _identity_scalar(
+                    connection, "select @@version_comment", "@@version_comment",
+                ),
                 "@@version_comment",
             )
             normalized_comment = comment.strip().casefold()
@@ -165,12 +167,12 @@ def active_connection(
                         "Conflicting Dolt and MariaDB active-server identity."
                     )
                 product_version = _required_identity_text(
-                    connection.execute(text("select DOLT_VERSION()")).scalar_one(),
+                    _identity_scalar(connection, "select DOLT_VERSION()", "DOLT_VERSION()"),
                     "DOLT_VERSION()",
                 )
                 profile_name, product = "dolt", "Dolt"
                 active_branch = _required_identity_text(
-                    connection.execute(text("select ACTIVE_BRANCH()")).scalar_one(),
+                    _identity_scalar(connection, "select ACTIVE_BRANCH()", "ACTIVE_BRANCH()"),
                     "ACTIVE_BRANCH()",
                 )
                 identity_source = (
@@ -179,9 +181,14 @@ def active_connection(
             elif "mariadb" in (wire_version + " " + comment).casefold():
                 profile_name, product = "mariadb", "MariaDB"
                 identity_source = "SELECT @@version, @@version_comment"
-            else:
+            elif "mysql" in normalized_comment:
                 profile_name, product = "mysql", "MySQL"
                 identity_source = "SELECT @@version, @@version_comment"
+            else:
+                raise UnsupportedOperationError(
+                    "The active MySQL-wire product is unknown; no SQL profile "
+                    "claim can be selected safely."
+                )
             raw_version = product_version
             packet = int(connection.execute(text("select @@max_allowed_packet")).scalar_one())
             observed = {
@@ -223,6 +230,15 @@ def active_connection(
         ),
         "observed": observed,
     }
+
+
+def _identity_scalar(connection: Any, query: str, source: str) -> Any:
+    try:
+        return connection.execute(text(query)).scalar_one()
+    except Exception as error:
+        raise UnsupportedOperationError(
+            f"Active-server identity probe {source} failed."
+        ) from error
 
 
 def _required_identity_text(value: Any, source: str) -> str:
