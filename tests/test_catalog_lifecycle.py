@@ -1,5 +1,6 @@
 from decimal import Decimal
 import sqlite3
+import threading
 
 import pytest
 from sqlalchemy import MetaData, Table
@@ -496,6 +497,63 @@ def test_stale_initializer_compensation_preserves_concurrent_verified_catalog(
     engine.dispose()
 
     assert _table_names(path) == before
+
+def test_sqlite_initializer_serializes_failure_before_concurrent_winner(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "serialized-concurrent-init.sqlite"
+    database = f"sqlite:///{path}"
+    loser_inside_migration = threading.Event()
+    winner_started = threading.Event()
+    release_loser = threading.Event()
+    original_migrate = wide._migrate_catalog_columns
+    failures = {}
+
+    def migrate(connection, datasets, variables, multiple_response):
+        if threading.current_thread().name == "losing-initializer":
+            loser_inside_migration.set()
+            assert winner_started.wait(5)
+            assert release_loser.wait(5)
+            raise RuntimeError("injected catalog migration failure")
+        return original_migrate(connection, datasets, variables, multiple_response)
+
+    def compensation_must_not_run(*_args, **_kwargs):
+        raise AssertionError("SQLite must roll back DDL without stale compensation")
+
+    def initialize(name):
+        if name == "winner":
+            winner_started.set()
+        try:
+            openstatspec.initialize_catalog(database_url=database)
+        except Exception as error:
+            failures[name] = error
+
+    monkeypatch.setattr(wide, "_migrate_catalog_columns", migrate)
+    monkeypatch.setattr(
+        wide, "_compensate_catalog_initialization", compensation_must_not_run,
+    )
+
+    loser = threading.Thread(
+        target=initialize, args=("loser",), name="losing-initializer",
+    )
+    winner = threading.Thread(
+        target=initialize, args=("winner",), name="winning-initializer",
+    )
+    loser.start()
+    assert loser_inside_migration.wait(5)
+    winner.start()
+    assert winner_started.wait(5)
+    release_loser.set()
+    loser.join(10)
+    winner.join(10)
+
+    assert not loser.is_alive()
+    assert not winner.is_alive()
+    assert type(failures.get("loser")) is RuntimeError
+    assert str(failures["loser"]) == "injected catalog migration failure"
+    assert "winner" not in failures
+    assert openstatspec.initialize_catalog(database_url=database)["catalog"] == "verified"
+
 
 def test_mysql_catalog_initialization_lock_spans_mutation_boundary():
     events = []

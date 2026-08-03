@@ -1551,8 +1551,8 @@ def _compensate_catalog_initialization(
 
 
 def _requires_compensating_catalog_cleanup(profile_name: str) -> bool:
-    """Only PostgreSQL rolls back catalog DDL without stale compensation."""
-    return profile_name != "postgresql"
+    """Only non-transactional MySQL-wire DDL needs stale compensation."""
+    return profile_name in MYSQL_WIRE_PROFILES
 
 
 def _catalog_residual_inventory(
@@ -1631,7 +1631,17 @@ def dolt_state_snapshot(
 def _catalog_initialization_serialization(
     connection: Any, *, profile_name: str,
 ):
-    """Serialize non-transactional catalog DDL on one database server."""
+    """Serialize catalog DDL across connections on one database server."""
+    if profile_name == "sqlite":
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            yield
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+        return
     if profile_name not in MYSQL_WIRE_PROFILES:
         yield
         return
@@ -1695,9 +1705,15 @@ def initialize_wide_catalog(
             _require_dolt_working_set_binding(
                 pre_dolt_state, active, phase="catalog initialization preflight",
             )
-            connection.rollback()
+            if profile.name != "sqlite":
+                connection.rollback()
             try:
-                with connection.begin():
+                mutation = (
+                    connection.begin_nested()
+                    if profile.name == "sqlite"
+                    else connection.begin()
+                )
+                with mutation:
                     create_normative_catalog(connection, normative)
                     metadata.create_all(connection, tables=list(legacy))
                     _migrate_catalog_columns(
