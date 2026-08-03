@@ -20,8 +20,8 @@ from .capabilities import (
 )
 from .dolt_conformance import DoltConformanceSource
 from .profiles import (
-    preflight, preflight_identifier, statement_payload_bytes,
-    validate_connection_url,
+    MYSQL_WIRE_PROFILES, preflight, preflight_identifier,
+    statement_payload_bytes, validate_connection_url,
 )
 from .normative import (
     binary64_type,
@@ -2040,6 +2040,11 @@ def _import_residual_inventory(
         return {"inspection_error_type": type(inventory_error).__name__}
 
 
+def _requires_compensating_import_cleanup(profile_name: str) -> bool:
+    """Transactional profiles rely on rollback, never stale cleanup markers."""
+    return profile_name in MYSQL_WIRE_PROFILES
+
+
 @contextmanager
 def _import_cleanup_guard(
     *, engine: Any, dataset_id: str, operation_id: str, data_table: Table,
@@ -2069,12 +2074,13 @@ def _import_cleanup_guard(
         yield state
     except Exception as import_error:
         try:
-            with engine.begin() as cleanup_connection:
-                _cleanup_import_state(
-                    cleanup_connection, dataset_id=dataset_id,
-                    operation_id=operation_id, data_table=data_table,
-                    state=state, normative=normative, legacy=legacy,
-                )
+            if _requires_compensating_import_cleanup(profile_name):
+                with engine.begin() as cleanup_connection:
+                    _cleanup_import_state(
+                        cleanup_connection, dataset_id=dataset_id,
+                        operation_id=operation_id, data_table=data_table,
+                        state=state, normative=normative, legacy=legacy,
+                    )
         except Exception as cleanup_error:
             inventory = _import_residual_inventory(
                 engine, dataset_id=dataset_id, operation_id=operation_id,
