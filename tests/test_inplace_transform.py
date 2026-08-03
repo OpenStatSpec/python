@@ -61,6 +61,7 @@ def _submission(source_text: str) -> InPlacePlanSubmission:
 def catalog(tmp_path):
     path = tmp_path / "in-place.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     create_wide_dataset(
         database_url=url,
         dataset_id="in_place_source",
@@ -286,6 +287,7 @@ def test_string_create_target_is_rejected_before_any_mutation(
 def test_string_source_can_create_numeric_target(tmp_path) -> None:
     path = tmp_path / "string-source.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     variables = _variables()
     variables[0].update({
         "source_name": "color",
