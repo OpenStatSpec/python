@@ -2,7 +2,9 @@
 
 All notable changes to this reference implementation are documented here.
 
-## 0.5.0 — 2026-07-31
+## Unreleased
+
+Planned adapter release: `0.5.0`, after lifecycle integration and final specification conformance.
 
 ### Added
 
