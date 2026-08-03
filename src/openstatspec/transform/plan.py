@@ -183,7 +183,7 @@ class RecodeOperation:
             _invalid("Recode source and target names must be non-empty.")
         if self.op != "recode":
             _invalid("Recode operation discriminator is invalid.")
-        if self.target_mode not in {"create", "replace"}:
+        if not isinstance(self.target_mode, str) or self.target_mode not in {"create", "replace"}:
             _invalid("Recode target_mode must be create or replace.")
         if not isinstance(self.rules, tuple) or not self.rules:
             _invalid("Recode requires at least one non-ELSE rule.")
@@ -304,7 +304,7 @@ class ComparisonExpression:
             _invalid("Comparison expression discriminator is invalid.")
         if not isinstance(self.left, Operand) or not isinstance(self.right, Operand):
             _invalid("A comparison requires two typed operands.")
-        if self.operator not in {"=", "<", "<=", ">", ">="}:
+        if not isinstance(self.operator, str) or self.operator not in {"=", "<", "<=", ">", ">="}:
             _invalid("Comparison operator is outside the bounded expression profile.")
 
     def as_dict(self) -> dict[str, Any]:
@@ -323,7 +323,7 @@ class BooleanExpression:
     def __post_init__(self) -> None:
         if self.expression != "boolean":
             _invalid("Boolean expression discriminator is invalid.")
-        if self.operator not in {"and", "or"}:
+        if not isinstance(self.operator, str) or self.operator not in {"and", "or"}:
             _invalid("Boolean operator must be and or or.")
         if not isinstance(self.operands, tuple) or len(self.operands) < 2:
             _invalid("A boolean expression requires at least two operands.")
@@ -352,7 +352,7 @@ class AssignOperation:
             _invalid("Assign operation discriminator is invalid.")
         if not isinstance(self.target, str) or not self.target:
             _invalid("Assign target must be non-empty text.")
-        if self.target_mode not in {"create", "replace"}:
+        if not isinstance(self.target_mode, str) or self.target_mode not in {"create", "replace"}:
             _invalid("Assign target_mode must be create or replace.")
         if not isinstance(self.value, Operand):
             _invalid("Assign value must be a typed operand.")
@@ -435,7 +435,7 @@ class SetMeasurementLevelOperation:
             _invalid("Measurement-level operation discriminator is invalid.")
         if not isinstance(self.variable, str) or not self.variable:
             _invalid("Measurement-level operation requires a variable.")
-        if self.level not in {"nominal", "ordinal", "scale"}:
+        if not isinstance(self.level, str) or self.level not in {"nominal", "ordinal", "scale"}:
             _invalid("Measurement level must be nominal, ordinal, or scale.")
 
     def as_dict(self) -> dict[str, Any]:
@@ -470,7 +470,7 @@ class TransformationPlan:
     input_alias: str = "parent"
 
     def __post_init__(self) -> None:
-        if self.contract not in _TRANSFORMATION_PLAN_CONTRACTS:
+        if not isinstance(self.contract, str) or self.contract not in _TRANSFORMATION_PLAN_CONTRACTS:
             _invalid("Plan contract is not a supported transformation-plan contract.")
         if self.contract == TRANSFORMATION_PLAN_V1_CONTRACT and any(
             isinstance(operation, (
