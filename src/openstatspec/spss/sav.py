@@ -310,6 +310,17 @@ def _path_entry_exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
+_DESTINATION_IDENTITY_UNCHECKED = object()
+
+
+def _destination_identity(path: Path) -> tuple[int, int] | None:
+    """Identify the current directory entry without following symlinks."""
+    if not _path_entry_exists(path):
+        return None
+    status = path.lstat()
+    return status.st_dev, status.st_ino
+
+
 def _reserve_export_backup(destination: Path) -> Path:
     descriptor, name = mkstemp(
         dir=destination.parent, prefix=f".{destination.name}.",
@@ -321,7 +332,17 @@ def _reserve_export_backup(destination: Path) -> Path:
 
 def _restore_export_destination(
     *, destination: Path, backup: Path, had_previous: bool,
+    expected_identity: tuple[int, int] | None | object = (
+        _DESTINATION_IDENTITY_UNCHECKED
+    ),
 ) -> None:
+    if (
+        expected_identity is not _DESTINATION_IDENTITY_UNCHECKED
+        and _destination_identity(destination) != expected_identity
+    ):
+        raise FileExistsError(
+            "The export destination is no longer owned by this operation."
+        )
     if had_previous:
         os.replace(backup, destination)
     else:
@@ -493,6 +514,7 @@ def _export_staging_directory(
                 destination=destination,
                 backup=backup,
                 had_previous=had_previous,
+                expected_identity=publication_state["published_identity"],
             )
         except Exception as restore_error:
             _raise_export_cleanup_failed(
@@ -633,8 +655,14 @@ def export_sav_dataset(
                 os.replace(destination_path, backup)
                 backup_installed = True
             os.replace(staged_destination, destination_path)
+            published_identity = _destination_identity(destination_path)
+            if published_identity is None:
+                raise FileNotFoundError(
+                    "The published export destination disappeared."
+                )
             publication_state.update({
                 "published": True,
+                "published_identity": published_identity,
                 "backup": backup,
                 "staged": staged_destination,
                 "had_previous": had_previous,
@@ -645,7 +673,7 @@ def export_sav_dataset(
                 try:
                     _restore_export_destination(
                         destination=destination_path, backup=backup,
-                        had_previous=had_previous,
+                        had_previous=had_previous, expected_identity=None,
                     )
                 except Exception as cleanup_error:
                     _raise_export_cleanup_failed(
@@ -707,6 +735,7 @@ def export_sav_dataset(
                 _restore_export_destination(
                     destination=destination_path, backup=backup,
                     had_previous=had_previous,
+                    expected_identity=publication_state["published_identity"],
                 )
             except Exception as cleanup_error:
                 _raise_export_cleanup_failed(
