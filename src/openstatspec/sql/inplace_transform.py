@@ -881,12 +881,13 @@ def _run_in_place_submission(
                         )
                 return result
         except Exception:
-            # PostgreSQL rolls back the DDL and catalog writes atomically. Once
-            # that rollback releases the dataset lock, a separate compensation
-            # transaction could delete artifacts created by a waiting apply.
+            # Transactional-DDL profiles roll back schema and catalog writes
+            # atomically. Once that rollback releases the dataset lock, a
+            # separate compensation transaction could delete artifacts created
+            # by a waiting apply.
             if (
                 journal.get("added_columns")
-                and profile.name != "postgresql"
+                and profile.name not in {"sqlite", "postgresql"}
             ):
                 try:
                     _compensate_failed_apply(
