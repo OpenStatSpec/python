@@ -25,7 +25,9 @@ def test_import_retains_observed_variable_sets_as_source_extension(tmp_path, mon
         return metadata, sav_module._engine_loss_report(metadata)
 
     monkeypatch.setattr(sav_module, "_dictionary", dictionary_with_variable_set)
-    imported = openstatspec.import_sav(source, database_url=f"sqlite:///{database_path}", dataset_id="variables")
+    database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
+    imported = openstatspec.import_sav(source, database_url=database, dataset_id="variables")
     assert {diagnostic.code for diagnostic in imported.diagnostics} == set()
     connection = sqlite3.connect(database_path)
     assert connection.execute(
@@ -54,6 +56,7 @@ def test_normalized_mr_catalog_is_authoritative_for_export(tmp_path) -> None:
             },
         },
     )
+    openstatspec.initialize_catalog(database_url=database)
     openstatspec.import_sav(source, database_url=database, dataset_id="mr")
     connection = sqlite3.connect(database_path)
     rows = connection.execute(
@@ -83,6 +86,7 @@ def test_normalized_mr_catalog_is_authoritative_for_export(tmp_path) -> None:
 
 def test_fidelity_event_details_survive_reopening_database(tmp_path) -> None:
     database = f"sqlite:///{tmp_path / 'events.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     create_wide_dataset(
         database_url=database, dataset_id="events", source_name="events.sav", source_format="SAV",
         rows=[{"answer": 1.0}],
