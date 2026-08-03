@@ -328,6 +328,34 @@ def test_duplicate_import_failure_preserves_existing_dataset(tmp_path):
 
 
 
+def test_variable_bijection_rejects_storage_kind_mismatch(tmp_path):
+    path = tmp_path / "variable-storage-mismatch.sqlite"
+    database = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=database)
+    variables = _variables()
+    variables[0].update({
+        "storage_kind": "numeric",
+        "string_width": None,
+    })
+    create_wide_dataset(
+        database_url=database,
+        dataset_id="sample",
+        source_name="fixture.sav",
+        source_format="SAV",
+        rows=[{"name": 1.0}],
+        variables=variables,
+    )
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "update variable set storage_kind = 'string' where source_name = 'name'"
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(UnsupportedOperationError, match="catalog is unverified"):
+        read_wide_dataset(database_url=database, dataset_id="sample")
+
+
 def test_missing_additive_column_requires_explicit_migration_without_audit_mutation(
     tmp_path,
 ):
@@ -433,13 +461,26 @@ def test_reflected_mysql_integer_display_width_is_not_semantic():
         inspector, mysql.VARCHAR(length=255),
     ) == "VARCHAR(255)"
 
-@pytest.mark.parametrize("database_url", ["sqlite://", "sqlite:///:memory:"])
+@pytest.mark.parametrize("database_url", [
+    "sqlite://",
+    "sqlite:///:memory:",
+    "sqlite:///file:memdb1?mode=memory&cache=shared&uri=true",
+    "sqlite:///file::memory:?cache=shared&uri=true",
+])
 def test_catalog_initialization_rejects_ephemeral_sqlite_url(database_url):
     with pytest.raises(
         UnsupportedOperationError,
         match="requires a persistent SQLite database URL",
     ):
         openstatspec.initialize_catalog(database_url=database_url)
+
+def test_catalog_initialization_allows_file_backed_sqlite_uri(tmp_path):
+    path = tmp_path / "uri-catalog.sqlite"
+    database = f"sqlite:///file:{path}?mode=rwc&uri=true"
+
+    assert openstatspec.initialize_catalog(database_url=database)["catalog"] == "verified"
+    assert path.is_file()
+
 
 def test_import_fidelity_reader_excludes_export_operational_events(tmp_path):
     path = tmp_path / "fidelity-directions.sqlite"

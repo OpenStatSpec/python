@@ -1364,17 +1364,18 @@ def _catalog_variable_bijection_state(
     legacy_rows = [
         (
             row["dataset_id"], row["ordinal"], row["source_name"],
-            row["physical_name"],
+            row["physical_name"], row["storage_kind"],
         )
         for row in connection.execute(select(
             variables.c.dataset_id, variables.c.ordinal,
             variables.c.source_name, variables.c.physical_name,
+            variables.c.storage_kind,
         )).mappings()
     ]
     normative_rows = [
         (
             row["dataset_name"], row["source_ordinal"], row["source_name"],
-            row["physical_name"],
+            row["physical_name"], row["storage_kind"],
         )
         for row in connection.execute(
             select(
@@ -1382,6 +1383,7 @@ def _catalog_variable_bijection_state(
                 normative.variable.c.source_ordinal,
                 normative.variable.c.source_name,
                 normative.variable.c.physical_name,
+                normative.variable.c.storage_kind,
             ).join(
                 normative.variable,
                 normative.variable.c.dataset_id == normative.dataset.c.dataset_id,
@@ -1394,7 +1396,8 @@ def _catalog_variable_bijection_state(
             or not isinstance(ordinal, int) or ordinal < 1
             or not isinstance(source_name, str) or not source_name.strip()
             or not isinstance(physical_name, str) or not physical_name.strip()
-            for dataset_name, ordinal, source_name, physical_name in rows
+            or storage_kind not in {"numeric", "string"}
+            for dataset_name, ordinal, source_name, physical_name, storage_kind in rows
         ):
             return "unverified"
         if len(set(rows)) != len(rows):
@@ -1675,9 +1678,15 @@ def initialize_wide_catalog(
     """Install or explicitly migrate a dedicated catalog after server preflight."""
     validate_connection_url(database_url)
     parsed_url = make_url(database_url)
+    sqlite_database = parsed_url.database or ""
+    sqlite_mode = str(parsed_url.query.get("mode", "")).lower()
     if (
         parsed_url.get_backend_name() == "sqlite"
-        and parsed_url.database in {None, "", ":memory:"}
+        and (
+            sqlite_database in {"", ":memory:"}
+            or sqlite_database.lower() == "file::memory:"
+            or sqlite_mode == "memory"
+        )
     ):
         raise UnsupportedOperationError(
             "Catalog initialization requires a persistent SQLite database URL."
