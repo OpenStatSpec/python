@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+import openstatspec.transform as transform_module
 from openstatspec.frontends.spss import (
     bind_spss_syntax,
     compile_spss_syntax,
@@ -30,6 +31,14 @@ from openstatspec.transform import (
     canonical_plan_json,
     transformation_plan_from_dict,
 )
+
+
+def test_transform_star_exports_keep_public_plan_nodes() -> None:
+    assert {
+        "ExecuteOperation",
+        "Operand",
+        "TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT",
+    }.issubset(transform_module.__all__)
 
 
 def _schema(*variables: VariableDefinition) -> VariableSchema:
