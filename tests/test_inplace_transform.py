@@ -184,6 +184,51 @@ def test_string_declaration_creates_column_and_catalog_variable(catalog) -> None
     )["valid"] is True
 
 
+def test_delete_prunes_an_empty_multiple_response_set(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+    connection = sqlite3.connect(path)
+    variable_id = connection.execute(
+        "select variable_id from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone()[0]
+    response_set_id = "00000000-0000-0000-0000-000000000001"
+    connection.execute(
+        "insert into multiple_response_set "
+        "(multiple_response_set_id, dataset_id, source_ordinal, set_name, "
+        "set_kind, counted_value_kind, counted_numeric_value) "
+        "values (?, ?, 1, '$scores', 'MD', 'numeric', 1.0)",
+        (response_set_id, dataset_id),
+    )
+    connection.execute(
+        "insert into multiple_response_member "
+        "(multiple_response_set_id, variable_id, source_ordinal) "
+        "values (?, ?, 1)",
+        (response_set_id, variable_id),
+    )
+    connection.commit()
+    connection.close()
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="COMPUTE other = score. DELETE VARIABLES score.",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select count(*) from multiple_response_set where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone() == (0,)
+    assert connection.execute(
+        "select count(*) from multiple_response_member"
+    ).fetchone() == (0,)
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
 def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) -> None:
     url, path, dataset_id, table_name = catalog
 

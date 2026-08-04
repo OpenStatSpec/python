@@ -315,6 +315,11 @@ def _delete_variable_metadata(
 ) -> None:
     """Delete one variable and every normative catalog row owned by it."""
     variable_id = str(variable["variable_id"])
+    response_set_ids = list(connection.execute(
+        select(core.multiple_response_member.c.multiple_response_set_id).where(
+            core.multiple_response_member.c.variable_id == variable_id
+        )
+    ).scalars())
     label_set_id = connection.execute(
         select(core.variable_value_label_set.c.value_label_set_id).where(
             core.variable_value_label_set.c.variable_id == variable_id
@@ -329,6 +334,18 @@ def _delete_variable_metadata(
     connection.execute(delete(core.multiple_response_member).where(
         core.multiple_response_member.c.variable_id == variable_id
     ))
+    for response_set_id in response_set_ids:
+        remaining_member = connection.execute(
+            select(core.multiple_response_member.c.variable_id).where(
+                core.multiple_response_member.c.multiple_response_set_id
+                == response_set_id
+            )
+        ).first()
+        if remaining_member is None:
+            connection.execute(delete(core.multiple_response_set).where(
+                core.multiple_response_set.c.multiple_response_set_id
+                == response_set_id
+            ))
     connection.execute(delete(core.variable_attribute).where(
         core.variable_attribute.c.variable_id == variable_id
     ))
