@@ -474,23 +474,33 @@ def _dolt_evidence_block(
 def _capture_dolt_state(
     connection: Any, *, profile_name: str, audit_relations: set[str],
 ) -> dict[str, Any] | None:
-    """Capture the Dolt working-set identity without mutating it."""
-    del audit_relations
+    """Capture and classify the Dolt working set without mutating it."""
+    audit_relations = {str(name) for name in audit_relations}
     if profile_name != "dolt":
         return None
     identity = connection.exec_driver_sql(
         "SELECT DATABASE() AS database_name, ACTIVE_BRANCH() AS active_branch, "
         "DOLT_HASHOF('HEAD') AS head_hash"
     ).mappings().one()
+    status_rows = connection.exec_driver_sql(
+        "SELECT table_name, staged, status FROM dolt_status "
+        "ORDER BY table_name, staged, status"
+    ).mappings().all()
     state = {
         "database": str(identity["database_name"]).strip(),
         "active_branch": str(identity["active_branch"]).strip(),
         "head": str(identity["head_hash"]).strip(),
         "status": _dolt_evidence_block(
-            connection.exec_driver_sql(
-                "SELECT table_name, staged, status FROM dolt_status "
-                "ORDER BY table_name, staged, status"
-            ).mappings().all(),
+            status_rows, expected_keys=("table_name", "staged", "status"),
+        ),
+        "diff_summaries": {},
+    }
+    unrelated = {
+        "status": _dolt_evidence_block(
+            (
+                row for row in status_rows
+                if str(dict(row).get("table_name") or "") not in audit_relations
+            ),
             expected_keys=("table_name", "staged", "status"),
         ),
         "diff_summaries": {},
@@ -500,18 +510,33 @@ def _capture_dolt_state(
         ("head_to_staged", "HEAD", "STAGED"),
         ("staged_to_working", "STAGED", "WORKING"),
     ):
-        state["diff_summaries"][label] = _dolt_evidence_block(
-            connection.exec_driver_sql(
-                "SELECT from_table_name, to_table_name, diff_type, "
-                "data_change, schema_change "
-                f"FROM DOLT_DIFF_SUMMARY('{left}', '{right}') "
-                "ORDER BY from_table_name, to_table_name, diff_type"
-            ).mappings().all(),
-            expected_keys=(
-                "from_table_name", "to_table_name", "diff_type",
-                "data_change", "schema_change",
-            ),
+        rows = connection.exec_driver_sql(
+            "SELECT from_table_name, to_table_name, diff_type, "
+            "data_change, schema_change "
+            f"FROM DOLT_DIFF_SUMMARY('{left}', '{right}') "
+            "ORDER BY from_table_name, to_table_name, diff_type"
+        ).mappings().all()
+        expected_keys = (
+            "from_table_name", "to_table_name", "diff_type",
+            "data_change", "schema_change",
         )
+        state["diff_summaries"][label] = _dolt_evidence_block(
+            rows, expected_keys=expected_keys,
+        )
+        unrelated["diff_summaries"][label] = _dolt_evidence_block(
+            (
+                row for row in rows
+                if not {
+                    str(value) for value in (
+                        dict(row).get("from_table_name"),
+                        dict(row).get("to_table_name"),
+                    ) if value
+                } <= audit_relations
+            ),
+            expected_keys=expected_keys,
+        )
+    state["unrelated_working_set"] = unrelated
+    state["unrelated_sha256"] = _canonical_sha256(unrelated)
     state["snapshot_sha256"] = _canonical_sha256(state)
     return state
 
@@ -545,9 +570,11 @@ def _require_dolt_success_identity(
         return
     if before is None or after is None or any(
         before[key] != after[key] for key in ("database", "active_branch", "head")
-    ):
+    ) or (
+        "unrelated_sha256" in before or "unrelated_sha256" in after
+    ) and before.get("unrelated_sha256") != after.get("unrelated_sha256"):
         raise UnsupportedOperationError(
-            f"Dolt database/branch/HEAD changed during {phase}."
+            f"Dolt identity or unrelated working-set state changed during {phase}."
         )
 
 
@@ -676,10 +703,7 @@ def initialize_wide_catalog(
     )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
-    audit_relations = {
-        normative.fidelity_event.name,
-        normative.operation.name,
-    }
+    audit_relations = {table.name for table in normative.all()}
     with _bound_catalog_transaction(
         engine=engine, profile_name=profile.name, active=active,
         audit_relations=audit_relations, phase="catalog initialization",
@@ -780,10 +804,7 @@ def create_wide_dataset(
     )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
-    audit_relations = {
-        normative.fidelity_event.name,
-        normative.operation.name,
-    }
+    audit_relations = {table.name for table in normative.all()}
     with _bound_catalog_transaction(
         engine=engine, profile_name=profile.name, active=active_connection,
         audit_relations=audit_relations, phase="catalog initialization",
@@ -851,7 +872,7 @@ def create_wide_dataset(
         namespace_owned = True
         with _bound_catalog_transaction(
             engine=engine, profile_name=profile.name, active=active_connection,
-            audit_relations=audit_relations, phase="import",
+            audit_relations={*audit_relations, data_table.name}, phase="import",
         ) as connection:
             if connection.execute(
                 select(normative.dataset.c.dataset_id).where(or_(

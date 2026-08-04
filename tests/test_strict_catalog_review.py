@@ -95,6 +95,23 @@ def test_read_and_export_reject_obsolete_catalog_relations(tmp_path):
         )
 
 
+def test_missing_workflow_trigger_is_rejected_by_core_catalog_verification(
+    tmp_path,
+):
+    path = tmp_path / "workflow-trigger-drift.sqlite"
+    database = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=database)
+    engine = create_engine(database)
+    with engine.begin() as connection:
+        create_workflow_catalog(connection, workflow_catalog(MetaData()))
+        connection.exec_driver_sql(
+            "drop trigger oss_transformation_run_no_delete"
+        )
+
+    with pytest.raises(UnsupportedOperationError, match="incompatible"):
+        openstatspec.initialize_catalog(database_url=database)
+
+
 def test_verified_workflow_profile_remains_catalog_owned(tmp_path):
     path = tmp_path / "workflow-owned.sqlite"
     database = f"sqlite:///{path}"

@@ -57,6 +57,20 @@ def test_dolt_completion_identity_is_checked_before_transaction_commit(
     assert transaction_states == [False, True]
 
 
+def test_dolt_completion_rejects_unrelated_working_set_changes():
+    before = {
+        "database": "catalog", "active_branch": "main", "head": "abc123",
+        "unrelated_sha256": "before",
+    }
+    after = {**before, "unrelated_sha256": "after"}
+
+    import pytest
+    from openstatspec.core import UnsupportedOperationError
+
+    with pytest.raises(UnsupportedOperationError, match="unrelated working-set"):
+        wide._require_dolt_success_identity(before, after, phase="export audit")
+
+
 def test_export_lifecycle_events_remain_linked_to_the_dataset(tmp_path):
     path = tmp_path / "export-events.sqlite"
     database_url = f"sqlite:///{path}"

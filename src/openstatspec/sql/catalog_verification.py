@@ -205,7 +205,11 @@ def verify_catalog_relations(
         if name
     )
 
-    from .workflow import PROFILE_ID, PROFILE_SCHEMA_VERSION, workflow_catalog
+    from .workflow import (
+        PROFILE_ID, PROFILE_SCHEMA_VERSION, TransformationError,
+        _assert_trigger_definitions, _derived_trigger_sql,
+        _validate_workflow_schema, workflow_catalog,
+    )
 
     workflow = workflow_catalog(MetaData())
     workflow_tables = {table.name: table for table in workflow.all()}
@@ -215,6 +219,10 @@ def verify_catalog_relations(
             not _table_shape_valid(inspector, table)
             for table in workflow_tables.values()
         ):
+            _reject(workflow_present)
+        try:
+            _validate_workflow_schema(connection, workflow)
+        except TransformationError:
             _reject(workflow_present)
         identity_rows = connection.execute(
             select(workflow.transformation_profile_identity)
@@ -228,6 +236,7 @@ def verify_catalog_relations(
             _reject({workflow.transformation_profile_identity.name})
         owned_tables.update(workflow_tables)
         for row in connection.execute(select(
+            workflow.derived_dataset.c.derived_dataset_id,
             workflow.derived_dataset.c.physical_relation_name,
             workflow.derived_dataset.c.output_mode,
         )).mappings():
@@ -236,6 +245,16 @@ def verify_catalog_relations(
                 owned_views.add(name)
             else:
                 owned_tables.add(name)
+                try:
+                    _assert_trigger_definitions(
+                        connection,
+                        _derived_trigger_sql(
+                            connection, str(row["derived_dataset_id"]), name,
+                        ),
+                        code="derived_corrupt",
+                    )
+                except TransformationError:
+                    _reject({name})
 
     from .inplace_transform import apply_audit_catalog
 
