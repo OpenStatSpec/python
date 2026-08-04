@@ -977,6 +977,7 @@ def read_wide_dataset(
         rows = [dict(row) for row in connection.execute(
             select(data_table).order_by(data_table.c.__case_ordinal)
         ).mappings()]
+        rows = _canonicalize_database_numeric_rows(rows, variables)
         documents = connection.execute(
             select(normative.document)
             .where(normative.document.c.dataset_id == core_id)
