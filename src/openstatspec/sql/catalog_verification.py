@@ -235,11 +235,19 @@ def verify_catalog_relations(
         ):
             _reject({workflow.transformation_profile_identity.name})
         owned_tables.update(workflow_tables)
+        physically_removed = set(connection.execute(select(
+            workflow.derived_dataset_disposition_event.c.derived_dataset_id
+        ).where(
+            workflow.derived_dataset_disposition_event.c.event_kind
+            == "physical_removed"
+        )).scalars())
         for row in connection.execute(select(
             workflow.derived_dataset.c.derived_dataset_id,
             workflow.derived_dataset.c.physical_relation_name,
             workflow.derived_dataset.c.output_mode,
         )).mappings():
+            if row["derived_dataset_id"] in physically_removed:
+                continue
             name = str(row["physical_relation_name"])
             if row["output_mode"] == "view":
                 owned_views.add(name)
