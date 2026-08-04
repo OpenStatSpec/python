@@ -133,6 +133,73 @@ def test_official_spss_frontend_conformance_manifest() -> None:
             assert actual_metadata == case["expected_output_metadata"], case["id"]
 
 
+
+def _frontend_conformance_manifest_v02() -> Path:
+    configured = os.environ.get("OPENSTATSPEC_SPECIFICATION_DIR")
+    candidates = [
+        (
+            Path(configured) / "conformance/spss-syntax-frontend-0.2.json"
+            if configured
+            else None
+        ),
+        Path(__file__).resolve().parents[1]
+        / "openstatspec-specification/conformance/spss-syntax-frontend-0.2.json",
+        Path(__file__).resolve().parents[2]
+        / "specification/conformance/spss-syntax-frontend-0.2.json",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return candidate
+    raise RuntimeError(
+        "The SPSS frontend v0.2 conformance fixture is required; "
+        "set OPENSTATSPEC_SPECIFICATION_DIR."
+    )
+
+
+def test_official_spss_frontend_v02_conformance_manifest() -> None:
+    manifest_path = _frontend_conformance_manifest_v02()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    plan_manifest = json.loads(
+        (manifest_path.parent / "transformation-plan-0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plan_cases = {case["id"]: case for case in plan_manifest["cases"]}
+    for case in manifest["cases"]:
+        request = case["request"]
+        schema = VariableSchema(tuple(
+            VariableDefinition(
+                variable["name"],
+                variable["storage_kind"],
+                variable_label=variable.get("variable_label"),
+                format_family=variable.get("format_family"),
+                format_width=variable.get("format_width"),
+                format_decimals=variable.get("format_decimals"),
+                measurement_level=variable.get("measurement_level"),
+            )
+            for variable in request["input_schema"]["variables"]
+        ))
+        assert spss_source_hash(request["source_text"]) == case["expected_source_hash"]
+        if case["expected_error"] is not None:
+            with pytest.raises(TransformationFrontendError) as caught:
+                compile_spss_syntax(
+                    request["source_text"], schema,
+                    input_alias=request["input_alias"],
+                )
+            assert caught.value.code == case["expected_error"], case["id"]
+            continue
+        compilation = compile_spss_syntax(
+            request["source_text"], schema,
+            input_alias=request["input_alias"],
+        )
+        assert compilation.plan_hash == case["expected_plan_hash"], case["id"]
+        if "expected_plan_case" in case:
+            expected = plan_cases[case["expected_plan_case"]]
+            assert compilation.plan.as_dict() == expected["plan"], case["id"]
+            assert compilation.plan_hash == expected["expected_plan_hash"], case["id"]
+        else:
+            assert compilation.plan.contract == case["expected_plan_contract"], case["id"]
+
 def test_recode_and_labels_lower_to_exact_canonical_plan() -> None:
     source = (
         "RECODE q1 (1,2 = 0) (3 THRU 5 = 1) (ELSE = SYSMIS) "
@@ -276,6 +343,47 @@ def test_source_normalization_hash_and_positions_are_stable() -> None:
     assert compilation.source_hash == spss_source_hash(lf)
     assert compilation.plan_hash == compilation.plan.sha256()
 
+def test_string_comparison_fails_closed_until_exact_collation_is_supported() -> None:
+    error = _error(
+        "COMPUTE flag = 0. IF (Name = 'alice') flag = 1.",
+        _schema(VariableDefinition("Name", "string")),
+    )
+    assert error.code == "expression_type_unsupported"
+
+
+def test_string_assignment_fails_closed_until_width_semantics_are_supported() -> None:
+    error = _error(
+        "COMPUTE Copy = Name.",
+        _schema(VariableDefinition("Name", "string")),
+    )
+    assert error.code == "expression_type_unsupported"
+
+
+def test_v02_frontend_stable_diagnostics_match_the_normative_profile() -> None:
+    schema = _schema(VariableDefinition("q1", "numeric"))
+    assert _error(
+        "COMPUTE flag = 0. IF q1 = 1 flag = 1.", schema,
+    ).code == "spss_syntax_error"
+    assert _error(
+        "IF (q1 = 1) flag = 1.", schema,
+    ).code == "conditional_target_missing"
+    assert _error(
+        "FORMATS q1 (F2.1).", schema,
+    ).code == "invalid_format"
+    assert _error(
+        "FORMATS q1 (F8.17).", schema,
+    ).code == "invalid_format"
+    assert _error(
+        "FORMATS q1 (A8).", schema,
+    ).code == "invalid_format"
+
+
+def test_v01_plan_loader_preserves_official_contract_and_hash() -> None:
+    plan = _compile("RECODE score (1 = 2).", _schema(VariableDefinition("score", "numeric"))).plan
+    assert plan.contract == "openstatspec-transformation-plan-v0.1"
+    assert transformation_plan_from_dict(plan.as_dict()).sha256() == plan.sha256()
+
+
 
 @pytest.mark.parametrize(
     ("source", "code"),
@@ -294,6 +402,16 @@ def test_stable_failures(source: str, code: str) -> None:
     assert _error(
         source, _schema(VariableDefinition("q1", "numeric"))
     ).code == code
+
+
+def test_arbitrary_sql_and_python_sources_fail_closed() -> None:
+    schema = _schema(VariableDefinition("q1", "numeric"))
+    assert _error(
+        "SELECT * FROM q1.", schema,
+    ).code == "spss_syntax_error"
+    assert _error(
+        "PYTHON PROGRAM.", schema,
+    ).code == "unsupported_spss_command"
 
 
 def test_string_create_requires_declaration_before_mixed_type_diagnostic() -> None:
@@ -328,6 +446,101 @@ def test_strict_plan_loader_rejects_runtime_type_confusion() -> None:
     with pytest.raises(TransformationFrontendError) as caught:
         transformation_plan_from_dict(raw)
     assert caught.value.code == "invalid_transformation_plan"
+
+
+def test_strict_plan_loader_rejects_unhashable_enum_values() -> None:
+    typed_value = TypedValue.binary64(1).as_dict()
+    literal = {"kind": "literal", "value": typed_value}
+    variable = {"kind": "variable", "variable": "q1"}
+    comparison = {
+        "expression": "comparison",
+        "left": variable,
+        "operator": "=",
+        "right": literal,
+    }
+    invalid_operations = [
+        {
+            "op": "conditional_assign",
+            "condition": {**comparison, "operator": []},
+            "target": "q1",
+            "value": literal,
+        },
+        {
+            "op": "conditional_assign",
+            "condition": {
+                "expression": "boolean",
+                "operator": {},
+                "operands": [comparison, comparison],
+            },
+            "target": "q1",
+            "value": literal,
+        },
+        {
+            "op": "assign",
+            "target": "q2",
+            "target_mode": [],
+            "value": literal,
+        },
+        {
+            "op": "set_measurement_level",
+            "variable": "q1",
+            "level": {},
+        },
+        {
+            "op": "recode",
+            "source": "q1",
+            "target": "q2",
+            "target_mode": [],
+            "rules": [{
+                "match": {"kind": "values", "values": [typed_value]},
+                "result": {"kind": "literal", "value": typed_value},
+            }],
+            "unmatched": {"kind": "copy"},
+        },
+    ]
+
+    raw_plans = [
+        {
+            "contract": "openstatspec-transformation-plan-v0.2",
+            "input_alias": "parent",
+            "operations": [operation],
+        }
+        for operation in invalid_operations
+    ]
+    raw_plans.append({
+        "contract": [],
+        "input_alias": "parent",
+        "operations": [{"op": "execute"}],
+    })
+
+    for raw in raw_plans:
+        with pytest.raises(TransformationFrontendError) as caught:
+            transformation_plan_from_dict(raw)
+        assert caught.value.code == "invalid_transformation_plan"
+
+
+def test_v02_plan_and_schema_reject_decimal_format_that_cannot_fit() -> None:
+    raw = {
+        "contract": "openstatspec-transformation-plan-v0.2",
+        "input_alias": "parent",
+        "operations": [
+            {
+                "op": "set_format",
+                "variable": "target",
+                "family": "F",
+                "width": 2,
+                "decimals": 2,
+            }
+        ],
+    }
+    with pytest.raises(TransformationFrontendError) as caught:
+        transformation_plan_from_dict(raw)
+    assert caught.value.code == "invalid_format"
+    with pytest.raises(ValueError, match="fit the width"):
+        VariableDefinition(
+            "target", "numeric", format_family="F",
+            format_width=2, format_decimals=2,
+        )
 
 
 def test_custom_nonempty_input_alias_is_canonical() -> None:

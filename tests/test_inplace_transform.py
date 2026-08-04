@@ -174,7 +174,7 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     ).fetchone()
     assert audit == (
         "spss_syntax",
-        "openstatspec-spss-syntax-frontend-v0.1",
+        "openstatspec-spss-syntax-frontend-v0.2",
     )
 
 
@@ -408,6 +408,7 @@ def test_public_apply_binds_expected_dolt_branch_and_head(
     )
     states = iter([
         ("feature/recode", "abc123", 0),
+        ("feature/recode", "abc123", 0),
         ("feature/recode", "abc123", 4),
     ])
     monkeypatch.setattr(
@@ -506,3 +507,42 @@ def test_capability_declares_dolt_owned_versioning() -> None:
     assert declaration["creates_persistent_data_copy"] is False
     assert declaration["openstatspec_rollback_or_version_history"] is False
     assert declaration["performs_dolt_commit"] is False
+
+@pytest.mark.parametrize("profile_name", ["sqlite", "postgresql"])
+def test_transactional_ddl_rollback_skips_unlocked_compensation(
+    tmp_path, monkeypatch, profile_name,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'transactional-rollback.sqlite'}"
+    monkeypatch.setattr(
+        inplace_transform,
+        "effective_profile",
+        lambda _url: (SimpleNamespace(name=profile_name), {}),
+    )
+
+    def fail_after_schema_change(
+        _connection, *, mutation_journal, **_kwargs,
+    ):
+        mutation_journal["added_columns"] = ["score_band"]
+        raise RuntimeError("simulated transactional failure")
+
+    monkeypatch.setattr(
+        inplace_transform, "_apply_plan_on_connection", fail_after_schema_change,
+    )
+    monkeypatch.setattr(
+        inplace_transform,
+        "_compensate_failed_apply",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Transactional rollback must not run unlocked compensation"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated transactional failure"):
+        inplace_transform._run_in_place_submission(
+            database_url=database_url,
+            dataset_id="dataset",
+            actor="test-agent",
+            prepare=lambda _connection, _dataset_id: _submission(
+                "RECODE score (1 = 0) INTO score_band."
+            ),
+        )
+

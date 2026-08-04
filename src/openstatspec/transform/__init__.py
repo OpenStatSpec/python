@@ -3,8 +3,11 @@
 from .errors import SourcePosition, SourceSpan, TransformationFrontendError
 from .plan import (
     TRANSFORMATION_PLAN_CONTRACT,
+    AssignOperation, BooleanExpression, ComparisonExpression,
+    ConditionalAssignOperation, ExecuteOperation, Operand, PredicateExpression,
     RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
-    ReplaceValueLabelsOperation, SetVariableLabelOperation, TransformationPlan,
+    ReplaceValueLabelsOperation, SetFormatOperation,
+    SetMeasurementLevelOperation, SetVariableLabelOperation, TransformationPlan,
     TypedValue, ValueLabel, canonical_plan_hash, canonical_plan_json,
     transformation_plan_from_dict,
 )
@@ -13,9 +16,13 @@ from .schema import (
 )
 from .validation import bind_transformation_plan
 __all__ = [
+    "AssignOperation", "BooleanExpression", "ComparisonExpression",
+    "ConditionalAssignOperation", "ExecuteOperation", "Operand",
+    "PredicateExpression",
     "BoundTransformation",
     "RecodeMatch", "RecodeOperation", "RecodeResult",
     "RecodeRule", "ReplaceValueLabelsOperation", "SPSS_FRONTEND_CONTRACT",
+    "SetFormatOperation", "SetMeasurementLevelOperation",
     "SetVariableLabelOperation", "SourcePosition", "SourceSpan", "StorageKind",
     "SpssFrontendCompilation",
     "SpssSyntaxProgram", "TRANSFORMATION_PLAN_CONTRACT", "TransformationFrontendError",

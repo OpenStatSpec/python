@@ -13,7 +13,8 @@ from ...transform.errors import SourcePosition, SourceSpan, frontend_error
 
 TokenKind = Literal[
     "identifier", "number", "string", "left_paren", "right_paren",
-    "equals", "comma", "slash", "period", "eof",
+    "equals", "less", "less_equal", "greater", "greater_equal",
+    "comma", "slash", "period", "eof",
 ]
 
 
@@ -62,6 +63,80 @@ class RecodeCommandSyntax:
     targets: tuple[Token, ...] | None
     span: SourceSpan
 
+@dataclass(frozen=True)
+class OperandSyntax:
+    kind: Literal["variable", "literal"]
+    span: SourceSpan
+    variable: Token | None = None
+    literal: SyntaxLiteral | None = None
+
+
+@dataclass(frozen=True)
+class ComparisonSyntax:
+    left: OperandSyntax
+    operator: Literal["=", "<", "<=", ">", ">="]
+    right: OperandSyntax
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class BooleanSyntax:
+    operator: Literal["and", "or"]
+    operands: tuple["PredicateSyntax", ...]
+    span: SourceSpan
+
+
+PredicateSyntax = ComparisonSyntax | BooleanSyntax
+
+
+@dataclass(frozen=True)
+class ComputeCommandSyntax:
+    target: Token
+    value: OperandSyntax
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class IfCommandSyntax:
+    condition: PredicateSyntax
+    target: Token
+    value: OperandSyntax
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class FormatAssignmentSyntax:
+    variable: Token
+    family: str
+    width: int
+    decimals: int
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class FormatsCommandSyntax:
+    assignments: tuple[FormatAssignmentSyntax, ...]
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class VariableLevelAssignmentSyntax:
+    variable: Token
+    level: Literal["nominal", "ordinal", "scale"]
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class VariableLevelCommandSyntax:
+    assignments: tuple[VariableLevelAssignmentSyntax, ...]
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class ExecuteCommandSyntax:
+    span: SourceSpan
+
+
 
 @dataclass(frozen=True)
 class VariableLabelSyntax:
@@ -97,7 +172,9 @@ class ValueLabelsCommandSyntax:
 
 
 SyntaxCommand = (
-    RecodeCommandSyntax | VariableLabelsCommandSyntax | ValueLabelsCommandSyntax
+    RecodeCommandSyntax | ComputeCommandSyntax | IfCommandSyntax
+    | VariableLabelsCommandSyntax | ValueLabelsCommandSyntax
+    | FormatsCommandSyntax | VariableLevelCommandSyntax | ExecuteCommandSyntax
 )
 
 
@@ -108,7 +185,7 @@ class SpssSyntaxProgram:
 
 
 _NUMBER = re.compile(
-    r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[Ee][+-]?[0-9]+)?"
+    r"[+-]?(?:(?:[0-9]+(?:\.[0-9]+)?)|(?:\.[0-9]+))(?:[Ee][+-]?[0-9]+)?"
 )
 _IDENTIFIER_START = frozenset("_@$#")
 _IDENTIFIER_CONTINUE = frozenset("_@$#")
@@ -151,7 +228,8 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
     offset = 0
     punctuation: dict[str, TokenKind] = {
         "(": "left_paren", ")": "right_paren", "=": "equals",
-        ",": "comma", "/": "slash", ".": "period",
+        "<": "less", ">": "greater", ",": "comma", "/": "slash",
+        ".": "period",
     }
     while offset < len(source):
         character = source[offset]
@@ -226,6 +304,14 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
             tokens.append(Token(
                 "identifier", text, text, _span(source, start, offset),
             ))
+            continue
+        if source.startswith("<=", offset) or source.startswith(">=", offset):
+            text = source[offset:offset + 2]
+            tokens.append(Token(
+                "less_equal" if text == "<=" else "greater_equal",
+                text, text, _span(source, offset, offset + 2),
+            ))
+            offset += 2
             continue
         if character in punctuation:
             tokens.append(Token(
@@ -312,6 +398,117 @@ class _Parser:
             "spss_syntax_error", "Expected a numeric or string literal.",
             span=token.span,
         )
+
+    def operand(self) -> OperandSyntax:
+        if self.current.kind == "identifier":
+            token = self.advance()
+            return OperandSyntax("variable", token.span, variable=token)
+        literal = self.literal()
+        return OperandSyntax("literal", literal.span, literal=literal)
+
+    def comparison(self) -> PredicateSyntax:
+        if self.accepts("left_paren") is not None:
+            expression = self.predicate()
+            self.expects("right_paren", "Expected ')' after expression.")
+            return expression
+        left = self.operand()
+        operators = {
+            "equals": "=", "less": "<", "less_equal": "<=",
+            "greater": ">", "greater_equal": ">=",
+        }
+        token = self.current
+        if token.kind not in operators:
+            raise frontend_error(
+                "spss_syntax_error", "Expected a comparison operator.",
+                span=token.span,
+            )
+        self.advance()
+        right = self.operand()
+        return ComparisonSyntax(
+            left, operators[token.kind], right, _joined_span(left.span, right.span),
+        )
+
+    def conjunction(self) -> PredicateSyntax:
+        operands = [self.comparison()]
+        while self.accepts_keyword("AND") is not None:
+            operands.append(self.comparison())
+        if len(operands) == 1:
+            return operands[0]
+        return BooleanSyntax(
+            "and", tuple(operands), _joined_span(operands[0].span, operands[-1].span),
+        )
+
+    def predicate(self) -> PredicateSyntax:
+        operands = [self.conjunction()]
+        while self.accepts_keyword("OR") is not None:
+            operands.append(self.conjunction())
+        if len(operands) == 1:
+            return operands[0]
+        return BooleanSyntax(
+            "or", tuple(operands), _joined_span(operands[0].span, operands[-1].span),
+        )
+
+    def compute(self, start: Token) -> ComputeCommandSyntax:
+        target = self.expects("identifier", "COMPUTE requires a target variable.")
+        self.expects("equals", "Expected '=' in COMPUTE.")
+        value = self.operand()
+        end = self.expects("period", "Expected '.' after COMPUTE.")
+        return ComputeCommandSyntax(target, value, _joined_span(start.span, end.span))
+
+    def if_command(self, start: Token) -> IfCommandSyntax:
+        self.expects("left_paren", "Expected '(' before the IF predicate.")
+        condition = self.predicate()
+        self.expects("right_paren", "Expected ')' after the IF predicate.")
+        target = self.expects("identifier", "IF requires a target variable.")
+        self.expects("equals", "Expected '=' in IF assignment.")
+        value = self.operand()
+        end = self.expects("period", "Expected '.' after IF.")
+        return IfCommandSyntax(condition, target, value, _joined_span(start.span, end.span))
+
+    def formats(self, start: Token) -> FormatsCommandSyntax:
+        assignments: list[FormatAssignmentSyntax] = []
+        while self.current.kind not in {"period", "eof"}:
+            self.accepts("slash")
+            variable = self.expects("identifier", "FORMATS requires a variable name.")
+            self.expects("left_paren", "Expected '(' before an SPSS format.")
+            format_token = self.expects("identifier", "Expected an SPSS format such as F1.0.")
+            match = re.fullmatch(r"([A-Za-z]+)([0-9]+)(?:[.]([0-9]+))?", format_token.text)
+            if match is None:
+                raise frontend_error("invalid_format", "Expected a bounded SPSS format such as F1.0.", span=format_token.span)
+            right = self.expects("right_paren", "Expected ')' after an SPSS format.")
+            family, width = match.group(1).upper(), int(match.group(2))
+            decimals = int(match.group(3) or 0)
+            if (family != "F" or width < 1 or width > 40 or decimals > 16
+                    or (decimals != 0 and width < decimals + 2)):
+                raise frontend_error("invalid_format", "Only valid numeric F formats are supported.", span=format_token.span, format=format_token.text)
+            assignments.append(FormatAssignmentSyntax(variable, family, width, decimals, _joined_span(variable.span, right.span)))
+        if not assignments:
+            raise frontend_error("spss_syntax_error", "FORMATS requires an assignment.", span=self.current.span)
+        end = self.expects("period", "Expected '.' after FORMATS.")
+        return FormatsCommandSyntax(tuple(assignments), _joined_span(start.span, end.span))
+
+    def variable_level(self, start: Token) -> VariableLevelCommandSyntax:
+        self.expects_keyword("LEVEL")
+        assignments: list[VariableLevelAssignmentSyntax] = []
+        while self.current.kind not in {"period", "eof"}:
+            self.accepts("slash")
+            variable = self.expects("identifier", "VARIABLE LEVEL requires a variable name.")
+            self.expects("left_paren", "Expected '(' before a measurement level.")
+            level = self.expects("identifier", "Expected NOMINAL, ORDINAL, or SCALE.")
+            normalized = level.text.casefold()
+            if normalized not in {"nominal", "ordinal", "scale"}:
+                raise frontend_error("invalid_measurement_level", "Expected NOMINAL, ORDINAL, or SCALE.", span=level.span, level=level.text)
+            right = self.expects("right_paren", "Expected ')' after a measurement level.")
+            assignments.append(VariableLevelAssignmentSyntax(variable, normalized, _joined_span(variable.span, right.span)))
+        if not assignments:
+            raise frontend_error("spss_syntax_error", "VARIABLE LEVEL requires an assignment.", span=self.current.span)
+        end = self.expects("period", "Expected '.' after VARIABLE LEVEL.")
+        return VariableLevelCommandSyntax(tuple(assignments), _joined_span(start.span, end.span))
+
+    def execute(self, start: Token) -> ExecuteCommandSyntax:
+        end = self.expects("period", "Expected '.' after EXECUTE.")
+        return ExecuteCommandSyntax(_joined_span(start.span, end.span))
+
 
     def recode_result(self) -> RecodeResultSyntax:
         if (token := self.accepts_keyword("SYSMIS")) is not None:
@@ -447,8 +644,19 @@ class _Parser:
             command = start.text.casefold()
             if command == "recode":
                 commands.append(self.recode(start))
+            elif command == "compute":
+                commands.append(self.compute(start))
+            elif command == "if":
+                commands.append(self.if_command(start))
+            elif command == "formats":
+                commands.append(self.formats(start))
+            elif command == "execute":
+                commands.append(self.execute(start))
             elif command == "variable":
-                commands.append(self.variable_labels(start))
+                if self.current.kind == "identifier" and self.current.text.casefold() == "level":
+                    commands.append(self.variable_level(start))
+                else:
+                    commands.append(self.variable_labels(start))
             elif command == "value":
                 commands.append(self.value_labels(start))
             else:

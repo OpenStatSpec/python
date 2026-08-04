@@ -11,7 +11,7 @@ from .syntax import (
 )
 
 
-SPSS_FRONTEND_CONTRACT = "openstatspec-spss-syntax-frontend-v0.1"
+SPSS_FRONTEND_CONTRACT = "openstatspec-spss-syntax-frontend-v0.2"
 
 __all__ = [
     "SPSS_FRONTEND_CONTRACT",
