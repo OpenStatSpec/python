@@ -1,22 +1,24 @@
 """SQLite reference SQL profile for the strict OpenStatSpec wide-table contract."""
 
+import hashlib
 import json
 import math
 import re
 import sys
 from datetime import UTC, datetime
+from contextlib import contextmanager
 from uuid import uuid4
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import (
     BigInteger, Column, Float, MetaData, Table, Text, create_engine, insert,
-    inspect, or_, select,
+    inspect, or_, select, update,
 )
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from ..core import UnsupportedOperationError
-from .capabilities import effective_profile
-from .profiles import preflight, validate_connection_url
+from .capabilities import active_connection, dolt_operational_write_enabled, effective_profile
+from .profiles import preflight, statement_payload_bytes, validate_connection_url
 from .normative import (
     CATALOG_CONTRACT_ID,
     CATALOG_SCHEMA_VERSION,
@@ -50,6 +52,18 @@ def string_type(profile: Any) -> Text:
     return mysql.LONGTEXT() if profile.name == "dolt" else Text()
 
 
+def _wide_column_type(profile: Any, storage_kind: str) -> Any:
+    """Return the strict physical type for one wide-table source column."""
+    return binary64_type() if storage_kind == "numeric" else string_type(profile)
+
+
+def _valid_wide_string_type(profile: Any, column_type: Any) -> bool:
+    """Validate the profile-specific reflected string storage type."""
+    if profile.name == "dolt":
+        return isinstance(column_type, mysql.LONGTEXT)
+    return isinstance(column_type, Text)
+
+
 def binary64_type() -> Float:
     """Return the required IEEE-754 binary64 SQL type for every profile.
 
@@ -76,7 +90,7 @@ def _record_failed_preflight(
 ) -> None:
     """Persist a failed preflight in the normative audit catalog."""
     with engine.begin() as connection:
-        create_normative_catalog(connection, normative)
+        _verify_normative_catalog(connection, normative)
         failed_at = datetime.now(UTC).replace(tzinfo=None)
         record_normative_operation(
             connection, normative, operation_id=operation_id,
@@ -436,6 +450,267 @@ def physical_name(source_name: str, used: set[str]) -> str:
     return candidate
 
 
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _dolt_evidence_block(
+    rows: Iterable[Mapping[str, Any]], *, expected_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    normalized = [
+        {key: dict(row)[key] for key in expected_keys}
+        for row in rows
+    ]
+    normalized.sort(key=lambda row: json.dumps(row, sort_keys=True, default=str))
+    return {"rows": normalized, "sha256": _canonical_sha256(normalized)}
+
+
+def _capture_dolt_state(
+    connection: Any, *, profile_name: str, audit_relations: set[str],
+) -> dict[str, Any] | None:
+    """Capture the Dolt working-set identity without mutating it."""
+    del audit_relations
+    if profile_name != "dolt":
+        return None
+    identity = connection.exec_driver_sql(
+        "SELECT DATABASE() AS database_name, ACTIVE_BRANCH() AS active_branch, "
+        "DOLT_HASHOF('HEAD') AS head_hash"
+    ).mappings().one()
+    state = {
+        "database": str(identity["database_name"]).strip(),
+        "active_branch": str(identity["active_branch"]).strip(),
+        "head": str(identity["head_hash"]).strip(),
+        "status": _dolt_evidence_block(
+            connection.exec_driver_sql(
+                "SELECT table_name, staged, status FROM dolt_status "
+                "ORDER BY table_name, staged, status"
+            ).mappings().all(),
+            expected_keys=("table_name", "staged", "status"),
+        ),
+        "diff_summaries": {},
+    }
+    for label, left, right in (
+        ("head_to_working", "HEAD", "WORKING"),
+        ("head_to_staged", "HEAD", "STAGED"),
+        ("staged_to_working", "STAGED", "WORKING"),
+    ):
+        state["diff_summaries"][label] = _dolt_evidence_block(
+            connection.exec_driver_sql(
+                "SELECT from_table_name, to_table_name, diff_type, "
+                "data_change, schema_change "
+                f"FROM DOLT_DIFF_SUMMARY('{left}', '{right}') "
+                "ORDER BY from_table_name, to_table_name, diff_type"
+            ).mappings().all(),
+            expected_keys=(
+                "from_table_name", "to_table_name", "diff_type",
+                "data_change", "schema_change",
+            ),
+        )
+    state["snapshot_sha256"] = _canonical_sha256(state)
+    return state
+
+
+def _require_dolt_working_set_binding(
+    snapshot: Mapping[str, Any] | None,
+    active: Mapping[str, Any],
+    *,
+    phase: str,
+) -> None:
+    if snapshot is None:
+        return
+    binding = active.get("working_set_binding")
+    if (
+        not isinstance(binding, Mapping)
+        or snapshot["database"] != binding.get("database")
+        or snapshot["active_branch"] != binding.get("active_branch")
+    ):
+        raise UnsupportedOperationError(
+            f"Dolt database/branch working-set binding mismatch during {phase}."
+        )
+
+
+def _require_dolt_success_identity(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+    *,
+    phase: str,
+) -> None:
+    if before is None and after is None:
+        return
+    if before is None or after is None or any(
+        before[key] != after[key] for key in ("database", "active_branch", "head")
+    ):
+        raise UnsupportedOperationError(
+            f"Dolt database/branch/HEAD changed during {phase}."
+        )
+
+
+def _dolt_failure_boundary_evidence(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "applicable": before is not None or after is not None,
+        "before": before,
+        "after": after,
+    }
+
+
+@contextmanager
+def _bound_catalog_transaction(
+    *, engine: Any, profile_name: str, active: Mapping[str, Any],
+    audit_relations: set[str], phase: str,
+):
+    """Bind a catalog mutation to one Dolt database, branch, and HEAD."""
+    with engine.connect() as connection:
+        before = _capture_dolt_state(
+            connection, profile_name=profile_name,
+            audit_relations=audit_relations,
+        )
+        _require_dolt_working_set_binding(before, active, phase=f"{phase} preflight")
+        if profile_name != "sqlite":
+            connection.rollback()
+        try:
+            with connection.begin():
+                yield connection
+        except Exception:
+            after = _capture_dolt_state(
+                connection, profile_name=profile_name,
+                audit_relations=audit_relations,
+            )
+            _dolt_failure_boundary_evidence(before, after)
+            raise
+        after = _capture_dolt_state(
+            connection, profile_name=profile_name,
+            audit_relations=audit_relations,
+        )
+        _require_dolt_success_identity(before, after, phase=phase)
+
+
+def dolt_state_snapshot(
+    *, database_url: str, dolt_conformance_source: Any | None = None,
+) -> dict[str, Any]:
+    """Return read-only branch, HEAD, status, and diff evidence for Dolt."""
+    validate_connection_url(database_url)
+    active = active_connection(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    if active["profile"] != "dolt":
+        raise UnsupportedOperationError(
+            "dolt_state_snapshot requires a positively identified Dolt connection."
+        )
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        identity = connection.exec_driver_sql(
+            "SELECT DATABASE() AS database_name, ACTIVE_BRANCH() AS active_branch, "
+            "DOLT_HASHOF('HEAD') AS head_hash"
+        ).mappings().one()
+        summaries = {}
+        for label, left, right in (
+            ("head_to_working", "HEAD", "WORKING"),
+            ("head_to_staged", "HEAD", "STAGED"),
+            ("staged_to_working", "STAGED", "WORKING"),
+        ):
+            summaries[label] = _dolt_evidence_block(
+                connection.exec_driver_sql(
+                    "SELECT from_table_name, to_table_name, diff_type, "
+                    "data_change, schema_change "
+                    f"FROM DOLT_DIFF_SUMMARY('{left}', '{right}') "
+                    "ORDER BY from_table_name, to_table_name, diff_type"
+                ).mappings().all(),
+                expected_keys=(
+                    "from_table_name", "to_table_name", "diff_type",
+                    "data_change", "schema_change",
+                ),
+            )
+        status = _dolt_evidence_block(
+            connection.exec_driver_sql(
+                "SELECT table_name, staged, status FROM dolt_status "
+                "ORDER BY table_name, staged, status"
+            ).mappings().all(),
+            expected_keys=("table_name", "staged", "status"),
+        )
+    state = {
+        "database": str(identity["database_name"]).strip(),
+        "active_branch": str(identity["active_branch"]).strip(),
+        "head": str(identity["head_hash"]).strip(),
+        "status": status,
+        "diff_summaries": summaries,
+    }
+    binding = active.get("working_set_binding")
+    if (
+        not isinstance(binding, Mapping)
+        or state["database"] != binding.get("database")
+        or state["active_branch"] != binding.get("active_branch")
+    ):
+        raise UnsupportedOperationError(
+            "Dolt database/branch working-set binding mismatch during read-only state capture."
+        )
+    state["snapshot_sha256"] = _canonical_sha256(state)
+    return {
+        "profile": "dolt",
+        "server_version": active["server_version"],
+        "read_only": True,
+        "operational_write_enabled": dolt_operational_write_enabled(
+            active, declaration_matched=bool(active["claimed_supported"]),
+        ),
+        "working_set_binding": binding,
+        "state": state,
+    }
+
+
+def initialize_wide_catalog(
+    *, database_url: str, dolt_conformance_source: Any | None = None,
+) -> dict[str, Any]:
+    """Initialize or verify the singular normative OpenStatSpec catalog."""
+    validate_connection_url(database_url)
+    profile, _active = effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    engine = create_engine(database_url)
+    normative = normative_catalog(MetaData())
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        views = set(inspector.get_view_names())
+        if views and not inspector.has_table(normative.catalog_identity.name):
+            raise UnsupportedOperationError(
+                "The selected database catalog is foreign; initialization is not permitted."
+            )
+        try:
+            create_normative_catalog(connection, normative)
+        except RuntimeError as error:
+            raise UnsupportedOperationError(
+                "The selected database catalog is foreign or incompatible; "
+                "initialization is not permitted."
+            ) from error
+        require_verified_catalog(connection)
+    return {"profile": profile.name, "catalog": "verified"}
+
+
+def _bounded_batches(
+    rows: Iterable[Mapping[str, Any]], variables: Iterable[Mapping[str, Any]],
+    maximum_statement_bytes: int | None,
+) -> Iterable[list[Mapping[str, Any]]]:
+    """Partition rows without exceeding the profile's statement payload budget."""
+    batch: list[Mapping[str, Any]] = []
+    size = 0
+    for row in rows:
+        row_size = statement_payload_bytes(row, variables)
+        if (
+            batch and maximum_statement_bytes is not None
+            and size + row_size > maximum_statement_bytes
+        ):
+            yield batch
+            batch, size = [], 0
+        batch.append(row)
+        size += row_size
+    if batch:
+        yield batch
+
+
 def data_table_name(dataset_id: str) -> str:
     stem = _IDENTIFIER.sub("_", dataset_id).strip("_").lower() or "dataset"
     return f"data_{stem[:48]}"
@@ -455,12 +730,28 @@ def create_wide_dataset(
     source_extensions: Mapping[str, Any] | None = None,
     fidelity_events: Iterable[Mapping[str, Any]] = (),
     operation_details: Mapping[str, Any] | None = None,
+    dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
     del source_table_name, source_created_at, source_modified_at, operation_details
     validate_connection_url(database_url)
-    profile, _active_connection = effective_profile(database_url)
+    profile, _active_connection = (
+        effective_profile(database_url)
+        if dolt_conformance_source is None
+        else effective_profile(
+            database_url, dolt_conformance_source=dolt_conformance_source,
+        )
+    )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
+    with engine.begin() as catalog_connection:
+        catalog_existed = inspect(catalog_connection).has_table(
+            normative.catalog_identity.name
+        )
+        create_normative_catalog(catalog_connection, normative)
+        if catalog_existed:
+            require_verified_catalog(catalog_connection)
+        else:
+            _verify_normative_catalog(catalog_connection, normative)
     operation_id = str(uuid4())
     normative_dataset_id = str(uuid4())
     fidelity_events = tuple(fidelity_events)
@@ -512,7 +803,7 @@ def create_wide_dataset(
     data_table_created = False
     try:
         with engine.begin() as setup:
-            create_normative_catalog(setup, normative)
+            _verify_normative_catalog(setup, normative)
         namespace_owned = True
         with engine.begin() as connection:
             if connection.execute(
@@ -633,10 +924,13 @@ def create_wide_dataset(
 
 def read_wide_dataset(
     *, database_url: str, dataset_id: str, profile: Any | None = None,
+    dolt_conformance_source: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Read an export descriptor from the normative catalog without mutation."""
     if profile is None:
-        profile, _active = effective_profile(database_url)
+        profile, _active = effective_profile(
+            database_url, dolt_conformance_source=dolt_conformance_source,
+        )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
     with engine.connect() as connection:
@@ -837,14 +1131,41 @@ def read_wide_dataset(
 
 def _verify_normative_catalog(connection: Any, tables: Any) -> None:
     if not inspect(connection).has_table(tables.catalog_identity.name):
-        raise RuntimeError("The core OpenStatSpec catalog is absent.")
+        raise UnsupportedOperationError("The OpenStatSpec catalog is absent.")
     identities = connection.execute(select(tables.catalog_identity)).mappings().all()
     if len(identities) != 1 or (
         identities[0]["catalog_identity_key"] != 1
         or identities[0]["contract_id"] != CATALOG_CONTRACT_ID
         or identities[0]["schema_version"] != CATALOG_SCHEMA_VERSION
     ):
+
         raise RuntimeError("The core OpenStatSpec catalog identity is incompatible.")
+
+def require_verified_catalog(
+    connection: Any,
+    *,
+    allowed_migrations: Mapping[str, set[str]] | None = None,
+) -> None:
+    """Verify that the namespace contains only the normative catalog and owned data."""
+    normative = normative_catalog(MetaData())
+    _verify_normative_catalog(connection, normative)
+    expected = {table.name for table in normative.all()}
+    expected.update(
+        str(name) for name in connection.execute(
+            select(normative.dataset.c.physical_table_name)
+        ).scalars()
+    )
+    expected.update((allowed_migrations or {}).keys())
+    expected.add("transformation_apply")
+    inspector = inspect(connection)
+    unknown = set(inspector.get_table_names()) - expected
+    views = set(inspector.get_view_names())
+    if unknown or views:
+        relations = ", ".join(sorted(unknown | views))
+        raise UnsupportedOperationError(
+            "The selected database catalog contains foreign or obsolete "
+            f"relations: {relations}. Remove them manually before continuing."
+        )
 
 
 def _resolve_normative_dataset(
@@ -945,8 +1266,14 @@ def _export_response_set(
     return definition
 
 
-def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], ...]:
+def read_fidelity_events(
+    *, database_url: str, dataset_id: str,
+    dolt_conformance_source: Any | None = None,
+) -> tuple[dict[str, Any], ...]:
     """Read fidelity diagnostics from the normative catalog."""
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
     with engine.connect() as connection:
@@ -972,10 +1299,15 @@ def record_export_operation(
     *, database_url: str, dataset_id: str, destination: str,
     allowed_fidelity_events: Iterable[Mapping[str, Any]],
     operation_details: Mapping[str, Any] | None = None,
+    terminal: bool = True,
+    dolt_conformance_source: Any | None = None,
 ) -> str:
     """Persist a completed export only in the normative audit catalog."""
     del destination, operation_details
     engine = create_engine(database_url)
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     normative = normative_catalog(MetaData())
     operation_id = str(uuid4())
     events = tuple(allowed_fidelity_events)
@@ -983,10 +1315,11 @@ def record_export_operation(
         _verify_normative_catalog(connection, normative)
         dataset = _resolve_normative_dataset(connection, normative, dataset_id)
         completed_at = datetime.now(UTC).replace(tzinfo=None)
+        status = "succeeded" if terminal else "started"
         record_normative_operation(
             connection, normative, operation_id=operation_id,
-            operation_kind="export", status="succeeded", source_format=None,
-            started_at=completed_at, completed_at=completed_at,
+            operation_kind="export", status=status, source_format=None,
+            started_at=completed_at, completed_at=completed_at if terminal else None,
         )
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,
@@ -1002,10 +1335,199 @@ def record_export_operation(
         )
     return operation_id
 
-def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, Any]:
-    profile, _active = effective_profile(database_url)
+
+def _export_operation_row(
+    connection: Any, normative: Any, operation_id: str,
+) -> Mapping[str, Any]:
+    row = connection.execute(
+        select(normative.operation).where(
+            normative.operation.c.operation_id == operation_id
+        )
+    ).mappings().one_or_none()
+    if row is None or row["operation_kind"] != "export":
+        raise UnsupportedOperationError("The export operation does not exist.")
+    return row
+
+
+def finish_export_operation(
+    *, database_url: str, operation_id: str,
+    dolt_conformance_source: Any | None = None,
+) -> None:
+    """Mark a started normative export operation as succeeded."""
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    normative = normative_catalog(MetaData())
+    with create_engine(database_url).begin() as connection:
+        _verify_normative_catalog(connection, normative)
+        row = _export_operation_row(connection, normative, operation_id)
+        if row["status"] != "started":
+            raise UnsupportedOperationError(
+                "Only a started export operation can be finalized."
+            )
+        finish_normative_operation(
+            connection, normative, operation_id=operation_id, status="succeeded",
+        )
+
+
+def read_export_operation_state(
+    *, database_url: str, operation_id: str,
+    dolt_conformance_source: Any | None = None,
+) -> dict[str, Any]:
+    """Read the singular normative export-operation state."""
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    normative = normative_catalog(MetaData())
+    with create_engine(database_url).connect() as connection:
+        _verify_normative_catalog(connection, normative)
+        row = _export_operation_row(connection, normative, operation_id)
+    classification = {
+        "started": "running",
+        "succeeded": "succeeded",
+        "failed": "failed",
+    }.get(str(row["status"]), "ambiguous")
+    return {
+        "operation_id": operation_id,
+        "normative": {
+            "operation_kind": row["operation_kind"],
+            "status": row["status"],
+        },
+        "classification": classification,
+    }
+
+
+def fail_export_operation(
+    *, database_url: str, operation_id: str,
+    failure_details: Mapping[str, Any],
+    dolt_conformance_source: Any | None = None,
+) -> None:
+    """Close a started normative export after filesystem compensation."""
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    normative = normative_catalog(MetaData())
+    event = {
+        "code": "export_failed",
+        "detail": "Export publication or finalization failed after audit start.",
+        "severity": "error",
+        "details": dict(failure_details),
+    }
+    with create_engine(database_url).begin() as connection:
+        _verify_normative_catalog(connection, normative)
+        row = _export_operation_row(connection, normative, operation_id)
+        if row["status"] != "started":
+            raise UnsupportedOperationError(
+                "Only a started export operation can be failed."
+            )
+        finish_normative_operation(
+            connection, normative, operation_id=operation_id, status="failed",
+        )
+        record_normative_fidelity_events(
+            connection, normative, operation_id=operation_id,
+            dataset_id=None, direction="export", events=(event,),
+        )
+
+
+def record_export_backup_retained(
+    *, database_url: str, operation_id: str, destination: str, backup: str,
+    cleanup_error: Exception,
+    dolt_conformance_source: Any | None = None,
+) -> None:
+    """Append a warning to a successfully finalized normative export."""
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    normative = normative_catalog(MetaData())
+    with create_engine(database_url).begin() as connection:
+        _verify_normative_catalog(connection, normative)
+        row = _export_operation_row(connection, normative, operation_id)
+        if row["status"] != "succeeded":
+            raise UnsupportedOperationError(
+                "A retained backup warning requires a succeeded export."
+            )
+        record_normative_fidelity_events(
+            connection, normative, operation_id=operation_id,
+            dataset_id=None, direction="export", events=({
+                "code": "backup_retained",
+                "detail": "A successful export retained its durable prior-file backup.",
+                "severity": "warning",
+                "source_item": destination,
+                "details": {
+                    "durable_backup": backup,
+                    "cleanup_error_type": type(cleanup_error).__name__,
+                },
+            },),
+        )
+
+
+def record_export_cleanup_failure(
+    *, database_url: str, destination: str, original_error: Exception,
+    cleanup_error: Exception,
+    residual_object_inventory: Mapping[str, Any],
+    deterministic_recovery_evidence: Mapping[str, Any],
+    operation_id: str | None = None,
+    dolt_conformance_source: Any | None = None,
+) -> str:
+    """Persist terminal cleanup failure in the normative audit catalog."""
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    normative = normative_catalog(MetaData())
+    operation_id = operation_id or str(uuid4())
+    event = {
+        "code": "cleanup_failed",
+        "detail": "Export destination recovery failed; out-of-band review is required.",
+        "severity": "error",
+        "source_item": destination,
+        "details": {
+            "original_error_type": type(original_error).__name__,
+            "cleanup_error_type": type(cleanup_error).__name__,
+            "residual_object_inventory": dict(residual_object_inventory),
+            "deterministic_recovery_evidence": dict(
+                deterministic_recovery_evidence
+            ),
+        },
+    }
+    with create_engine(database_url).begin() as connection:
+        _verify_normative_catalog(connection, normative)
+        row = connection.execute(
+            select(normative.operation).where(
+                normative.operation.c.operation_id == operation_id
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            failed_at = datetime.now(UTC).replace(tzinfo=None)
+            record_normative_operation(
+                connection, normative, operation_id=operation_id,
+                operation_kind="export", status="failed", source_format=None,
+                started_at=failed_at, completed_at=failed_at,
+            )
+        else:
+            if row["operation_kind"] != "export" or row["status"] != "started":
+                raise UnsupportedOperationError(
+                    "Existing export operation cannot transition to cleanup failure."
+                )
+            finish_normative_operation(
+                connection, normative, operation_id=operation_id, status="failed",
+            )
+        record_normative_fidelity_events(
+            connection, normative, operation_id=operation_id,
+            dataset_id=None, direction="export", events=(event,),
+        )
+    return operation_id
+
+
+def validate_wide_dataset(
+    *, database_url: str, dataset_id: str,
+    dolt_conformance_source: Any | None = None,
+) -> dict[str, Any]:
+    profile, _active = effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
     dataset, variables, rows = read_wide_dataset(
         database_url=database_url, dataset_id=dataset_id, profile=profile,
+        dolt_conformance_source=dolt_conformance_source,
     )
     preflight(profile, variables, rows=rows)
     validate_spss_catalog(

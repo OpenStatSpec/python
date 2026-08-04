@@ -1,12 +1,15 @@
 import hashlib
+import errno
 import json
 import sqlite3
+import threading
 
 import pandas as pd
 import pyspssio
 import pytest
 
 import openstatspec
+import openstatspec.spss.sav as sav_module
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 from openstatspec.core import UnsupportedOperationError
 
@@ -14,10 +17,83 @@ _REQUIRED_ENGINE_LOSS = []
 
 _COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-names-not-preserved"]
 
+
+
+def test_export_destination_lock_serializes_observation_and_publication(tmp_path) -> None:
+    """A second exporter cannot replace a destination seen by the first."""
+    destination = tmp_path / "shared-output.sav"
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_export() -> None:
+        with sav_module._export_destination_lock(destination):
+            first_entered.set()
+            release_first.wait(timeout=2)
+
+    def second_export() -> None:
+        first_entered.wait(timeout=2)
+        with sav_module._export_destination_lock(destination):
+            second_entered.set()
+
+    first = threading.Thread(target=first_export)
+    second = threading.Thread(target=second_export)
+    first.start()
+    assert first_entered.wait(timeout=2)
+    second.start()
+    assert not second_entered.wait(timeout=0.1)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+
+
+def test_export_destination_lock_uses_windows_mutex_without_fcntl(
+    tmp_path, monkeypatch,
+) -> None:
+    calls = []
+
+    class Kernel32:
+        def CreateMutexW(self, security, initially_owned, name):
+            calls.append(("create", security, initially_owned, name))
+            return 123
+
+        def WaitForSingleObject(self, handle, timeout):
+            calls.append(("wait", handle, timeout))
+            return 0x00000080
+
+        def ReleaseMutex(self, handle):
+            calls.append(("release", handle))
+            return True
+
+        def CloseHandle(self, handle):
+            calls.append(("close", handle))
+            return True
+
+    monkeypatch.setattr(sav_module, "fcntl", None)
+    monkeypatch.setattr(sav_module, "_windows_kernel32", Kernel32)
+    destination = tmp_path / "shared-output.sav"
+
+    with sav_module._export_destination_lock(destination):
+        calls.append(("critical",))
+
+    assert calls[0][:3] == ("create", None, False)
+    assert calls[0][3].startswith("Global\\OpenStatSpec.SAV.")
+    assert calls[1:] == [
+        ("wait", 123, 0xFFFFFFFF),
+        ("critical",),
+        ("release", 123),
+        ("close", 123),
+    ]
+
+
 def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     source = tmp_path / "tiny.sav"
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     exported = tmp_path / "roundtrip.zsav"
     pyspssio.write_sav(
         str(source),
@@ -97,6 +173,7 @@ def test_file_label_round_trips_through_sqlite_and_export(tmp_path) -> None:
     source = tmp_path / "label-source.sav"
     database_path = tmp_path / "label.sqlite"
     database = "sqlite:///{}".format(database_path)
+    openstatspec.initialize_catalog(database_url=database)
     destination = tmp_path / "label-destination.sav"
     label = "OpenStatSpec label fixture"
     pyspssio.write_sav(
@@ -120,13 +197,15 @@ def test_supported_pyspssio_metadata_round_trips_through_sqlite_for_sav_and_zsav
     database_path = tmp_path / f"supported-{suffix[1:]}.sqlite"
     destination = tmp_path / f"supported-roundtrip{suffix}"
     expected = write_supported_semantics_fixture(source)
+    database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
 
-    result = openstatspec.import_sav(source, database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")
+    result = openstatspec.import_sav(source, database_url=database, dataset_id=f"supported-{suffix[1:]}")
     assert result["case_count"] == 4
-    assert openstatspec.validate(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}")["valid"] is True
+    assert openstatspec.validate(database_url=database, dataset_id=f"supported-{suffix[1:]}")["valid"] is True
     connection = sqlite3.connect(database_path)
     assert connection.execute(f"select comment from data_supported_{suffix[1:]} order by __case_ordinal").fetchone() == (expected["long_text"],)
-    openstatspec.export_sav(database_url=f"sqlite:///{database_path}", dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
+    openstatspec.export_sav(database_url=database, dataset_id=f"supported-{suffix[1:]}", destination=destination, allow_loss=_COMPAT_NAME_LOSS)
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
@@ -137,6 +216,7 @@ def test_import_rejects_physical_table_name_collision_without_partial_catalog(tm
     source = tmp_path / "fixture.sav"
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
     openstatspec.import_sav(source, database_url=database, dataset_id="wave-1")
     with pytest.raises(ValueError, match="collides"):
@@ -161,6 +241,7 @@ def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arr
     source = tmp_path / f"raw-source{suffix}"
     destination = tmp_path / f"raw-destination{suffix}"
     database = f"sqlite:///{tmp_path / f'raw-{suffix[1:]}.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     with pyspssio.Writer(str(source), mode="w") as writer:
         writer.compression = 2 if suffix == ".zsav" else 1
         writer._add_var("answer", 0)  # pylint: disable=protected-access
@@ -215,6 +296,7 @@ def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix
     destination = tmp_path / f"long-destination{suffix}"
     database_path = tmp_path / f"long-{suffix[1:]}.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     pyspssio.write_sav(
         str(source), pd.DataFrame({"comment": [payload, "short"]}),
     )
@@ -234,3 +316,117 @@ def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix
     frame, metadata = pyspssio.read_sav(str(destination), convert_datetimes=False)
     assert metadata["var_types"]["comment"] == payload_width
     assert frame["comment"].tolist() == [payload, "short"]
+
+def test_export_recovery_preserves_dangling_destination_symlink(tmp_path) -> None:
+    missing_target = tmp_path / "missing-target.sav"
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    destination.symlink_to(missing_target)
+
+    assert sav_module._path_entry_exists(destination) is True
+    destination.replace(backup)
+    destination.write_bytes(b"staged export")
+    sav_module._restore_export_destination(
+        destination=destination,
+        backup=backup,
+        had_previous=True,
+        expected_identity=sav_module._destination_identity(destination),
+    )
+
+    assert destination.is_symlink()
+    assert destination.readlink() == missing_target
+
+def test_successful_export_cleanup_removes_dangling_symlink_backup(
+    tmp_path,
+) -> None:
+    missing_target = tmp_path / "missing-original.sav"
+    backup = tmp_path / ".destination.previous"
+    backup.symlink_to(missing_target)
+
+    assert sav_module._path_entry_exists(backup) is True
+    if sav_module._path_entry_exists(backup):
+        backup.unlink()
+
+    assert sav_module._path_entry_exists(backup) is False
+
+def test_export_recovery_does_not_replace_newer_concurrent_destination(
+    tmp_path,
+) -> None:
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    later_export = tmp_path / "later-export.sav"
+    backup.write_bytes(b"original destination")
+    destination.write_bytes(b"earlier operation publication")
+    earlier_identity = sav_module._destination_identity(destination)
+
+    later_export.write_bytes(b"later successful export")
+    later_export.replace(destination)
+
+    with pytest.raises(
+        FileExistsError,
+        match="no longer owned by this operation",
+    ):
+        sav_module._restore_export_destination(
+            destination=destination,
+            backup=backup,
+            had_previous=True,
+            expected_identity=earlier_identity,
+        )
+
+    assert destination.read_bytes() == b"later successful export"
+    assert backup.read_bytes() == b"original destination"
+
+def test_export_publication_does_not_clobber_intervening_destination(
+    tmp_path, monkeypatch,
+) -> None:
+    staged = tmp_path / "staged.sav"
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    staged.write_bytes(b"earlier staged export")
+    real_link = sav_module.os.link
+
+    def publish_concurrently(source, target):
+        destination.write_bytes(b"intervening successful export")
+        return real_link(source, target)
+
+    monkeypatch.setattr(sav_module.os, "link", publish_concurrently)
+    state = {}
+    with pytest.raises(FileExistsError):
+        sav_module._publish_staged_destination(
+            staged=staged,
+            destination=destination,
+            backup=backup,
+            state=state,
+        )
+
+    assert destination.read_bytes() == b"intervening successful export"
+    assert staged.read_bytes() == b"earlier staged export"
+    assert sav_module._path_entry_exists(backup) is False
+    assert state["published_identity"] is None
+
+
+def test_export_publication_falls_back_when_hard_links_are_unsupported(
+    tmp_path, monkeypatch,
+) -> None:
+    staged = tmp_path / "staged.sav"
+    destination = tmp_path / "destination.sav"
+    backup = tmp_path / "destination.previous"
+    staged.write_bytes(b"portable staged export")
+
+    def unsupported_hard_link(*_args, **_kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links are unsupported")
+
+    monkeypatch.setattr(sav_module.os, "link", unsupported_hard_link)
+    state = {}
+    sav_module._publish_staged_destination(
+        staged=staged,
+        destination=destination,
+        backup=backup,
+        state=state,
+    )
+
+    assert destination.read_bytes() == b"portable staged export"
+    assert not staged.exists()
+    assert state["published_identity"] == sav_module._destination_identity(
+        destination,
+    )

@@ -1,4 +1,4 @@
-# 0.4.0 release readiness
+# 0.5.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
@@ -67,6 +67,17 @@ The gate must prove that:
 
 - a TransformationPlan object and its strict JSON mapping produce the same
   plan hash and in-place result;
+- the exact bounded `COMPUTE`/`IF` program compiles to all seven ordered
+  operations without dropping `FORMATS`, `VARIABLE LEVEL`, or `EXECUTE`;
+- boolean data results match the equivalent expression and the target's label,
+  0/1 value labels, `F1.0` print/write format, and nominal level exist in the
+  normative catalog;
+- injected schema, data, catalog, and audit failures leave no partial apply;
+- compensation tracks only newly created targets and never drops or rewrites a
+  pre-existing target;
+- MySQL, MariaDB, and Dolt reject create-target plans before mutation; their
+  service evidence covers assignment to a separately provisioned physical and
+  catalog target without schema DDL;
 - top-level SPSS compiler imports and legacy openstatspec.transform re-exports
   still load from an installed wheel;
 - install-in-place-schema, apply-plan, and apply-spss execute their documented
@@ -78,8 +89,11 @@ The gate must prove that:
   source/plan hashes and frontend contract, and contain no copied data;
 - no OpenStatSpec rollback, snapshot, staging, copy, derived-dataset, or
   parallel history artifacts are created; and
-- Dolt checks expected branch, HEAD, and a clean working set without committing
-  or changing HEAD; other supported SQL connections remain allowed.
+- Dolt checks expected branch, HEAD, and a clean working set; success changes
+  neither HEAD nor branch and never commits or resets; state is rechecked after
+  the dataset lock and success must leave an inspectable working-set diff;
+  other supported SQL connections remain allowed; and
+- string comparisons and v0.2 string assignments fail closed until exact
 
 The built wheel must contain the generic openstatspec.transform modules and the
 implemented openstatspec.frontends.spss package. Stata and SAS remain empty
@@ -98,9 +112,12 @@ capability claim, or implied support.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
-6. Confirm the release tag matches the package version and that CI, release
-   fixtures, and capabilities use OpenStatSpec specification release `v0.2.0`
-   at exact commit `79339ec3d8f8aa81789b7e85f6b8afa6f1374e50`.
+6. Confirm CI, release fixtures, and capabilities use the untagged OpenStatSpec
+   specification release candidate at exact commit
+   `f2fdf687d8cb32b944ca55a3e9e7215ffc603019`, publish
+   `specification_status=release_candidate`, and leave
+   `specification_release` null. If that exact commit receives a stable tag
+   before this package is tagged, update the identity and re-run every gate.
 7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds

@@ -67,12 +67,19 @@ implemented capability boundary.
 
 ## SPSS-like transformation frontend
 
-The SPSS-like frontend lowers supported `RECODE`, `VARIABLE LABELS`, and
-`VALUE LABELS` syntax into a language-neutral canonical plan. The in-place
-path applies it to the same logical dataset, physical wide table, and metadata
-catalog without a derived dataset, copied table, snapshot, or separate
-rollback/history layer. Dolt remains the sole versioning layer for Dolt-backed
-edits, and the transformer never calls `DOLT_COMMIT`.
+The bounded SPSS-like frontend lowers `RECODE`, sequential `COMPUTE` and `IF`,
+`VARIABLE LABELS`, `VALUE LABELS`, numeric `FORMATS`, `VARIABLE LEVEL`, and
+`EXECUTE` into a language-neutral typed canonical plan. Conditions support
+parentheses, variable and numeric literal operands, comparisons, `AND`, and
+`OR`. String comparison and v0.2 string assignment currently fail closed.
+The in-place path applies the plan to the same logical dataset, physical wide
+table, and normative/compatibility metadata without a derived dataset, copied
+table, snapshot, or hidden history layer. Numeric targets may be created
+atomically on SQLite and PostgreSQL. MySQL, MariaDB, and Dolt fail closed on
+`target_mode=create` and require a separately provisioned physical and catalog
+target before assignment. Dolt requires the caller's exact clean branch/HEAD,
+leaves success as an inspectable working-set diff, and never calls
+`DOLT_COMMIT`.
 
 See the [dataset transformations manual](docs/transformations.md) for schema
 installation, Python and CLI surfaces, database invariants, audit provenance,

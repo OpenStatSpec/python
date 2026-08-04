@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...sql.dolt_conformance import DoltConformanceSource
 from ...sql.inplace_transform import (
     InPlacePlanSubmission,
     _run_in_place_submission,
@@ -21,6 +22,7 @@ def apply_spss_in_place(
     actor: str,
     expected_branch: str | None = None,
     expected_head: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, Any]:
     """Compile SPSS syntax and apply its canonical plan in one transaction."""
 
@@ -45,4 +47,5 @@ def apply_spss_in_place(
         prepare=prepare,
         expected_branch=expected_branch,
         expected_head=expected_head,
+        dolt_conformance_source=dolt_conformance_source,
     )

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openstatspec"
-version = "0.4.0"
+version = "0.5.0"
 description = "Reference adapter for the OpenStatSpec relational contract"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,10 @@ openstatspec = "openstatspec.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["services: requires a configured PostgreSQL, MySQL, MariaDB, or Dolt service"]
+markers = [
+    "services: requires a configured PostgreSQL, MySQL, MariaDB, or Dolt service",
+    "candidate_evidence: non-claiming manual probe excluded from release gates",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openstatspec"]

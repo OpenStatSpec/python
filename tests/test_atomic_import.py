@@ -2,14 +2,13 @@ import sqlite3
 from dataclasses import replace
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 import openstatspec.sql.wide as wide
-from openstatspec.sql.profiles import DOLT, MYSQL, SQLITE
+from openstatspec.sql.profiles import DOLT, MYSQL, SQLITE, TargetCapabilityExceededError
 from openstatspec.sql.wide import create_wide_dataset
 
 
-def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
+def test_invalid_string_row_leaves_no_dataset_or_data_table(tmp_path) -> None:
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
     variables = [{
@@ -19,7 +18,7 @@ def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
         "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
     }]
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(TargetCapabilityExceededError):
         create_wide_dataset(
             database_url=database, dataset_id="broken", source_name="fixture.sav",
             source_format="SAV", rows=[{"name": None}], variables=variables,

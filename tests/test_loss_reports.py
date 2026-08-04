@@ -100,6 +100,7 @@ def test_explicit_legacy_locale_selects_the_single_engine_route(tmp_path, monkey
     observed = {}
 
     def writer(destination_path, frame, dataset, variables, *, legacy_locale=None):
+        destination_path.touch()
         observed["locale"] = legacy_locale
         observed["encoding"] = dataset["source_encoding"]
         observed["values"] = frame["name"].tolist()

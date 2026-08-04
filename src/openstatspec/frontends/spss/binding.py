@@ -7,17 +7,24 @@ from typing import Literal
 
 from ...transform.errors import SourceSpan, frontend_error
 from ...transform.plan import (
-    PlanOperation, RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
-    ReplaceValueLabelsOperation, SetVariableLabelOperation, TransformationPlan,
-    TypedValue, ValueLabel,
+    AssignOperation, BooleanExpression, ComparisonExpression,
+    ConditionalAssignOperation, ExecuteOperation, Operand, PlanOperation,
+    PredicateExpression, RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
+    ReplaceValueLabelsOperation, SetFormatOperation,
+    SetMeasurementLevelOperation, SetVariableLabelOperation,
+    TRANSFORMATION_PLAN_V1_CONTRACT,
+    TransformationPlan, TypedValue, ValueLabel,
 )
 from ...transform.schema import (
     BoundTransformation, StorageKind, VariableDefinition, VariableSchema,
 )
 from ...transform.validation import bind_transformation_plan
 from .syntax import (
-    RecodeCommandSyntax, RecodeMatchSyntax, RecodeResultSyntax, SpssSyntaxProgram,
-    SyntaxLiteral, ValueLabelsCommandSyntax, VariableLabelsCommandSyntax,
+    BooleanSyntax, ComparisonSyntax, ComputeCommandSyntax, ExecuteCommandSyntax,
+    FormatsCommandSyntax, IfCommandSyntax, OperandSyntax, PredicateSyntax,
+    RecodeCommandSyntax, RecodeMatchSyntax, RecodeResultSyntax,
+    SpssSyntaxProgram, SyntaxLiteral, ValueLabelsCommandSyntax,
+    VariableLabelsCommandSyntax, VariableLevelCommandSyntax,
 )
 
 
@@ -46,6 +53,98 @@ def _resolve(
             span=span, variable=name,
         )
     return matches[0]
+
+
+def _bind_operand(
+    syntax: OperandSyntax, variables: list[VariableDefinition],
+) -> tuple[Operand, Literal["binary64", "string"]]:
+    if syntax.kind == "variable":
+        assert syntax.variable is not None
+        _, variable = _resolve(variables, syntax.variable.text, syntax.variable.span)
+        return (
+            Operand.variable_ref(variable.name),
+            "binary64" if variable.storage_kind == "numeric" else "string",
+        )
+    assert syntax.literal is not None
+    value = _typed(syntax.literal)
+    return Operand.literal(value), value.type
+
+
+def _bind_predicate(
+    syntax: PredicateSyntax, variables: list[VariableDefinition],
+) -> PredicateExpression:
+    if isinstance(syntax, ComparisonSyntax):
+        left, left_type = _bind_operand(syntax.left, variables)
+        right, right_type = _bind_operand(syntax.right, variables)
+        if left_type != right_type:
+            raise frontend_error(
+                "type_mismatch",
+                "Comparison operands must have the same storage kind.",
+                span=syntax.span, left_type=left_type, right_type=right_type,
+            )
+        if syntax.operator != "=" and left_type != "binary64":
+            raise frontend_error(
+                "type_mismatch",
+                "Ordered comparisons require numeric operands.",
+                span=syntax.span, operator=syntax.operator,
+            )
+        return ComparisonExpression(left, syntax.operator, right)
+    assert isinstance(syntax, BooleanSyntax)
+    operands: list[PredicateExpression] = []
+    for operand in syntax.operands:
+        bound = _bind_predicate(operand, variables)
+        if (
+            isinstance(bound, BooleanExpression)
+            and bound.operator == syntax.operator
+        ):
+            operands.extend(bound.operands)
+        else:
+            operands.append(bound)
+    return BooleanExpression(syntax.operator, tuple(operands))
+
+
+def _assignment(
+    target_name: str, target_span: SourceSpan, value_syntax: OperandSyntax,
+    variables: list[VariableDefinition],
+) -> AssignOperation:
+    value, value_type = _bind_operand(value_syntax, variables)
+    if value_type == "string":
+        raise frontend_error(
+            "expression_type_unsupported",
+            "String assignment is not supported until explicit width and "
+            "profile-independent semantics are available.",
+            span=value_syntax.span, variable=target_name,
+        )
+    matches = [
+        (index, variable) for index, variable in enumerate(variables)
+        if variable.name.casefold() == target_name.casefold()
+    ]
+    if matches:
+        _, target = matches[0]
+        if target.storage_kind == "string":
+            raise frontend_error(
+                "expression_type_unsupported",
+                "String assignment targets are outside the bounded frontend.",
+                span=target_span,
+                variable=target.name,
+            )
+        if value_type != _expected_type(target.storage_kind):
+            raise frontend_error(
+                "type_mismatch",
+                "COMPUTE cannot change an existing variable's storage kind.",
+                span=target_span, variable=target.name,
+                expected_type=_expected_type(target.storage_kind),
+            )
+        return AssignOperation(target.name, "replace", value)
+    if target_name.startswith("__"):
+        raise frontend_error(
+            "reserved_target_name", f"Target name {target_name!r} is reserved.",
+            span=target_span, target=target_name,
+        )
+    variables.append(VariableDefinition(
+        target_name, "numeric" if value_type == "binary64" else "string",
+    ))
+    return AssignOperation(target_name, "create", value)
 
 
 def _match(
@@ -211,6 +310,93 @@ def bind_spss_syntax(
             operations.extend(recodes)
             spans.extend(recode_spans)
             continue
+        if isinstance(command, ComputeCommandSyntax):
+            operations.append(_assignment(
+                command.target.text, command.target.span, command.value, variables,
+            ))
+            spans.append(command.span)
+            continue
+        if isinstance(command, IfCommandSyntax):
+            condition = _bind_predicate(command.condition, variables)
+            target_matches = [
+                (index, variable) for index, variable in enumerate(variables)
+                if variable.name.casefold() == command.target.text.casefold()
+            ]
+            if len(target_matches) != 1:
+                raise frontend_error(
+                    "conditional_target_missing",
+                    "IF assignment target must already exist.",
+                    span=command.target.span, variable=command.target.text,
+                )
+            _, target = target_matches[0]
+            if target.storage_kind == "string":
+                raise frontend_error(
+                    "expression_type_unsupported",
+                    "String assignment targets are outside the bounded frontend.",
+                    span=command.target.span,
+                    variable=target.name,
+                )
+            value, value_type = _bind_operand(command.value, variables)
+            expected = _expected_type(target.storage_kind)
+            if value_type == "string":
+                raise frontend_error(
+                    "expression_type_unsupported",
+                    "String assignment is not supported until explicit width "
+                    "and profile-independent semantics are available.",
+                    span=command.value.span, variable=target.name,
+                )
+            if value_type != expected:
+                raise frontend_error(
+                    "type_mismatch",
+                    "IF assignment value must match the target storage kind.",
+                    span=command.value.span, variable=target.name,
+                    expected_type=expected,
+                )
+            operations.append(ConditionalAssignOperation(
+                condition, target.name, value,
+            ))
+            spans.append(command.span)
+            continue
+        if isinstance(command, FormatsCommandSyntax):
+            for assignment in command.assignments:
+                index, variable = _resolve(
+                    variables, assignment.variable.text, assignment.variable.span,
+                )
+                if variable.storage_kind != "numeric":
+                    raise frontend_error(
+                        "expression_type_unsupported",
+                        "Numeric F formats cannot target string variables.",
+                        span=assignment.span,
+                        variable=variable.name,
+                    )
+                operations.append(SetFormatOperation(
+                    variable.name, assignment.family,
+                    assignment.width, assignment.decimals,
+                ))
+                spans.append(assignment.span)
+                variables[index] = replace(
+                    variable, format_family=assignment.family,
+                    format_width=assignment.width,
+                    format_decimals=assignment.decimals,
+                )
+            continue
+        if isinstance(command, VariableLevelCommandSyntax):
+            for assignment in command.assignments:
+                index, variable = _resolve(
+                    variables, assignment.variable.text, assignment.variable.span,
+                )
+                operations.append(SetMeasurementLevelOperation(
+                    variable.name, assignment.level,
+                ))
+                spans.append(assignment.span)
+                variables[index] = replace(
+                    variable, measurement_level=assignment.level,
+                )
+            continue
+        if isinstance(command, ExecuteCommandSyntax):
+            operations.append(ExecuteOperation())
+            spans.append(command.span)
+            continue
         if isinstance(command, VariableLabelsCommandSyntax):
             for assignment in command.assignments:
                 index, variable = _resolve(
@@ -258,7 +444,17 @@ def bind_spss_syntax(
                     variables[index] = replace(variable, value_labels=labels)
             continue
         raise AssertionError(f"Unknown syntax command: {type(command)!r}")
-    plan = TransformationPlan(tuple(operations), input_alias=input_alias)
+    v01_types = (
+        RecodeOperation, SetVariableLabelOperation, ReplaceValueLabelsOperation,
+    )
+    contract = (
+        TRANSFORMATION_PLAN_V1_CONTRACT
+        if all(isinstance(operation, v01_types) for operation in operations)
+        else "openstatspec-transformation-plan-v0.2"
+    )
+    plan = TransformationPlan(
+        tuple(operations), contract=contract, input_alias=input_alias,
+    )
     return bind_transformation_plan(
         plan,
         schema,

@@ -4,17 +4,52 @@ All notable changes to this reference implementation are documented here.
 
 ## Unreleased
 
+Planned adapter release: `0.5.0`, after lifecycle integration and final specification conformance.
 ### Fixed
 
 - Removed the temporary `*_catalog` compatibility schema and made SAV/ZSAV
   import, validation, export, fidelity reporting, and in-place metadata edits
   use the normative UUID-keyed OpenStatSpec catalog exclusively.
-- Existing databases that contain only the former compatibility catalog must be
-  remediated manually before export.
+- Existing databases that contain former compatibility relations must be
+  remediated manually before further operations.
 - Imports now reject dataset names that collide with normative UUID identifiers,
   cleanup drops only a physical table actually created by the failing import,
   and non-preserved SPSS compatible variable names are reported as an explicit
   loss requiring export consent.
+
+
+### Added
+
+- Added bounded typed expressions with variable references, numeric literals,
+  parentheses, `=`, `<`, `<=`, `>`, `>=`, `AND`, and `OR`. String comparison
+  and v0.2 string assignment fail closed pending exact portable semantics.
+- Added sequential SPSS-like `COMPUTE` and `IF` assignment operations plus
+  `FORMATS`, `VARIABLE LEVEL`, and `EXECUTE`.
+- Added atomic numeric target creation on SQLite and PostgreSQL. MySQL,
+  MariaDB, and Dolt fail closed on `target_mode=create`; their targets must be
+  provisioned physically and in the catalog by a separate versioned stage
+  before this executor applies assignment and metadata operations.
+- Added synthetic exact-program, catalog, failure-boundary, and pre-existing
+  target regression coverage.
+
+### Changed
+
+- Bumped the canonical transformation-plan and SPSS frontend contracts to
+  `v0.2`; canonical JSON and hashes include every sequential operation.
+- In-place apply records variable label, value labels, `F` print/write
+  format, and measurement level only in the normative catalog.
+- Dolt still requires an exact branch, exact HEAD, and clean working set;
+  successful apply leaves an inspectable diff and never calls `DOLT_COMMIT`.
+- Dolt declaration validation is implemented by the Python adapter. The
+  specification remains a language-neutral source of JSON contracts and
+  fixtures and is not installed as a Python distribution.
+
+### Specification basis
+
+- Release validation is pinned to the untagged OpenStatSpec specification
+  release candidate at immutable commit
+  `f2fdf687d8cb32b944ca55a3e9e7215ffc603019`. Its
+  `specification_release` remains null until that commit receives a stable tag.
 
 ## 0.4.0 — 2026-07-31
 
@@ -123,6 +158,17 @@ SPSS profile.
 - Export of supported dataset semantics to SAV and ZSAV.
 - SQLite, PostgreSQL, MySQL, and MariaDB profiles, including service-backed
   PostgreSQL 17/18, MySQL 8.4/9.7, and MariaDB 11.4/11.8/12.3 CI coverage.
+- Read-only positive Dolt identity and working-set inspection. Operational
+  Dolt writes use adapter-owned declaration validation and remain fail-closed
+  because the adapter ships no concrete declaration claim. The specification
+  remains language-neutral and is consumed only as JSON contracts and fixtures.
+- Added explicit packaged/directory conformance-source injection and exact
+  single-match binding across active Dolt product version, adapter
+  implementation and version, and specification commit before mutation.
+- Explicit catalog initialization/migration through `initialize_catalog` and
+  `openstatspec init`; data operations never auto-create catalog relations.
+- Read-only Dolt working-set evidence through `dolt_state_snapshot` and
+  `openstatspec dolt-state`; core performs no Dolt version-control mutations.
 - Preflight checks for target profile limits, atomic imports, validation, a
   command-line interface, and machine-readable capability and loss reports.
 
@@ -135,3 +181,11 @@ SPSS profile.
 - Multiple-response sets, variable alignment, variable sets, and custom
   attributes have explicit capability diagnostics; see the SAV profile.
 - Encrypted SPSS files are not supported.
+- Dolt adapter-envelope values are not claims about Dolt server limits. Failure
+  recovery is compensating and reports deterministic residual inventory; a
+  verified catalog receives a best-effort failed-operation audit when cleanup
+  itself fails.
+- Export publication uses a durable, audit-recorded prior-file backup through
+  SQL finalization. Post-success backup retention is reported separately and
+  does not rewrite a successful export as failed; pre-success failures restore
+  the prior destination and close the running operation as failed.

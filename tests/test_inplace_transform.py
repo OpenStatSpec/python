@@ -61,6 +61,7 @@ def _submission(source_text: str) -> InPlacePlanSubmission:
 def catalog(tmp_path):
     path = tmp_path / "in-place.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     create_wide_dataset(
         database_url=url,
         dataset_id="in_place_source",
@@ -172,7 +173,7 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     ).fetchone()
     assert audit == (
         "spss_syntax",
-        "openstatspec-spss-syntax-frontend-v0.1",
+        "openstatspec-spss-syntax-frontend-v0.2",
     )
 
 
@@ -284,6 +285,7 @@ def test_string_create_target_is_rejected_before_any_mutation(
 def test_string_source_can_create_numeric_target(tmp_path) -> None:
     path = tmp_path / "string-source.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     variables = _variables()
     variables[0].update({
         "source_name": "color",
@@ -402,9 +404,10 @@ def test_public_apply_binds_expected_dolt_branch_and_head(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     states = iter([
+        ("feature/recode", "abc123", 0),
         ("feature/recode", "abc123", 0),
         ("feature/recode", "abc123", 4),
     ])
@@ -432,7 +435,7 @@ def test_public_apply_rejects_dirty_dolt_working_set_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -468,7 +471,7 @@ def test_public_apply_rejects_dolt_context_mismatch_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     monkeypatch.setattr(
         inplace_transform, "_dolt_state", lambda _connection: state
@@ -504,3 +507,217 @@ def test_capability_declares_dolt_owned_versioning() -> None:
     assert declaration["creates_persistent_data_copy"] is False
     assert declaration["openstatspec_rollback_or_version_history"] is False
     assert declaration["performs_dolt_commit"] is False
+
+def test_schema_install_fails_before_engine_or_ddl_when_profile_is_rejected(
+    monkeypatch,
+) -> None:
+    def reject_profile(_database_url, **_kwargs):
+        raise openstatspec.UnsupportedOperationError("Dolt declaration mismatch")
+
+    def unexpected_engine(_database_url):
+        raise AssertionError("engine creation would permit DDL")
+
+    monkeypatch.setattr(inplace_transform, "effective_profile", reject_profile)
+    monkeypatch.setattr(inplace_transform, "create_engine", unexpected_engine)
+
+    with pytest.raises(
+        openstatspec.UnsupportedOperationError,
+        match="Dolt declaration mismatch",
+    ):
+        inplace_transform.install_in_place_transformation_schema(
+            database_url="mysql+pymysql://user@host/database",
+        )
+
+def test_schema_install_forwards_explicit_dolt_conformance_source(
+    monkeypatch,
+) -> None:
+    sentinel = object()
+    captured = []
+
+    def capture_profile(_database_url, *, dolt_conformance_source):
+        captured.append(dolt_conformance_source)
+        raise openstatspec.UnsupportedOperationError("stop after gate")
+
+    monkeypatch.setattr(inplace_transform, "effective_profile", capture_profile)
+
+    with pytest.raises(openstatspec.UnsupportedOperationError, match="stop after gate"):
+        inplace_transform.install_in_place_transformation_schema(
+            database_url="mysql+pymysql://user@host/database",
+            dolt_conformance_source=sentinel,
+        )
+
+    assert captured == [sentinel]
+
+
+def test_plan_apply_forwards_explicit_dolt_conformance_source(monkeypatch) -> None:
+    sentinel = object()
+    captured = []
+
+    def capture_submission(**kwargs):
+        captured.append(kwargs["dolt_conformance_source"])
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        inplace_transform, "_run_in_place_submission", capture_submission,
+    )
+
+    result = inplace_transform.apply_transformation_plan_in_place(
+        database_url="sqlite://",
+        dataset_id="synthetic",
+        plan=_plan("RECODE score (1 = 2)."),
+        actor="test-agent",
+        dolt_conformance_source=sentinel,
+    )
+
+    assert result == {"ok": True}
+    assert captured == [sentinel]
+
+def test_in_place_audit_relation_remains_catalog_owned(catalog) -> None:
+    url, _path, dataset_id, _table_name = catalog
+
+    dataset = openstatspec.get_dataset(
+        database_url=url,
+        dataset_id=dataset_id,
+        kind="core",
+    )
+
+    assert dataset["dataset"]["dataset_id"] == dataset_id
+
+def test_schema_install_requires_initialized_verified_catalog(tmp_path) -> None:
+    path = tmp_path / "empty.sqlite"
+    url = f"sqlite:///{path}"
+
+    with pytest.raises(
+        openstatspec.UnsupportedOperationError,
+        match="catalog is absent",
+    ):
+        openstatspec.install_in_place_transformation_schema(database_url=url)
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall() == []
+
+
+def test_public_apply_rejects_divergent_catalog_before_mutation(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+    connection = sqlite3.connect(path)
+    connection.execute("UPDATE catalog_identity SET schema_version = 999")
+    connection.commit()
+    before = connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall()
+
+    with pytest.raises(
+        RuntimeError,
+        match="identity is incompatible",
+    ):
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="RECODE score (1 = 9).",
+            actor="test-agent",
+        )
+
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == before
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (0,)
+
+def test_schema_installer_upgrades_legacy_apply_audit_columns(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "ALTER TABLE transformation_apply DROP COLUMN source_kind"
+    )
+    connection.execute(
+        "ALTER TABLE transformation_apply DROP COLUMN frontend_contract"
+    )
+    connection.commit()
+    connection.close()
+
+    openstatspec.install_in_place_transformation_schema(database_url=url)
+
+    connection = sqlite3.connect(path)
+    columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(transformation_apply)"
+        )
+    }
+    connection.close()
+    assert {"source_kind", "frontend_contract"} <= columns
+    assert openstatspec.get_dataset(
+        database_url=url, dataset_id=dataset_id, kind="core",
+    )["dataset"]["dataset_id"] == dataset_id
+
+def test_public_apply_rejects_divergent_variable_mapping_before_mutation(
+    catalog,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    connection = sqlite3.connect(path)
+    deleted = connection.execute("DELETE FROM variable")
+    assert deleted.rowcount > 0
+    connection.commit()
+    before = connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall()
+
+    with pytest.raises(
+        openstatspec.TransformationError,
+        match="no variables",
+    ):
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="VARIABLE LABELS score 'Changed'.",
+            actor="test-agent",
+        )
+
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == before
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transformation_apply"
+    ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("profile_name", ["sqlite", "postgresql"])
+def test_transactional_ddl_rollback_skips_unlocked_compensation(
+    tmp_path, monkeypatch, profile_name,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'transactional-rollback.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database_url)
+    monkeypatch.setattr(
+        inplace_transform,
+        "effective_profile",
+        lambda _url, **_kwargs: (SimpleNamespace(name=profile_name), {}),
+    )
+
+    def fail_after_schema_change(
+        _connection, *, mutation_journal, **_kwargs,
+    ):
+        mutation_journal["added_columns"] = ["score_band"]
+        raise RuntimeError("simulated transactional failure")
+
+    monkeypatch.setattr(
+        inplace_transform, "_apply_plan_on_connection", fail_after_schema_change,
+    )
+    monkeypatch.setattr(
+        inplace_transform,
+        "_compensate_failed_apply",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Transactional rollback must not run unlocked compensation"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated transactional failure"):
+        inplace_transform._run_in_place_submission(
+            database_url=database_url,
+            dataset_id="dataset",
+            actor="test-agent",
+            prepare=lambda _connection, _dataset_id: _submission(
+                "RECODE score (1 = 0) INTO score_band."
+            ),
+        )
