@@ -63,13 +63,18 @@ def test_vls_round_trips_as_one_variable(tmp_path, suffix: str) -> None:
     imported = openstatspec.import_sav(
         source, database_url=database, dataset_id=f"vls-{suffix[1:]}",
     )
-    assert imported.diagnostics == ()
+    assert {diagnostic.code for diagnostic in imported.diagnostics} == {
+        "compatible-variable-names-not-preserved",
+    }
     exported = openstatspec.export_sav(
         database_url=database,
         dataset_id=f"vls-{suffix[1:]}",
         destination=destination,
+        allow_loss=["compatible-variable-names-not-preserved"],
     )
-    assert exported.diagnostics == ()
+    assert {diagnostic.code for diagnostic in exported.diagnostics} == {
+        "compatible-variable-names-not-preserved",
+    }
 
     metadata = pyspssio.read_metadata(str(destination))
     frame = pyspssio.read_sav(str(destination))[0]

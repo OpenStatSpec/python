@@ -73,7 +73,7 @@ def capability_matrix(database_url: str | None = None) -> Mapping[str, Any]:
             "multiple_response_sets": "supported",
             "variable_alignment": "supported",
             "variable_sets": "supported",
-            "compatible_variable_names": "supported",
+            "compatible_variable_names": "requires-explicit-loss-consent",
             "custom_attributes": {
                 "scalar_values": "supported",
                 "ordered_value_arrays": "supported",

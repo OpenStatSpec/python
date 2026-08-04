@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger, Column, Float, MetaData, Table, Text, create_engine, insert,
-    inspect, select,
+    inspect, or_, select,
 )
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from ..core import UnsupportedOperationError
@@ -509,16 +509,18 @@ def create_wide_dataset(
         normative_dataset_id, multiple_response_sets,
     )
     namespace_owned = False
-    data_table_was_absent = False
+    data_table_created = False
     try:
         with engine.begin() as setup:
             create_normative_catalog(setup, normative)
         namespace_owned = True
         with engine.begin() as connection:
             if connection.execute(
-                select(normative.dataset.c.dataset_id).where(
-                    normative.dataset.c.dataset_name == dataset_id
-                )
+                select(normative.dataset.c.dataset_id).where(or_(
+                    normative.dataset.c.dataset_name == dataset_id,
+                    normative.dataset.c.dataset_id == dataset_id,
+                    normative.dataset.c.dataset_name == normative_dataset_id,
+                ))
             ).first():
                 raise ValueError(
                     f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset."
@@ -542,8 +544,8 @@ def create_wide_dataset(
                 operation_kind="import", status="started",
                 source_format=source_format,
             )
-            data_table_was_absent = True
             data_table.create(connection)
+            data_table_created = True
             store_normative_dataset(
                 connection, normative, dataset_name=dataset_id,
                 source_format=source_format, physical_table_name=data_table.name,
@@ -582,7 +584,7 @@ def create_wide_dataset(
                             cleanup, normative, normative_dataset_id,
                         )
                     if (
-                        data_table_was_absent
+                        data_table_created
                         and inspect(cleanup).has_table(data_table.name)
                     ):
                         data_table.drop(cleanup, checkfirst=True)

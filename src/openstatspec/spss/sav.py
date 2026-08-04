@@ -494,6 +494,21 @@ def _engine_loss_report(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "detail": "pyspssio could not inspect source variable sets; they cannot be preserved silently.",
             "details": {"engine_error": metadata.get("_var_sets_error", "unknown")},
         }
+    compatible_names = {
+        str(source_name): str(compatible_name)
+        for source_name, compatible_name
+        in dict(metadata.get("var_compat_names") or {}).items()
+        if compatible_name
+        and str(source_name).casefold() != str(compatible_name).casefold()
+    }
+    if compatible_names:
+        events["compatible-variable-names-not-preserved"] = {
+            "code": "compatible-variable-names-not-preserved",
+            "detail": (
+                "The normative catalog does not store SPSS compatible variable names."
+            ),
+            "details": {"variable_names": sorted(compatible_names)},
+        }
     if _is_non_utf8_encoding(metadata.get("encoding")):
         events["source-encoding-not-preserved"] = {
             "code": "source-encoding-not-preserved",

@@ -32,6 +32,80 @@ def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
     assert connection.execute("select count(*) from dataset").fetchone() == (0,)
     assert connection.execute("select count(*) from variable").fetchone() == (0,)
 
+def test_failed_create_does_not_drop_a_concurrently_created_table(
+    tmp_path, monkeypatch,
+) -> None:
+    database_path = tmp_path / "race.sqlite"
+    database = f"sqlite:///{database_path}"
+    variables = [{
+        "ordinal": 1, "source_name": "name", "physical_name": "name",
+        "storage_kind": "string", "string_width": 8, "label": "",
+        "format": "A8", "measure": "nominal", "alignment": "left",
+        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+    real_inspect = wide.inspect
+    inspected_data_table = 0
+
+    def inspect_with_concurrent_table(bind):
+        actual = real_inspect(bind)
+
+        class Inspector:
+            def has_table(self, table_name):
+                nonlocal inspected_data_table
+                if table_name == "data_race":
+                    inspected_data_table += 1
+                    return inspected_data_table > 1
+                return actual.has_table(table_name)
+
+        return Inspector()
+
+    real_create = wide.Table.create
+    real_drop = wide.Table.drop
+    dropped = []
+
+    def fail_data_table_create(table, bind, **kwargs):
+        if table.name == "data_race":
+            raise RuntimeError("concurrent create won")
+        return real_create(table, bind, **kwargs)
+
+    def observe_drop(table, bind, **kwargs):
+        if table.name == "data_race":
+            dropped.append(table.name)
+        return real_drop(table, bind, **kwargs)
+
+    monkeypatch.setattr(wide, "inspect", inspect_with_concurrent_table)
+    monkeypatch.setattr(wide.Table, "create", fail_data_table_create)
+    monkeypatch.setattr(wide.Table, "drop", observe_drop)
+
+    with pytest.raises(RuntimeError, match="concurrent create won"):
+        create_wide_dataset(
+            database_url=database, dataset_id="race", source_name="race.sav",
+            source_format="SAV", rows=[{"name": "ok"}], variables=variables,
+        )
+
+    assert inspected_data_table == 1
+    assert dropped == []
+
+
+def test_dataset_name_cannot_equal_an_existing_normative_uuid(tmp_path) -> None:
+    database = f"sqlite:///{tmp_path / 'namespace.sqlite'}"
+    variables = [{
+        "ordinal": 1, "source_name": "name", "physical_name": "name",
+        "storage_kind": "string", "string_width": 8, "label": "",
+        "format": "A8", "measure": "nominal", "alignment": "left",
+        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+    first = create_wide_dataset(
+        database_url=database, dataset_id="first", source_name="first.sav",
+        source_format="SAV", rows=[{"name": "first"}], variables=variables,
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        create_wide_dataset(
+            database_url=database, dataset_id=first["dataset_id"],
+            source_name="second.sav", source_format="SAV",
+            rows=[{"name": "second"}], variables=variables,
+        )
 
 def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path) -> None:
     database_path = tmp_path / "preflight.sqlite"

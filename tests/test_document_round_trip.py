@@ -81,7 +81,10 @@ def test_document_and_long_variable_name_round_trip_to_zsav(tmp_path: Path) -> N
     write_document_lines(source, ["Combined dictionary fixture."], encoding="UTF-8")
 
     openstatspec.import_sav(source, database_url=database, dataset_id="combined")
-    openstatspec.export_sav(database_url=database, dataset_id="combined", destination=destination)
+    openstatspec.export_sav(
+        database_url=database, dataset_id="combined", destination=destination,
+        allow_loss=["compatible-variable-names-not-preserved"],
+    )
 
     assert read_document_lines(destination, encoding="UTF-8") == ["Combined dictionary fixture."]
     assert pyspssio.read_sav(str(destination))[0][source_name].tolist() == [7.0]

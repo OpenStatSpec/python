@@ -8,6 +8,7 @@ import openstatspec
 from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.wide import create_wide_dataset
 from openstatspec.spss import sav as sav_module
+from openstatspec.spss.raw_dictionary import write_compatible_names
 
 
 _REQUIRED_ENGINE_LOSS = []
@@ -118,3 +119,36 @@ def test_legacy_locale_must_emit_the_exact_source_encoding() -> None:
     sav_module._require_matching_legacy_encoding("WINDOWS-1252", "CP1252", True)
     with pytest.raises(UnsupportedOperationError, match="instead of required"):
         sav_module._require_matching_legacy_encoding("WINDOWS-1252", "UTF-8", True)
+
+
+def test_compatible_variable_names_are_explicit_imported_loss(tmp_path) -> None:
+    source = tmp_path / "compatible-name.sav"
+    destination = tmp_path / "compatible-name-out.sav"
+    database = f"sqlite:///{tmp_path / 'compatible-name.sqlite'}"
+    source_name = "long_variable_name"
+    loss_code = "compatible-variable-names-not-preserved"
+
+    pyspssio.write_sav(str(source), pd.DataFrame({source_name: [1.0]}))
+    write_compatible_names(source, {source_name: "ANSWER"}, encoding="UTF-8")
+
+    imported = openstatspec.import_sav(
+        source, database_url=database, dataset_id="compatible-name",
+    )
+    assert {diagnostic.code for diagnostic in imported.diagnostics} == {loss_code}
+    assert imported.diagnostics[0].details == {"variable_names": [source_name]}
+
+    with pytest.raises(UnsupportedOperationError, match=loss_code):
+        openstatspec.export_sav(
+            database_url=database, dataset_id="compatible-name",
+            destination=destination,
+        )
+
+    exported = openstatspec.export_sav(
+        database_url=database, dataset_id="compatible-name",
+        destination=destination, allow_loss=[loss_code],
+    )
+    assert {diagnostic.code for diagnostic in exported.diagnostics} == {loss_code}
+    assert (
+        pyspssio.read_metadata(str(destination))["var_compat_names"][source_name]
+        != "ANSWER"
+    )
