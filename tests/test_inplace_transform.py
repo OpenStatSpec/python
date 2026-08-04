@@ -141,9 +141,7 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
     assert connection.execute(
         "SELECT numeric_code, label FROM value_label ORDER BY ordinal"
     ).fetchall() == [(0.0, "Lower"), (1.0, "Upper")]
-    assert connection.execute(
-        "SELECT label FROM variable_catalog WHERE source_name = 'score_band'"
-    ).fetchone() == ("Score band",)
+    assert "variable_catalog" not in tables
     assert connection.execute(
         "SELECT database_profile, dolt_branch, dolt_head_before, "
         "dolt_head_after, actor, status "

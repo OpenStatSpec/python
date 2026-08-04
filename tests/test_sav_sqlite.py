@@ -47,19 +47,33 @@ def test_pyspssio_round_trip_uses_one_wide_table_and_catalog(tmp_path) -> None:
     connection = sqlite3.connect(database_path)
     table_names = [row[0] for row in connection.execute("select name from sqlite_master where type = 'table' order by name")]
     assert {
-        "attribute_catalog", "data_tiny", "dataset_catalog", "document_catalog",
-        "fidelity_event_catalog", "missing_rule_catalog",
-        "multiple_response_set_catalog", "operation_catalog",
-        "source_extension_catalog", "value_label_catalog", "variable_catalog",
-        "dataset", "operation", "variable", "value_label_set", "value_label",
+        "catalog_identity", "data_tiny", "dataset", "operation", "variable",
+        "dataset_weight_variable", "value_label_set", "value_label",
         "variable_value_label_set", "missing_rule", "dataset_attribute",
         "variable_attribute", "document", "variable_set", "variable_set_member",
         "multiple_response_set", "multiple_response_member", "fidelity_event",
     } <= set(table_names)
+    assert not {name for name in table_names if name.endswith("_catalog")}
     assert connection.execute("select __case_ordinal, age, name from data_tiny order by __case_ordinal").fetchall() == [(1, 34.0, "Ada"), (2, None, "")]
-    assert connection.execute("select source_encoding, file_attributes, case_weight_variable from dataset_catalog").fetchone() == ("UTF-8", json.dumps({"Source": "test"}), "age")
-    assert connection.execute("select source_sha256 from dataset_catalog").fetchone() == (hashlib.sha256(source.read_bytes()).hexdigest(),)
-    assert connection.execute("select role, alignment, display_width, attributes from variable_catalog where source_name = 'age'").fetchone() == ("target", "right", 12, json.dumps({"Origin": "fixture"}))
+    assert connection.execute(
+        "select source_encoding, source_hash from dataset"
+    ).fetchone() == ("UTF-8", hashlib.sha256(source.read_bytes()).hexdigest())
+    assert connection.execute(
+        "select attribute_name, attribute_value from dataset_attribute"
+    ).fetchall() == [("Source", "test")]
+    assert connection.execute(
+        "select variable_role, display_alignment, display_width from variable "
+        "where source_name = 'age'"
+    ).fetchone() == ("target", "right", 12)
+    assert connection.execute(
+        "select a.attribute_name, a.attribute_value from variable_attribute a "
+        "join variable v on v.variable_id = a.variable_id "
+        "where v.source_name = 'age'"
+    ).fetchall() == [("Origin", "fixture")]
+    assert connection.execute(
+        "select v.source_name from dataset_weight_variable w "
+        "join variable v on v.variable_id = w.variable_id"
+    ).fetchone() == ("age",)
 
     openstatspec.export_sav(database_url=database, dataset_id="tiny", destination=exported)
     frame, meta = pyspssio.read_sav(str(exported), convert_datetimes=False, include_user_missing=True)
@@ -92,7 +106,7 @@ def test_file_label_round_trips_through_sqlite_and_export(tmp_path) -> None:
     openstatspec.import_sav(source, database_url=database, dataset_id="label")
     connection = sqlite3.connect(database_path)
     assert connection.execute(
-        "select file_label from dataset_catalog where dataset_id = ?", ("label",)
+        "select dataset_label from dataset where dataset_name = ?", ("label",)
     ).fetchone() == (label,)
 
     openstatspec.export_sav(
@@ -128,7 +142,9 @@ def test_import_rejects_physical_table_name_collision_without_partial_catalog(tm
     with pytest.raises(ValueError, match="collides"):
         openstatspec.import_sav(source, database_url=database, dataset_id="wave 1")
     connection = sqlite3.connect(database_path)
-    assert connection.execute("select dataset_id from dataset_catalog").fetchall() == [("wave-1",)]
+    assert connection.execute(
+        "select dataset_name from dataset"
+    ).fetchall() == [("wave-1",)]
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
 def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arrays(tmp_path, suffix: str) -> None:
     """The raw IBM I/O path, rather than write_sav, is the fidelity proof."""
@@ -166,13 +182,16 @@ def test_raw_dictionary_bridge_preserves_distinct_formats_sets_and_attribute_arr
     openstatspec.import_sav(source, database_url=database, dataset_id="raw")
     connection = sqlite3.connect(tmp_path / f"raw-{suffix[1:]}.sqlite")
     assert connection.execute(
-        "select print_format, write_format from variable_catalog "
-        "where dataset_id = 'raw' and source_name = 'answer'"
-    ).fetchone() == ("[5, 8, 1]", "[3, 12, 3]")
+        "select print_format_family, print_format_width, print_format_decimals, "
+        "write_format_family, write_format_width, write_format_decimals "
+        "from variable where source_name = 'answer'"
+    ).fetchone() == ("5", 8, 1, "3", 12, 3)
     assert connection.execute(
-        "select payload from source_extension_catalog "
-        "where dataset_id = 'raw' and extension_key = 'spss.variable_sets'"
-    ).fetchone() == (json.dumps({"Analysis": ["answer", "comment"]}),)
+        "select s.set_name, v.source_name from variable_set s "
+        "join variable_set_member m on m.variable_set_id = s.variable_set_id "
+        "join variable v on v.variable_id = m.variable_id "
+        "order by s.source_ordinal, m.source_ordinal"
+    ).fetchall() == [("Analysis", "answer"), ("Analysis", "comment")]
     openstatspec.export_sav(
         database_url=database, dataset_id="raw", destination=destination,
         allow_loss=_REQUIRED_ENGINE_LOSS,
@@ -204,8 +223,8 @@ def test_very_long_string_round_trips_through_sqlite_and_export(tmp_path, suffix
     openstatspec.import_sav(source, database_url=database, dataset_id="long")
     connection = sqlite3.connect(database_path)
     assert connection.execute(
-        "select string_width from variable_catalog where dataset_id = ? and source_name = ?",
-        ("long", "comment"),
+        "select declared_string_width from variable where source_name = ?",
+        ("comment",),
     ).fetchone() == (payload_width,)
 
     openstatspec.export_sav(

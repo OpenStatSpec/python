@@ -1,4 +1,3 @@
-import json
 import sqlite3
 
 import pandas as pd
@@ -29,8 +28,11 @@ def test_import_retains_observed_variable_sets_as_source_extension(tmp_path, mon
     assert {diagnostic.code for diagnostic in imported.diagnostics} == set()
     connection = sqlite3.connect(database_path)
     assert connection.execute(
-        "select extension_key, payload from source_extension_catalog where dataset_id = 'variables'"
-    ).fetchone() == ("spss.variable_sets", json.dumps({"Analysis": ["answer"]}))
+        "select vs.set_name, v.source_name from variable_set vs "
+        "join variable_set_member vsm on vsm.variable_set_id = vs.variable_set_id "
+        "join variable v on v.variable_id = vsm.variable_id "
+        "order by vs.source_ordinal, vsm.source_ordinal"
+    ).fetchall() == [("Analysis", "answer")]
 
 
 def test_normalized_mr_catalog_is_authoritative_for_export(tmp_path) -> None:
@@ -57,20 +59,24 @@ def test_normalized_mr_catalog_is_authoritative_for_export(tmp_path) -> None:
     openstatspec.import_sav(source, database_url=database, dataset_id="mr")
     connection = sqlite3.connect(database_path)
     rows = connection.execute(
-        "select set_name, kind, is_dichotomy, use_category_labels, use_first_var_label, counted_value_type, counted_numeric, variable_name "
-        "from multiple_response_set_catalog order by set_name, member_ordinal"
+        "select mrs.set_name, mrs.set_kind, "
+        "mrs.category_label_behavior, mrs.label_source, "
+        "mrs.counted_value_kind, mrs.counted_numeric_value, v.source_name "
+        "from multiple_response_set mrs "
+        "join multiple_response_member mrm "
+        "on mrm.multiple_response_set_id = mrs.multiple_response_set_id "
+        "join variable v on v.variable_id = mrm.variable_id "
+        "order by mrs.set_name, mrm.source_ordinal"
     ).fetchall()
     assert rows == [
-        ("$extended", "MD", 1, 1, 1, "numeric", 1.0, "ex_a"),
-        ("$extended", "MD", 1, 1, 1, "numeric", 1.0, "ex_b"),
-        ("$mc", "MC", 0, 0, 0, None, None, "mc_a"),
-        ("$mc", "MC", 0, 0, 0, None, None, "mc_b"),
-        ("$md", "MD", 1, 0, 0, "numeric", 1.0, "md_a"),
-        ("$md", "MD", 1, 0, 0, "numeric", 1.0, "md_b"),
+        ("$extended", "MD", "counted_values", "variable_label", "numeric", 1.0, "ex_a"),
+        ("$extended", "MD", "counted_values", "variable_label", "numeric", 1.0, "ex_b"),
+        ("$mc", "MC", "variable_labels", "set_label", None, None, "mc_a"),
+        ("$mc", "MC", "variable_labels", "set_label", None, None, "mc_b"),
+        ("$md", "MD", "variable_labels", "set_label", "numeric", 1.0, "md_a"),
+        ("$md", "MD", "variable_labels", "set_label", "numeric", 1.0, "md_b"),
     ]
-    # The JSON is only legacy compatibility now; normalized rows must drive the writer.
-    connection.execute("update dataset_catalog set multiple_response_sets = '{}' where dataset_id = 'mr'")
-    connection.execute("update multiple_response_set_catalog set label = 'MD catalog' where dataset_id = 'mr' and set_name = '$md'")
+    connection.execute("update multiple_response_set set set_label = 'MD catalog' where set_name = '$md'")
     connection.commit()
     openstatspec.export_sav(database_url=database, dataset_id="mr", destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
     exported = pyspssio.read_metadata(str(destination))["mrsets"]

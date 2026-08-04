@@ -1,5 +1,15 @@
 # Changelog
 
+
+## Unreleased
+
+### Fixed
+
+- Removed the temporary `*_catalog` compatibility schema and made SAV/ZSAV
+  import, validation, export, fidelity reporting, and in-place metadata edits
+  use the normative UUID-keyed OpenStatSpec catalog exclusively.
+- Existing databases that contain only the former compatibility catalog must be
+  remediated manually before export.
 All notable changes to this reference implementation are documented here.
 
 ## 0.4.0 — 2026-07-31

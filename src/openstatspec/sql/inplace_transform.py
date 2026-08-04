@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
 from typing import Any
 from uuid import uuid4
 
@@ -22,8 +21,7 @@ from ..transform import (
 )
 from .capabilities import effective_profile
 from .normative import catalog as core_catalog
-from .wide import catalog as legacy_catalog
-from .wide import normalized_metadata_tables, physical_name
+from .wide import physical_name
 from .workflow import TransformationError
 
 
@@ -229,32 +227,23 @@ def _target_identity_state(
     return str(row.dataset_id), schema, table_name, relation_count
 
 
-def _legacy_identifiers(dataset: dict[str, Any]) -> tuple[str, str]:
-    dataset_name = dataset.get("dataset_name")
+def _physical_table_name(dataset: dict[str, Any]) -> str:
     table_name = dataset.get("physical_table_name")
-    if not isinstance(dataset_name, str) or not dataset_name:
-        raise TransformationError(
-            "dataset_invalid", "The target lacks its legacy catalog identity."
-        )
     if not isinstance(table_name, str) or not table_name:
         raise TransformationError(
             "dataset_invalid", "The target lacks its physical wide-table name."
         )
-    return dataset_name, table_name
+    return table_name
 
 
 def _replace_value_labels(
     connection: Any,
     *,
     core: Any,
-    legacy_variable: Table,
-    legacy_labels: Table,
-    legacy_dataset_id: str,
     variable: dict[str, Any],
     labels: tuple[ValueLabel, ...],
 ) -> None:
     variable_id = str(variable["variable_id"])
-    ordinal = int(variable["source_ordinal"])
     old_set = connection.execute(
         select(core.variable_value_label_set.c.value_label_set_id).where(
             core.variable_value_label_set.c.variable_id == variable_id
@@ -286,31 +275,14 @@ def _replace_value_labels(
             value_label_set_id=label_set_id,
             ordinal=label_ordinal,
             code_kind="numeric" if item.value.type == "binary64" else "string",
-            numeric_code=(item.value.number() if item.value.type == "binary64" else None),
-            string_code=(str(item.value.value) if item.value.type == "string" else None),
+            numeric_code=(
+                item.value.number() if item.value.type == "binary64" else None
+            ),
+            string_code=(
+                str(item.value.value) if item.value.type == "string" else None
+            ),
             label=item.label,
         ))
-    connection.execute(delete(legacy_labels).where(
-        legacy_labels.c.dataset_id == legacy_dataset_id,
-        legacy_labels.c.variable_ordinal == ordinal,
-    ))
-    for label_ordinal, item in enumerate(labels, start=1):
-        connection.execute(insert(legacy_labels).values(
-            dataset_id=legacy_dataset_id,
-            variable_ordinal=ordinal,
-            ordinal=label_ordinal,
-            value_type="numeric" if item.value.type == "binary64" else "text",
-            numeric_value=(item.value.number() if item.value.type == "binary64" else None),
-            text_value=(str(item.value.value) if item.value.type == "string" else None),
-            label=item.label,
-        ))
-    legacy_json = {
-        str(_typed_value(item.value)): item.label for item in labels
-    }
-    connection.execute(update(legacy_variable).where(
-        legacy_variable.c.dataset_id == legacy_dataset_id,
-        legacy_variable.c.ordinal == ordinal,
-    ).values(value_labels=json.dumps(legacy_json, ensure_ascii=False)))
 
 
 def _apply_plan_on_connection(
@@ -335,7 +307,7 @@ def _apply_plan_on_connection(
             "The target dataset's physical wide table does not exist.",
         )
     dataset, variables, schema = _input_schema(connection, dataset_id)
-    legacy_dataset_id, table_name = _legacy_identifiers(dataset)
+    table_name = _physical_table_name(dataset)
     plan = submission.plan
     bound = bind_transformation_plan(plan, schema)
     output_by_name = {
@@ -386,9 +358,6 @@ def _apply_plan_on_connection(
             "storage-width operation.",
         )
     core = core_catalog(MetaData())
-    legacy_metadata = MetaData()
-    _, legacy_variable, _, _ = legacy_catalog(legacy_metadata)
-    _, legacy_labels, _, _ = normalized_metadata_tables(legacy_metadata)
     relation = Table(
         table_name,
         MetaData(),
@@ -427,18 +396,6 @@ def _apply_plan_on_connection(
                     "variable_label": None,
                 }
                 connection.execute(insert(core.variable).values(**target_variable))
-                connection.execute(insert(legacy_variable).values(
-                    dataset_id=legacy_dataset_id,
-                    ordinal=new_ordinal,
-                    source_name=operation.target,
-                    physical_name=target_physical,
-                    storage_kind="numeric",
-                    string_width=None,
-                    label="",
-                    attributes="{}",
-                    value_labels="{}",
-                    missing_ranges="[]",
-                ))
                 variables.append(target_variable)
                 by_name[operation.target.casefold()] = target_variable
                 relation = Table(
@@ -466,17 +423,10 @@ def _apply_plan_on_connection(
             connection.execute(update(core.variable).where(
                 core.variable.c.variable_id == variable["variable_id"]
             ).values(variable_label=operation.label))
-            connection.execute(update(legacy_variable).where(
-                legacy_variable.c.dataset_id == legacy_dataset_id,
-                legacy_variable.c.ordinal == variable["source_ordinal"],
-            ).values(label=operation.label))
         elif isinstance(operation, ReplaceValueLabelsOperation):
             _replace_value_labels(
                 connection,
                 core=core,
-                legacy_variable=legacy_variable,
-                legacy_labels=legacy_labels,
-                legacy_dataset_id=legacy_dataset_id,
                 variable=by_name[operation.variable.casefold()],
                 labels=operation.labels,
             )

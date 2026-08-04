@@ -54,7 +54,10 @@ def test_live_profile_import_validate_and_export(environment_name, dataset_id, s
     engine = create_engine(database_url)
     with engine.connect() as connection:
         assert connection.execute(text(f"SELECT COUNT(*) FROM {imported['data_table']} ")).scalar_one() == 2
-        assert connection.execute(text("SELECT COUNT(*) FROM variable_catalog WHERE dataset_id = :dataset_id"), {"dataset_id": runtime_dataset_id}).scalar_one() == 2
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM variable v JOIN dataset d ON d.dataset_id = v.dataset_id "
+            "WHERE d.dataset_name = :dataset_name"
+        ), {"dataset_name": runtime_dataset_id}).scalar_one() == 2
     destination = tmp_path / f"{dataset_id}.sav"
     exported = openstatspec.export_sav(database_url=database_url, dataset_id=runtime_dataset_id, destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
     assert destination.exists()
@@ -133,23 +136,11 @@ def test_live_dolt_conservative_source_width_envelope(tmp_path) -> None:
         assert connection.execute(text(
             "select count(*) from dataset where dataset_name = :name"
         ), {"name": rejected_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "select count(*) from dataset_catalog where dataset_id = :name"
-        ), {"name": rejected_id}).scalar_one() == 0
-        mirror_event = connection.execute(text("""
-            select f.dataset_id, f.direction, f.severity, f.code
-              from fidelity_event_catalog f
-              join operation_catalog o on o.operation_id = f.operation_id
-             where o.source = :source
-        """), {"source": rejected_source.name}).mappings().one()
         normative_event = connection.execute(text("""
             select f.dataset_id, f.direction, f.severity, f.event_code
               from fidelity_event f
              where f.source_item = :source
         """), {"source": rejected_source.name}).mappings().one()
-    assert tuple(mirror_event.values()) == (
-        None, "import", "error", "target_capability_exceeded",
-    )
     assert tuple(normative_event.values()) == (
         None, "import", "error", "target_capability_exceeded",
     )
@@ -183,19 +174,13 @@ def test_live_dolt_post_ddl_fault_has_complete_compensating_cleanup(
         assert connection.execute(text(
             "select count(*) from dataset where dataset_name = :name"
         ), {"name": dataset_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "select count(*) from dataset_catalog where dataset_id = :name"
-        ), {"name": dataset_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "select status, dataset_id from operation_catalog where source = :source"
-        ), {"source": source.name}).one() == ("failed", None)
         assert connection.execute(text("""
-            select f.dataset_id, f.direction, f.severity, f.code
-              from fidelity_event_catalog f
-              join operation_catalog o on o.operation_id = f.operation_id
-             where o.source = :source
+            select o.status, f.dataset_id, f.direction, f.severity, f.event_code
+              from fidelity_event f
+              join operation o on o.operation_id = f.operation_id
+             where f.source_item = :source
         """), {"source": source.name}).one() == (
-            None, "import", "error", "import_failed",
+            "failed", None, "import", "error", "import_failed",
         )
     assert f"data_{dataset_id}" not in inspect_database(engine).get_table_names()
 
@@ -241,9 +226,6 @@ def test_live_dolt_adapter_value_boundary_is_atomic() -> None:
         assert connection.execute(text(
             f"SELECT OCTET_LENGTH(value) FROM {quote(accepted_table)}"
         )).scalar_one() == 65_504
-        assert connection.execute(text(
-            "SELECT COUNT(*) FROM dataset_catalog WHERE dataset_id = :dataset_id"
-        ), {"dataset_id": rejected_id}).scalar_one() == 0
         assert connection.execute(text(
             "SELECT COUNT(*) FROM dataset WHERE dataset_name = :dataset_id"
         ), {"dataset_id": rejected_id}).scalar_one() == 0

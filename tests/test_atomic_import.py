@@ -44,17 +44,19 @@ def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path) 
         )
 
     connection = sqlite3.connect(database_path)
-    assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
+    assert connection.execute("select count(*) from dataset").fetchone() == (0,)
     assert "data_too_wide" not in {
         row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")
     }
     assert connection.execute(
-        "select direction, status, dataset_id from operation_catalog"
-    ).fetchall() == [("import", "failed", None)]
+        "select operation_kind, status from operation"
+    ).fetchall() == [("import", "failed")]
     direction, severity, code, details = connection.execute(
-        "select direction, severity, code, details from fidelity_event_catalog"
+        "select direction, severity, event_code, detail_json from fidelity_event"
     ).fetchone()
-    assert (direction, severity, code) == ("import", "error", "target_capability_exceeded")
+    assert (direction, severity, code) == (
+        "import", "error", "target_capability_exceeded",
+    )
     assert '"variable_count": 2001' in details
 
 
@@ -75,9 +77,13 @@ def test_identifier_mapping_preflight_records_failure_before_dataset_creation(tm
         )
 
     connection = sqlite3.connect(database_path)
-    assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
-    assert connection.execute("select dataset_id, status from operation_catalog").fetchall() == [(None, "failed")]
-    details = connection.execute("select details from fidelity_event_catalog").fetchone()[0]
+    assert connection.execute("select count(*) from dataset").fetchone() == (0,)
+    assert connection.execute(
+        "select status from operation"
+    ).fetchall() == [("failed",)]
+    details = connection.execute(
+        "select detail_json from fidelity_event"
+    ).fetchone()[0]
     assert '"reason": "physical_identifier_mapping_invalid"' in details
 
 
@@ -102,14 +108,16 @@ def test_declared_string_width_preflight_is_atomic_and_diagnostic(tmp_path, monk
         )
 
     connection = sqlite3.connect(database_path)
-    assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
+    assert connection.execute("select count(*) from dataset").fetchone() == (0,)
     assert "data_too_wide_string" not in {
         row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")
     }
     assert connection.execute(
-        "select dataset_id, status from operation_catalog"
-    ).fetchall() == [(None, "failed")]
-    details = connection.execute("select details from fidelity_event_catalog").fetchone()[0]
+        "select status from operation"
+    ).fetchall() == [("failed",)]
+    details = connection.execute(
+        "select detail_json from fidelity_event"
+    ).fetchone()[0]
     assert '"reason": "declared_string_width_limit"' in details
     assert '"string_width": 4' in details
 
@@ -153,26 +161,13 @@ def test_nonatomic_failure_after_normative_write_cleans_both_catalogs_and_data(
             "select name from sqlite_master where type = 'table'"
         )
     }
-    if "dataset_catalog" in existing_tables:
-        assert connection.execute(
-            "select count(*) from dataset_catalog where dataset_id = 'cleanup'"
-        ).fetchone() == (0,)
-    if "variable_catalog" in existing_tables:
-        assert connection.execute(
-            "select count(*) from variable_catalog where dataset_id = 'cleanup'"
-        ).fetchone() == (0,)
+    assert not {name for name in existing_tables if name.endswith("_catalog")}
     assert connection.execute(
         "select count(*) from dataset where dataset_name = 'cleanup'"
     ).fetchone() == (0,)
     assert connection.execute(
         "select count(*) from variable"
     ).fetchone() == (0,)
-    assert connection.execute(
-        "select direction, status, dataset_id from operation_catalog"
-    ).fetchall() == [("import", "failed", None)]
-    assert connection.execute(
-        "select direction, severity, code, dataset_id from fidelity_event_catalog"
-    ).fetchall() == [("import", "error", "import_failed", None)]
     assert connection.execute(
         "select operation_kind, status from operation"
     ).fetchall() == [("import", "failed")]
@@ -270,21 +265,14 @@ def test_empty_namespace_dolt_width_failure_initializes_identity_and_one_audit(
     assert connection.execute(
         "select dataset_id, event_code from fidelity_event"
     ).fetchall() == [(None, "target_capability_exceeded")]
-    assert connection.execute(
-        "select dataset_id, status from operation_catalog"
-    ).fetchall() == [(None, "failed")]
-    assert connection.execute(
-        "select dataset_id, code from fidelity_event_catalog"
-    ).fetchall() == [(None, "target_capability_exceeded")]
 
 
-@pytest.mark.parametrize("failure_point", ["mirror_completion", "normative_completion"])
 def test_nonatomic_failure_during_final_completion_still_cleans_dataset(
-    tmp_path, monkeypatch, failure_point,
+    tmp_path, monkeypatch,
 ) -> None:
-    database_path = tmp_path / f"{failure_point}.sqlite"
+    database_path = tmp_path / "normative-completion.sqlite"
     database = f"sqlite:///{database_path}"
-    dataset_id = f"cleanup-{failure_point}"
+    dataset_name = "cleanup-normative-completion"
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "name",
         "storage_kind": "string", "string_width": 8, "label": "",
@@ -295,64 +283,41 @@ def test_nonatomic_failure_during_final_completion_still_cleans_dataset(
         wide, "effective_profile",
         lambda _url: (replace(MYSQL, name="mysql"), {}),
     )
+    real_finish = wide.finish_normative_operation
     triggered = False
-    if failure_point == "mirror_completion":
-        real_update = wide.update
 
-        def fail_first_operation_update(table):
-            nonlocal triggered
-            if table.name == "operation_catalog" and not triggered:
-                triggered = True
-                raise RuntimeError("fault after data insert")
-            return real_update(table)
+    def fail_first_normative_finish(*args, **kwargs):
+        nonlocal triggered
+        if not triggered:
+            triggered = True
+            raise RuntimeError("fault during final completion")
+        return real_finish(*args, **kwargs)
 
-        monkeypatch.setattr(wide, "update", fail_first_operation_update)
-    else:
-        real_finish = wide.finish_normative_operation
-
-        def fail_first_normative_finish(*args, **kwargs):
-            nonlocal triggered
-            if not triggered:
-                triggered = True
-                raise RuntimeError("fault during final completion")
-            return real_finish(*args, **kwargs)
-
-        monkeypatch.setattr(
-            wide, "finish_normative_operation", fail_first_normative_finish,
-        )
-
+    monkeypatch.setattr(
+        wide, "finish_normative_operation", fail_first_normative_finish,
+    )
     with pytest.raises(RuntimeError, match="fault"):
         create_wide_dataset(
-            database_url=database, dataset_id=dataset_id,
-            source_name=f"{dataset_id}.sav", source_format="SAV",
+            database_url=database, dataset_id=dataset_name,
+            source_name=f"{dataset_name}.sav", source_format="SAV",
             rows=[{"name": "ok"}], variables=variables,
         )
 
     connection = sqlite3.connect(database_path)
     assert triggered is True
-    assert f"data_{dataset_id}" not in {
+    tables = {
         row[0] for row in connection.execute(
             "select name from sqlite_master where type = 'table'"
         )
     }
-    existing_tables = {
-        row[0] for row in connection.execute(
-            "select name from sqlite_master where type = 'table'"
-        )
-    }
-    if "dataset_catalog" in existing_tables:
-        assert connection.execute(
-            "select count(*) from dataset_catalog where dataset_id = ?", (dataset_id,)
-        ).fetchone() == (0,)
+    assert f"data_{dataset_name}" not in tables
+    assert not {name for name in tables if name.endswith("_catalog")}
     assert connection.execute(
-        "select count(*) from dataset where dataset_name = ?", (dataset_id,)
+        "select count(*) from dataset where dataset_name = ?", (dataset_name,)
     ).fetchone() == (0,)
-    assert connection.execute(
-        "select status, dataset_id from operation_catalog"
-    ).fetchall() == [("failed", None)]
     assert connection.execute(
         "select status from operation"
     ).fetchall() == [("failed",)]
     assert connection.execute(
-        "select code, dataset_id from fidelity_event_catalog"
+        "select event_code, dataset_id from fidelity_event"
     ).fetchall() == [("import_failed", None)]

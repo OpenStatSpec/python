@@ -9,16 +9,20 @@ from uuid import uuid4
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import delete, BigInteger, Boolean, Column, Float, Integer, MetaData, String, Table, Text, create_engine, insert, inspect, select, text, update
+from sqlalchemy import (
+    BigInteger, Column, Float, MetaData, Table, Text, create_engine, insert,
+    inspect, select,
+)
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from ..core import UnsupportedOperationError
 from .capabilities import effective_profile
 from .profiles import preflight, validate_connection_url
 from .normative import (
+    CATALOG_CONTRACT_ID,
+    CATALOG_SCHEMA_VERSION,
     catalog as normative_catalog,
     create as create_normative_catalog,
     delete_dataset_representation as delete_normative_dataset,
-    dataset_id_for_name as normative_dataset_id_for_name,
     finish_operation as finish_normative_operation,
     record_fidelity_events as record_normative_fidelity_events,
     record_operation as record_normative_operation,
@@ -62,283 +66,38 @@ def binary64_type() -> Float:
     )
 
 
-def catalog(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
-    datasets = Table(
-        "dataset_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("data_table", String(255), nullable=False, unique=True),
-        Column("source_format", String(16), nullable=False),
-        Column("source_name", Text, nullable=False),
-        Column("source_table_name", Text),
-        Column("source_sha256", String(64), nullable=False),
-        Column("source_created_at", String(40)),
-        Column("source_modified_at", String(40)),
-        Column("imported_at", String(40), nullable=False),
-        Column("source_encoding", String(128)),
-        Column("case_count", BigInteger, nullable=False),
-        Column("file_label", Text, nullable=False, default=""),
-        Column("documents", Text, nullable=False, default="[]"),
-        Column("file_attributes", Text, nullable=False, default="{}"),
-        Column("case_weight_variable", String(255)),
-        Column("multiple_response_sets", Text, nullable=False, default="{}"),
-    )
-    variables = Table(
-        "variable_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("ordinal", Integer, primary_key=True),
-        Column("source_name", String(255), nullable=False),
-        Column("physical_name", String(255), nullable=False),
-        Column("storage_kind", String(16), nullable=False),
-        Column("readstat_storage_type", String(32)),
-        Column("string_width", Integer),
-        Column("label", Text, nullable=False, default=""),
-        Column("format", String(64)),
-        # format remains the legacy print-format mirror; SPSS has a distinct write format.
-        Column("print_format", String(64)),
-        Column("write_format", String(64)),
-        Column("measure", String(32)),
-        Column("role", String(32)),
-        Column("alignment", String(32)),
-        Column("display_width", Integer),
-        Column("attributes", Text, nullable=False, default="{}"),
-        Column("compat_name", String(255)),
-        Column("value_labels", Text, nullable=False, default="{}"),
-        Column("missing_ranges", Text, nullable=False, default="[]"),
-    )
-    fidelity_events = Table(
-        "fidelity_event_catalog", metadata,
-        Column("operation_id", String(36), primary_key=True),
-        Column("ordinal", Integer, primary_key=True),
-        Column("dataset_id", String(255)),
-        Column("direction", String(16), nullable=False),
-        Column("severity", String(16), nullable=False),
-        Column("detail", Text, nullable=False),
-        Column("details", Text, nullable=False, default="{}"),
-        Column("code", String(128), nullable=False),
-    )
-    operations = Table(
-        "operation_catalog", metadata,
-        Column("operation_id", String(36), primary_key=True),
-        Column("direction", String(16), nullable=False),
-        Column("status", String(16), nullable=False),
-        Column("dataset_id", String(255)),
-        Column("source", Text),
-        Column("destination", Text),
-        Column("created_at", String(40), nullable=False),
-        Column("completed_at", String(40)),
-        Column("details", Text, nullable=False, default="{}"),
-    )
-    return datasets, variables, fidelity_events, operations
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
-def _migrate_catalog_columns(
-    connection: Any, datasets: Table, variables: Table, multiple_response: Table,
-) -> None:
-    """Add pyspssio metadata columns to catalogs created by earlier adapters.
-
-    This additive migration is intentionally small and portable: no existing
-    source data or dictionary row is rewritten, while a later import can store
-    the newly observable metadata alongside it.
-    """
-    inspector = inspect(connection)
-    additions = {
-        datasets.name: {
-            "file_attributes": "TEXT NOT NULL DEFAULT '{}'",
-            "case_weight_variable": "VARCHAR(255)",
-        },
-        variables.name: {
-            "role": "VARCHAR(32)",
-            "attributes": "TEXT NOT NULL DEFAULT '{}'",
-            "compat_name": "VARCHAR(255)",
-            "print_format": "VARCHAR(64)",
-            "write_format": "VARCHAR(64)",
-        },
-        multiple_response.name: {
-            "is_dichotomy": "BOOLEAN",
-            "use_category_labels": "BOOLEAN",
-            "use_first_var_label": "BOOLEAN",
-            "counted_value_type": "VARCHAR(16)",
-            "counted_numeric": "DOUBLE",
-            "counted_text": "TEXT",
-        },
-    }
-    preparer = connection.dialect.identifier_preparer
-    for table_name, columns in additions.items():
-        if not inspector.has_table(table_name):
-            continue
-        existing = {column["name"] for column in inspector.get_columns(table_name)}
-        for name, declaration in columns.items():
-            if name not in existing:
-                connection.execute(text(
-                    f"ALTER TABLE {preparer.quote(table_name)} ADD COLUMN "
-                    f"{preparer.quote(name)} {declaration}"
-                ))
-
-
-
-def _event_rows(
-    *, operation_id: str, dataset_id: str | None, direction: str,
-    fidelity_events: Iterable[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """Normalize the public compact diagnostic shape into durable catalog rows."""
-    rows: list[dict[str, Any]] = []
-    for ordinal, event in enumerate(fidelity_events, start=1):
-        detail = str(event["detail"])
-        details = event.get("details", {})
-        rows.append({
-            "operation_id": operation_id, "ordinal": ordinal, "dataset_id": dataset_id,
-            "direction": str(event.get("direction", direction)),
-            "severity": str(event.get("severity", "warning")),
-            "code": str(event["code"]), "detail": detail,
-            "details": json.dumps(details, default=str, sort_keys=True),
-        })
-
-    return rows
 
 
 
 def _record_failed_preflight(
-    *, engine: Any, metadata: MetaData, datasets: Table, variable_catalog: Table,
-    multiple_response_catalog: Table, fidelity_event_catalog: Table,
-    operation_catalog: Table, normative: Any, operation_id: str, source_name: str,
-    source_format: str, variable_count: int, profile_name: str, error: Exception,
+    *, engine: Any, normative: Any, operation_id: str, source_name: str,
+    source_format: str, variable_count: int, profile_name: str,
+    error: Exception,
 ) -> None:
-    """Persist a failed preflight without creating any source dataset state."""
+    """Persist a failed preflight in the normative audit catalog."""
     with engine.begin() as connection:
         create_normative_catalog(connection, normative)
-        metadata.create_all(connection, tables=[
-            datasets, variable_catalog, multiple_response_catalog,
-            fidelity_event_catalog, operation_catalog,
-        ])
         failed_at = datetime.now(UTC).replace(tzinfo=None)
         record_normative_operation(
             connection, normative, operation_id=operation_id,
             operation_kind="import", status="failed", source_format=source_format,
             started_at=failed_at, completed_at=failed_at,
         )
-        connection.execute(insert(operation_catalog).values(
-            operation_id=operation_id, direction="import", status="failed", dataset_id=None,
-            source=source_name, created_at=_now(), completed_at=_now(),
-            details=json.dumps({"reason": "preflight", "variable_count": variable_count,
-                "capability": getattr(error, "details", {})}, sort_keys=True),
-        ))
-        failed_events = ({
-            "code": getattr(error, "code", "target_capability_exceeded"),
-            "detail": str(error), "severity": "error", "source_item": source_name,
-            "details": {"variable_count": variable_count, "profile": profile_name,
-                        **getattr(error, "details", {})},
-        },)
-        connection.execute(insert(fidelity_event_catalog), _event_rows(
-            operation_id=operation_id, dataset_id=None, direction="import",
-            fidelity_events=failed_events,
-        ))
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id, dataset_id=None,
-            direction="import", events=failed_events,
+            direction="import", events=({
+                "code": str(getattr(
+                    error, "code", "target_capability_exceeded")).replace("-", "_"),
+                "detail": str(error), "severity": "error",
+                "source_item": source_name,
+                "details": {
+                    "variable_count": variable_count,
+                    "profile": profile_name,
+                    **getattr(error, "details", {}),
+                },
+            },),
         )
 
-def multiple_response_set_catalog(metadata: MetaData) -> Table:
-    return Table(
-        "multiple_response_set_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("set_name", String(255), primary_key=True),
-        Column("member_ordinal", Integer, primary_key=True),
-        Column("kind", String(16)), Column("label", Text),
-        Column("is_dichotomy", Boolean),
-        Column("use_category_labels", Boolean),
-        Column("use_first_var_label", Boolean),
-        Column("counted_value", Text),
-        Column("counted_value_type", String(16)),
-        Column("counted_numeric", binary64_type()),
-        Column("counted_text", Text),
-        Column("variable_name", String(255)),
-        Column("definition", Text, nullable=False),
-    )
-
-
-def source_extension_catalog(metadata: MetaData) -> Table:
-    """Namespaced raw source semantics retained even when export is fail-closed."""
-    return Table(
-        "source_extension_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("extension_key", String(255), primary_key=True),
-        Column("payload", Text, nullable=False),
-    )
-
-
-def source_extension_rows(dataset_id: str, extensions: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {"dataset_id": dataset_id, "extension_key": str(key),
-         "payload": json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True)}
-        for key, payload in sorted(extensions.items())
-    ]
-
-
-def document_catalog(metadata: MetaData) -> Table:
-    """Ordered file documents, normalized independently from the legacy JSON column."""
-    return Table(
-        "document_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("ordinal", Integer, primary_key=True),
-        Column("text", Text, nullable=False),
-    )
-
-
-def value_label_catalog(metadata: MetaData) -> Table:
-    """Typed, ordered value labels; JSON on variable_catalog remains a read fallback."""
-    return Table(
-        "value_label_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("variable_ordinal", Integer, primary_key=True),
-        Column("ordinal", Integer, primary_key=True),
-        Column("value_type", String(16), nullable=False),
-        Column("numeric_value", binary64_type()),
-        Column("text_value", Text),
-        Column("label", Text, nullable=False),
-    )
-
-
-def missing_rule_catalog(metadata: MetaData) -> Table:
-    """Typed inclusive SPSS user-missing intervals, including discrete values as lo == hi."""
-    return Table(
-        "missing_rule_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("variable_ordinal", Integer, primary_key=True),
-        Column("ordinal", Integer, primary_key=True),
-        Column("kind", String(16), nullable=False),
-        Column("lower_type", String(16), nullable=False),
-        Column("lower_numeric", binary64_type()),
-        Column("lower_text", Text),
-        Column("upper_type", String(16), nullable=False),
-        Column("upper_numeric", binary64_type()),
-        Column("upper_text", Text),
-        Column("lower_inclusive", Boolean, nullable=False, default=True),
-        Column("upper_inclusive", Boolean, nullable=False, default=True),
-    )
-
-
-def attribute_catalog(metadata: MetaData) -> Table:
-    """Ordered SPSS custom-attribute values for files and variables.
-
-    SPSS custom attributes are text-valued, but one attribute name can carry
-    an ordered array of values. ``scope`` is ``file`` for a file attribute
-    (with ``variable_ordinal == 0``) and ``variable`` for an attribute of one
-    source variable. This table is authoritative whenever it contains rows;
-    the JSON columns on older catalogs remain a migration fallback.
-    """
-    return Table(
-        "attribute_catalog", metadata,
-        Column("dataset_id", String(255), primary_key=True),
-        Column("scope", String(16), primary_key=True),
-        Column("variable_ordinal", Integer, primary_key=True),
-        Column("attribute_ordinal", Integer, primary_key=True),
-        Column("value_ordinal", Integer, primary_key=True),
-        Column("attribute_name", String(255), nullable=False),
-        Column("attribute_value", Text, nullable=False),
-    )
 
 
 def _attribute_values(value: Any) -> list[str]:
@@ -377,26 +136,6 @@ def attribute_rows(
     return rows
 
 
-def attributes_from_rows(
-    rows: Iterable[Mapping[str, Any]], *, variables: Iterable[Mapping[str, Any]],
-) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """Rebuild ordered attributes; rows, not legacy JSON, are authoritative."""
-    by_ordinal = {int(item["ordinal"]): str(item["source_name"]) for item in variables}
-    grouped: dict[tuple[str, int], dict[str, list[str]]] = {}
-    for row in rows:
-        target = grouped.setdefault((str(row["scope"]), int(row["variable_ordinal"])), {})
-        target.setdefault(str(row["attribute_name"]), []).append(str(row["attribute_value"]))
-
-    def collapse(values: Mapping[str, list[str]]) -> dict[str, Any]:
-        return {name: value[0] if len(value) == 1 else value for name, value in values.items()}
-
-    file_attributes = collapse(grouped.get(("file", 0), {}))
-    variable_attributes = {
-        by_ordinal[ordinal]: collapse(attributes)
-        for (scope, ordinal), attributes in grouped.items()
-        if scope == "variable" and ordinal in by_ordinal
-    }
-    return file_attributes, variable_attributes
 
 
 def _typed_endpoint(value: Any) -> tuple[str, float | None, str | None]:
@@ -464,11 +203,6 @@ def missing_rule_rows(dataset_id: str, variables: list[dict[str, Any]]) -> list[
     return rows
 
 
-def normalized_metadata_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table]:
-    return (
-        document_catalog(metadata), value_label_catalog(metadata), missing_rule_catalog(metadata),
-        attribute_catalog(metadata),
-    )
 
 def _mr_counted_value(definition: Mapping[str, Any]) -> tuple[str | None, float | None, str | None]:
     value = definition.get("counted_value", definition.get("countedvalue"))
@@ -690,44 +424,6 @@ def multiple_response_set_rows(dataset_id: str, definitions: str) -> list[dict[s
     return rows
 
 
-def multiple_response_sets_from_rows(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Reconstruct pyspssio MR metadata from normalized catalog rows.
-
-    The new typed fields are authoritative. ``definition`` only supplies
-    backwards compatibility for catalogs written before those fields existed.
-    """
-    result: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        name = str(row["set_name"])
-        if name not in result:
-            try:
-                legacy = json.loads(row.get("definition") or "{}")
-            except (TypeError, json.JSONDecodeError):
-                legacy = {}
-            definition = dict(legacy) if isinstance(legacy, Mapping) else {}
-            definition["variable_list"] = []
-            result[name] = definition
-        definition = result[name]
-        if row.get("label") is not None:
-            definition["label"] = row["label"]
-        if row.get("is_dichotomy") is not None:
-            definition["is_dichotomy"] = bool(row["is_dichotomy"])
-        elif row.get("kind") is not None:
-            definition["is_dichotomy"] = str(row["kind"]).upper() == "MD"
-        if row.get("use_category_labels") is not None:
-            definition["use_category_labels"] = bool(row["use_category_labels"])
-        if row.get("use_first_var_label") is not None:
-            definition["use_first_var_label"] = bool(row["use_first_var_label"])
-        value_type = row.get("counted_value_type")
-        if value_type == "numeric":
-            definition["counted_value"] = row.get("counted_numeric")
-        elif value_type == "text":
-            definition["counted_value"] = row.get("counted_text")
-        elif row.get("counted_value") not in (None, ""):
-            definition["counted_value"] = row["counted_value"]
-        if row.get("variable_name") is not None:
-            definition["variable_list"].append(row["variable_name"])
-    return result
 
 def physical_name(source_name: str, used: set[str]) -> str:
     stem = _IDENTIFIER.sub("_", source_name).strip("_").lower() or "variable"
@@ -747,30 +443,26 @@ def data_table_name(dataset_id: str) -> str:
 
 def create_wide_dataset(
     *, database_url: str, dataset_id: str, source_name: str, source_format: str,
-    rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]], file_label: str = "",
-    source_encoding: str | None = None, documents: str = "[]",
-    file_attributes: str = "{}", case_weight_variable: str | None = None,
+    rows: Iterable[Mapping[str, Any]], variables: list[dict[str, Any]],
+    file_label: str = "", documents: str = "[]", file_attributes: str = "{}",
     file_attribute_values: Mapping[str, Any] | None = None,
     variable_attribute_values: Mapping[str, Mapping[str, Any]] | None = None,
-    source_table_name: str | None = None,
-    source_sha256: str = "",
+    case_weight_variable: str | None = None, multiple_response_sets: str = "{}",
+    source_encoding: str | None = None,
+    source_table_name: str | None = None, source_sha256: str = "",
     source_created_at: str | None = None, source_modified_at: str | None = None,
-    imported_at: str = "",
-    multiple_response_sets: str = "{}",
+    imported_at: str | None = None,
     source_extensions: Mapping[str, Any] | None = None,
     fidelity_events: Iterable[Mapping[str, Any]] = (),
     operation_details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    del source_table_name, source_created_at, source_modified_at, operation_details
     validate_connection_url(database_url)
     profile, _active_connection = effective_profile(database_url)
     engine = create_engine(database_url)
-    metadata = MetaData()
-    datasets, variable_catalog, fidelity_event_catalog, operation_catalog = catalog(metadata)
-    normative = normative_catalog(metadata)
-    multiple_response_catalog = multiple_response_set_catalog(metadata)
-    source_extensions_catalog = source_extension_catalog(metadata)
-    documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog = normalized_metadata_tables(metadata)
+    normative = normative_catalog(MetaData())
     operation_id = str(uuid4())
+    normative_dataset_id = str(uuid4())
     fidelity_events = tuple(fidelity_events)
     source_rows = list(rows)
     try:
@@ -782,51 +474,59 @@ def create_wide_dataset(
         )
     except Exception as error:
         _record_failed_preflight(
-            engine=engine, metadata=metadata, datasets=datasets,
-            variable_catalog=variable_catalog, multiple_response_catalog=multiple_response_catalog,
-            fidelity_event_catalog=fidelity_event_catalog, operation_catalog=operation_catalog,
-            operation_id=operation_id, source_name=source_name,
-            source_format=source_format, variable_count=len(variables),
-            profile_name=profile.name, error=error, normative=normative,
+            engine=engine, normative=normative, operation_id=operation_id,
+            source_name=source_name, source_format=source_format,
+            variable_count=len(variables), profile_name=profile.name, error=error,
         )
         raise
+
     data_table = Table(
-        data_table_name(dataset_id), metadata,
+        data_table_name(dataset_id), MetaData(),
         Column("__case_ordinal", BigInteger, primary_key=True, nullable=False),
-        *(Column(item["physical_name"], binary64_type() if item["storage_kind"] == "numeric" else string_type(profile),
-                 nullable=item["storage_kind"] == "numeric") for item in variables),
+        *(
+            Column(
+                item["physical_name"],
+                binary64_type() if item["storage_kind"] == "numeric"
+                else string_type(profile),
+                nullable=item["storage_kind"] == "numeric",
+            )
+            for item in variables
+        ),
     )
     materialized = [
         {"__case_ordinal": ordinal, **row}
         for ordinal, row in enumerate(source_rows, start=1)
     ]
-    normative_dataset_id = str(uuid4())
+    docs_rows = document_rows(normative_dataset_id, documents)
+    labels_rows = value_label_rows(normative_dataset_id, variables)
+    missing_rows = missing_rule_rows(normative_dataset_id, variables)
+    attributes_rows = attribute_rows(
+        normative_dataset_id, variables,
+        file_attributes=file_attribute_values,
+        variable_attributes=variable_attribute_values,
+    )
+    mrset_rows = multiple_response_set_rows(
+        normative_dataset_id, multiple_response_sets,
+    )
     namespace_owned = False
     data_table_was_absent = False
     try:
+        with engine.begin() as setup:
+            create_normative_catalog(setup, normative)
+        namespace_owned = True
         with engine.begin() as connection:
-            create_normative_catalog(connection, normative)
-            namespace_owned = True
-            metadata.create_all(connection, tables=[
-                datasets, variable_catalog, multiple_response_catalog,
-                source_extensions_catalog, documents_catalog, value_labels_catalog,
-                missing_rules_catalog, attributes_catalog, fidelity_event_catalog,
-                operation_catalog,
-            ])
-            _migrate_catalog_columns(
-                connection, datasets, variable_catalog, multiple_response_catalog,
-            )
             if connection.execute(
-                select(datasets.c.dataset_id).where(
-                    datasets.c.dataset_id == dataset_id
+                select(normative.dataset.c.dataset_id).where(
+                    normative.dataset.c.dataset_name == dataset_id
                 )
             ).first():
                 raise ValueError(
                     f"Dataset {dataset_id!r} already exists; imports never overwrite a dataset."
                 )
             if connection.execute(
-                select(datasets.c.dataset_id).where(
-                    datasets.c.data_table == data_table.name
+                select(normative.dataset.c.dataset_id).where(
+                    normative.dataset.c.physical_table_name == data_table.name,
+                    normative.dataset.c.physical_table_schema.is_(None),
                 )
             ).first():
                 raise ValueError(
@@ -837,69 +537,13 @@ def create_wide_dataset(
                 raise ValueError(
                     f"Physical data-table name {data_table.name!r} is already occupied."
                 )
-            data_table_was_absent = True
             record_normative_operation(
                 connection, normative, operation_id=operation_id,
                 operation_kind="import", status="started",
                 source_format=source_format,
             )
-            connection.execute(insert(operation_catalog).values(
-                operation_id=operation_id, direction="import", status="running",
-                dataset_id=dataset_id, source=source_name, created_at=_now(),
-                details=json.dumps({
-                    "variable_count": len(variables),
-                    **dict(operation_details or {}),
-                }, sort_keys=True),
-            ))
+            data_table_was_absent = True
             data_table.create(connection)
-            connection.execute(insert(datasets).values(
-                dataset_id=dataset_id, data_table=data_table.name,
-                source_format=source_format, source_name=source_name,
-                source_encoding=source_encoding, case_count=len(materialized),
-                source_table_name=source_table_name, source_sha256=source_sha256,
-                source_created_at=source_created_at,
-                source_modified_at=source_modified_at, imported_at=imported_at,
-                file_label=file_label, documents=documents,
-                file_attributes=file_attributes,
-                case_weight_variable=case_weight_variable,
-                multiple_response_sets=multiple_response_sets,
-            ))
-            connection.execute(
-                insert(variable_catalog),
-                [dict(dataset_id=dataset_id, **item) for item in variables],
-            )
-            docs_rows = document_rows(dataset_id, documents)
-            if docs_rows:
-                connection.execute(insert(documents_catalog), docs_rows)
-            labels_rows = value_label_rows(dataset_id, variables)
-            if labels_rows:
-                connection.execute(insert(value_labels_catalog), labels_rows)
-            missing_rows = missing_rule_rows(dataset_id, variables)
-            if missing_rows:
-                connection.execute(insert(missing_rules_catalog), missing_rows)
-            attributes_rows = attribute_rows(
-                dataset_id, variables,
-                file_attributes=file_attribute_values,
-                variable_attributes=variable_attribute_values,
-            )
-            if attributes_rows:
-                connection.execute(insert(attributes_catalog), attributes_rows)
-            mrset_rows = multiple_response_set_rows(
-                dataset_id, multiple_response_sets,
-            )
-            if mrset_rows:
-                connection.execute(insert(multiple_response_catalog), mrset_rows)
-            extension_rows = source_extension_rows(
-                dataset_id, source_extensions or {},
-            )
-            if extension_rows:
-                connection.execute(insert(source_extensions_catalog), extension_rows)
-            event_rows = _event_rows(
-                operation_id=operation_id, dataset_id=dataset_id,
-                direction="import", fidelity_events=fidelity_events,
-            )
-            if event_rows:
-                connection.execute(insert(fidelity_event_catalog), event_rows)
             store_normative_dataset(
                 connection, normative, dataset_name=dataset_id,
                 source_format=source_format, physical_table_name=data_table.name,
@@ -920,65 +564,34 @@ def create_wide_dataset(
             )
             if materialized:
                 connection.execute(insert(data_table), materialized)
-            connection.execute(update(operation_catalog).where(
-                operation_catalog.c.operation_id == operation_id
-            ).values(status="succeeded", completed_at=_now()))
             finish_normative_operation(
                 connection, normative, operation_id=operation_id,
                 status="succeeded",
             )
     except Exception as error:
-        if (
-            profile.name in {"mysql", "mariadb", "dolt"}
-            and namespace_owned
-            and data_table_was_absent
-        ):
+        if namespace_owned:
             try:
                 with engine.begin() as cleanup:
-                    delete_normative_dataset(
-                        cleanup, normative, normative_dataset_id,
-                    )
-                    cleanup_inspector = inspect(cleanup)
-                    for table in (
-                        multiple_response_catalog, source_extensions_catalog,
-                        documents_catalog, value_labels_catalog,
-                        missing_rules_catalog, attributes_catalog,
-                        fidelity_event_catalog, variable_catalog,
-                    ):
-                        if cleanup_inspector.has_table(table.name):
-                            cleanup.execute(
-                                delete(table).where(table.c.dataset_id == dataset_id)
-                            )
-                    if cleanup_inspector.has_table(datasets.name):
-                        cleanup.execute(
-                            delete(datasets).where(datasets.c.dataset_id == dataset_id)
+                    create_normative_catalog(cleanup, normative)
+                    if cleanup.execute(
+                        select(normative.dataset.c.dataset_id).where(
+                            normative.dataset.c.dataset_id == normative_dataset_id
                         )
-                    data_table.drop(cleanup, checkfirst=True)
-                    metadata.create_all(cleanup, tables=[
-                        datasets, variable_catalog, multiple_response_catalog,
-                        source_extensions_catalog, documents_catalog,
-                        value_labels_catalog, missing_rules_catalog,
-                        attributes_catalog, fidelity_event_catalog,
-                        operation_catalog,
-                    ])
-                    failed_event = ({
-                        "code": "import_failed",
-                        "detail": str(error),
-                        "severity": "error",
-                        "source_item": source_name,
-                        "details": {
-                            "profile": profile.name,
-                            "phase": "post_ddl",
-                            "cleanup": "complete",
-                            "error_type": type(error).__name__,
-                        },
-                    },)
-                    normative_operation_exists = cleanup.execute(select(
-                        normative.operation.c.operation_id
-                    ).where(
-                        normative.operation.c.operation_id == operation_id
-                    )).first()
-                    if normative_operation_exists:
+                    ).first():
+                        delete_normative_dataset(
+                            cleanup, normative, normative_dataset_id,
+                        )
+                    if (
+                        data_table_was_absent
+                        and inspect(cleanup).has_table(data_table.name)
+                    ):
+                        data_table.drop(cleanup, checkfirst=True)
+                    operation_exists = cleanup.execute(
+                        select(normative.operation.c.operation_id).where(
+                            normative.operation.c.operation_id == operation_id
+                        )
+                    ).first()
+                    if operation_exists:
                         finish_normative_operation(
                             cleanup, normative, operation_id=operation_id,
                             status="failed",
@@ -988,41 +601,17 @@ def create_wide_dataset(
                         record_normative_operation(
                             cleanup, normative, operation_id=operation_id,
                             operation_kind="import", status="failed",
-                            source_format=source_format, started_at=failed_at,
-                            completed_at=failed_at,
+                            source_format=source_format,
+                            started_at=failed_at, completed_at=failed_at,
                         )
-                    mirror_operation_exists = cleanup.execute(select(
-                        operation_catalog.c.operation_id
-                    ).where(
-                        operation_catalog.c.operation_id == operation_id
-                    )).first()
-                    if mirror_operation_exists:
-                        cleanup.execute(update(operation_catalog).where(
-                            operation_catalog.c.operation_id == operation_id
-                        ).values(
-                            status="failed", dataset_id=None, completed_at=_now(),
-                        ))
-                    else:
-                        cleanup.execute(insert(operation_catalog).values(
-                            operation_id=operation_id, direction="import",
-                            status="failed", dataset_id=None, source=source_name,
-                            created_at=_now(), completed_at=_now(),
-                            details=json.dumps({
-                                "reason": "post_ddl",
-                                "variable_count": len(variables),
-                            }, sort_keys=True),
-                        ))
-                    cleanup.execute(
-                        insert(fidelity_event_catalog),
-                        _event_rows(
-                            operation_id=operation_id, dataset_id=None,
-                            direction="import", fidelity_events=failed_event,
-                        ),
-                    )
                     record_normative_fidelity_events(
                         cleanup, normative, operation_id=operation_id,
-                        dataset_id=None, direction="import",
-                        events=failed_event,
+                        dataset_id=None, direction="import", events=({
+                            "code": "import_failed",
+                            "detail": str(error), "severity": "error",
+                            "source_item": source_name,
+                            "details": {"reason": "post_preflight"},
+                        },),
                     )
             except Exception as cleanup_error:
                 raise RuntimeError(
@@ -1030,126 +619,351 @@ def create_wide_dataset(
                 ) from cleanup_error
         raise
     return {
-        "dataset_id": dataset_id, "data_table": data_table.name,
-        "case_count": len(materialized), "operation_id": operation_id,
+        "dataset_id": normative_dataset_id,
+        "dataset_name": dataset_id,
+        "data_table": data_table.name,
+        "case_count": len(materialized),
+        "operation_id": operation_id,
     }
 
 
-def _endpoint_from_row(row: Mapping[str, Any], *, prefix: str) -> Any:
-    endpoint_type = row[f"{prefix}_type"]
-    if endpoint_type == "lowest":
-        return -sys.float_info.max
-    if endpoint_type == "highest":
-        return sys.float_info.max
-    return row[f"{prefix}_numeric"] if endpoint_type == "numeric" else row[f"{prefix}_text"]
 
 
 def read_wide_dataset(
     *, database_url: str, dataset_id: str, profile: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Read a strict dataset only after resolving the active server profile."""
+    """Read an export descriptor from the normative catalog without mutation."""
     if profile is None:
         profile, _active = effective_profile(database_url)
     engine = create_engine(database_url)
-    metadata = MetaData()
-    datasets, variable_catalog, _, _ = catalog(metadata)
-    multiple_response_catalog = multiple_response_set_catalog(metadata)
-    source_extensions_catalog = source_extension_catalog(metadata)
-    documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog = normalized_metadata_tables(metadata)
-    with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variable_catalog, multiple_response_catalog, source_extensions_catalog, documents_catalog, value_labels_catalog, missing_rules_catalog, attributes_catalog])
-        _migrate_catalog_columns(connection, datasets, variable_catalog, multiple_response_catalog)
-        dataset = dict(connection.execute(select(datasets).where(datasets.c.dataset_id == dataset_id)).mappings().one())
-        data_table = Table(dataset["data_table"], MetaData(), autoload_with=connection)
-        variables = [dict(item) for item in connection.execute(
-            select(variable_catalog).where(variable_catalog.c.dataset_id == dataset_id).order_by(variable_catalog.c.ordinal)
-        ).mappings().all()]
-        rows = [dict(item) for item in connection.execute(
-            select(data_table).order_by(data_table.c.__case_ordinal)
-        ).mappings().all()]
-        document_rows_result = connection.execute(
-            select(documents_catalog).where(documents_catalog.c.dataset_id == dataset_id)
-            .order_by(documents_catalog.c.ordinal)
-        ).mappings().all()
-        label_rows_result = connection.execute(
-            select(value_labels_catalog).where(value_labels_catalog.c.dataset_id == dataset_id)
-            .order_by(value_labels_catalog.c.variable_ordinal, value_labels_catalog.c.ordinal)
-        ).mappings().all()
-        missing_rows_result = connection.execute(
-            select(missing_rules_catalog).where(missing_rules_catalog.c.dataset_id == dataset_id)
-            .order_by(missing_rules_catalog.c.variable_ordinal, missing_rules_catalog.c.ordinal)
-        ).mappings().all()
-        attribute_rows_result = connection.execute(
-            select(attributes_catalog).where(attributes_catalog.c.dataset_id == dataset_id)
-            .order_by(
-                attributes_catalog.c.scope, attributes_catalog.c.variable_ordinal,
-                attributes_catalog.c.attribute_ordinal, attributes_catalog.c.value_ordinal,
-            )
-        ).mappings().all()
-        mrset_rows_result = connection.execute(
-            select(multiple_response_catalog).where(multiple_response_catalog.c.dataset_id == dataset_id)
-            .order_by(multiple_response_catalog.c.set_name, multiple_response_catalog.c.member_ordinal)
-        ).mappings().all()
-        extension_rows_result = connection.execute(
-            select(source_extensions_catalog).where(source_extensions_catalog.c.dataset_id == dataset_id)
-            .order_by(source_extensions_catalog.c.extension_key)
-        ).mappings().all()
-
-    if document_rows_result:
-        dataset["documents"] = json.dumps([item["text"] for item in document_rows_result], ensure_ascii=False)
-    if attribute_rows_result:
-        file_attributes, variable_attributes = attributes_from_rows(
-            attribute_rows_result, variables=variables,
+    normative = normative_catalog(MetaData())
+    with engine.connect() as connection:
+        _verify_normative_catalog(connection, normative)
+        dataset_row = _resolve_normative_dataset(connection, normative, dataset_id)
+        core_id = str(dataset_row["dataset_id"])
+        data_table = Table(
+            str(dataset_row["physical_table_name"]), MetaData(),
+            schema=dataset_row["physical_table_schema"],
+            autoload_with=connection,
         )
-        dataset["file_attributes"] = json.dumps(file_attributes, ensure_ascii=False)
-        for variable in variables:
-            variable["attributes"] = json.dumps(
-                variable_attributes.get(variable["source_name"], {}), ensure_ascii=False,
-            )
-    if mrset_rows_result:
-        dataset["multiple_response_sets"] = json.dumps(
-            multiple_response_sets_from_rows(mrset_rows_result), ensure_ascii=False, default=str,
-        )
-    if extension_rows_result:
-        dataset["source_extensions"] = {
-            item["extension_key"]: json.loads(item["payload"])
-            for item in extension_rows_result
+        source_variables = connection.execute(
+            select(normative.variable)
+            .where(normative.variable.c.dataset_id == core_id)
+            .order_by(normative.variable.c.source_ordinal)
+        ).mappings().all()
+        variables = [_export_variable(row) for row in source_variables]
+        variables_by_id = {
+            str(row["variable_id"]): variable
+            for row, variable in zip(source_variables, variables, strict=True)
         }
-    variables_by_ordinal = {item["ordinal"]: item for item in variables}
-    labels_by_variable: dict[int, dict[Any, str]] = {}
-    for item in label_rows_result:
-        labels_by_variable.setdefault(item["variable_ordinal"], {})[
-            item["numeric_value"] if item["value_type"] == "numeric" else item["text_value"]
-        ] = item["label"]
-    for ordinal, labels in labels_by_variable.items():
-        variables_by_ordinal[ordinal]["value_labels"] = json.dumps(labels, ensure_ascii=False)
-    rules_by_variable: dict[int, list[dict[str, Any]]] = {}
-    for item in missing_rows_result:
-        lower = _endpoint_from_row(item, prefix="lower")
-        upper = _endpoint_from_row(item, prefix="upper")
-        rules_by_variable.setdefault(item["variable_ordinal"], []).append({"lo": lower, "hi": upper})
-    for ordinal, rules in rules_by_variable.items():
-        variables_by_ordinal[ordinal]["missing_ranges"] = json.dumps(rules, ensure_ascii=False)
+        variable_ids = tuple(variables_by_id)
+        rows = [dict(row) for row in connection.execute(
+            select(data_table).order_by(data_table.c.__case_ordinal)
+        ).mappings()]
+        documents = connection.execute(
+            select(normative.document)
+            .where(normative.document.c.dataset_id == core_id)
+            .order_by(normative.document.c.source_ordinal)
+        ).mappings().all()
+        dataset_attributes = connection.execute(
+            select(normative.dataset_attribute)
+            .where(normative.dataset_attribute.c.dataset_id == core_id)
+            .order_by(
+                normative.dataset_attribute.c.attribute_name,
+                normative.dataset_attribute.c.array_ordinal,
+            )
+        ).mappings().all()
+        variable_attributes = connection.execute(
+            select(normative.variable_attribute)
+            .where(normative.variable_attribute.c.variable_id.in_(variable_ids))
+            .order_by(
+                normative.variable_attribute.c.variable_id,
+                normative.variable_attribute.c.attribute_name,
+                normative.variable_attribute.c.array_ordinal,
+            )
+        ).mappings().all()
+        labels = connection.execute(
+            select(
+                normative.variable_value_label_set.c.variable_id,
+                normative.value_label,
+            )
+            .join(
+                normative.value_label,
+                normative.value_label.c.value_label_set_id
+                == normative.variable_value_label_set.c.value_label_set_id,
+            )
+            .where(
+                normative.variable_value_label_set.c.variable_id.in_(variable_ids)
+            )
+            .order_by(
+                normative.variable_value_label_set.c.variable_id,
+                normative.value_label.c.ordinal,
+            )
+        ).mappings().all()
+        missing_rules = connection.execute(
+            select(normative.missing_rule)
+            .where(normative.missing_rule.c.variable_id.in_(variable_ids))
+            .order_by(
+                normative.missing_rule.c.variable_id,
+                normative.missing_rule.c.ordinal,
+            )
+        ).mappings().all()
+        variable_sets = connection.execute(
+            select(normative.variable_set)
+            .where(normative.variable_set.c.dataset_id == core_id)
+            .order_by(normative.variable_set.c.source_ordinal)
+        ).mappings().all()
+        variable_set_ids = tuple(
+            str(row["variable_set_id"]) for row in variable_sets
+        )
+        variable_set_members = connection.execute(
+            select(normative.variable_set_member)
+            .where(normative.variable_set_member.c.variable_set_id.in_(variable_set_ids))
+            .order_by(
+                normative.variable_set_member.c.variable_set_id,
+                normative.variable_set_member.c.source_ordinal,
+            )
+        ).mappings().all()
+        response_sets = connection.execute(
+            select(normative.multiple_response_set)
+            .where(normative.multiple_response_set.c.dataset_id == core_id)
+            .order_by(normative.multiple_response_set.c.source_ordinal)
+        ).mappings().all()
+        response_set_ids = tuple(
+            str(row["multiple_response_set_id"]) for row in response_sets
+        )
+        response_members = connection.execute(
+            select(normative.multiple_response_member)
+            .where(
+                normative.multiple_response_member.c.multiple_response_set_id.in_(
+                    response_set_ids
+                )
+            )
+            .order_by(
+                normative.multiple_response_member.c.multiple_response_set_id,
+                normative.multiple_response_member.c.source_ordinal,
+            )
+        ).mappings().all()
+        weight_id = connection.execute(
+            select(normative.dataset_weight_variable.c.variable_id).where(
+                normative.dataset_weight_variable.c.dataset_id == core_id
+            )
+        ).scalar_one_or_none()
+
+    dataset = {
+        "dataset_id": core_id,
+        "data_table": str(dataset_row["physical_table_name"]),
+        "physical_table_schema": dataset_row["physical_table_schema"],
+        "source_format": dataset_row["source_format"],
+        "source_encoding": dataset_row["source_encoding"],
+        "case_count": int(dataset_row["source_case_count"]),
+        "file_label": dataset_row["dataset_label"] or "",
+        "documents": json.dumps(
+            [row["document_text"] for row in documents], ensure_ascii=False,
+        ),
+        "file_attributes": json.dumps(
+            _collapse_attributes(dataset_attributes), ensure_ascii=False,
+        ),
+        "case_weight_variable": (
+            variables_by_id[str(weight_id)]["source_name"]
+            if weight_id is not None else None
+        ),
+    }
+    for row in labels:
+        variable = variables_by_id[str(row["variable_id"])]
+        values = json.loads(variable["value_labels"])
+        code = (
+            row["numeric_code"]
+            if row["code_kind"] == "numeric" else row["string_code"]
+        )
+        values[str(code)] = row["label"]
+        variable["value_labels"] = json.dumps(values, ensure_ascii=False)
+    for row in missing_rules:
+        variable = variables_by_id[str(row["variable_id"])]
+        rules = json.loads(variable["missing_ranges"])
+        rules.append(_export_missing_rule(row))
+        variable["missing_ranges"] = json.dumps(rules, ensure_ascii=False)
+    grouped_attributes: dict[str, list[Mapping[str, Any]]] = {}
+    for row in variable_attributes:
+        grouped_attributes.setdefault(str(row["variable_id"]), []).append(row)
+    for variable_id, attribute_rows in grouped_attributes.items():
+        variables_by_id[variable_id]["attributes"] = json.dumps(
+            _collapse_attributes(attribute_rows), ensure_ascii=False,
+        )
+    names_by_id = {
+        variable_id: variable["source_name"]
+        for variable_id, variable in variables_by_id.items()
+    }
+    members_by_variable_set: dict[str, list[str]] = {}
+    for row in variable_set_members:
+        members_by_variable_set.setdefault(str(row["variable_set_id"]), []).append(
+            names_by_id[str(row["variable_id"])]
+        )
+    dataset["source_extensions"] = {
+        "spss.variable_sets": {
+            str(row["set_name"]): members_by_variable_set.get(
+                str(row["variable_set_id"]), []
+            )
+            for row in variable_sets
+        }
+    } if variable_sets else {}
+    members_by_response_set: dict[str, list[str]] = {}
+    for row in response_members:
+        set_id = str(row["multiple_response_set_id"])
+        variable_id = str(row["variable_id"])
+        if variable_id not in names_by_id:
+            raise _catalog_error(
+                "multiple-response-member-not-found",
+                "A multiple-response set references an unknown variable.",
+                multiple_response_set_id=set_id,
+                variable_id=variable_id,
+            )
+        members_by_response_set.setdefault(set_id, []).append(
+            names_by_id[variable_id]
+        )
+    dataset["multiple_response_sets"] = json.dumps({
+        str(row["set_name"]): _export_response_set(
+            row,
+            members_by_response_set.get(
+                str(row["multiple_response_set_id"]), []
+            ),
+        )
+        for row in response_sets
+    }, ensure_ascii=False)
     return dataset, variables, rows
 
 
-def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], ...]:
-    """Read import-time fidelity diagnostics for a catalogued dataset."""
-    engine = create_engine(database_url)
-    metadata = MetaData()
-    _, _, fidelity_event_catalog, _ = catalog(metadata)
-    with engine.connect() as connection:
-        fidelity_event_catalog.create(connection, checkfirst=True)
-        events = connection.execute(
-            select(fidelity_event_catalog)
-            .where(fidelity_event_catalog.c.dataset_id == dataset_id)
-            .order_by(fidelity_event_catalog.c.code)
-        ).mappings().all()
-    return tuple({
-        "code": item["code"], "detail": item["detail"],
-        "details": json.loads(item["details"] or "{}"),
-    } for item in events)
+def _verify_normative_catalog(connection: Any, tables: Any) -> None:
+    if not inspect(connection).has_table(tables.catalog_identity.name):
+        raise RuntimeError("The core OpenStatSpec catalog is absent.")
+    identities = connection.execute(select(tables.catalog_identity)).mappings().all()
+    if len(identities) != 1 or (
+        identities[0]["catalog_identity_key"] != 1
+        or identities[0]["contract_id"] != CATALOG_CONTRACT_ID
+        or identities[0]["schema_version"] != CATALOG_SCHEMA_VERSION
+    ):
+        raise RuntimeError("The core OpenStatSpec catalog identity is incompatible.")
 
+
+def _resolve_normative_dataset(
+    connection: Any, tables: Any, identifier: str,
+) -> Mapping[str, Any]:
+    row = connection.execute(
+        select(tables.dataset).where(tables.dataset.c.dataset_id == identifier)
+    ).mappings().one_or_none()
+    if row is not None:
+        return row
+    return connection.execute(
+        select(tables.dataset).where(tables.dataset.c.dataset_name == identifier)
+    ).mappings().one()
+
+
+def _format_json(family: Any, width: Any, decimals: Any) -> str | None:
+    if family is None:
+        return None
+    try:
+        numeric_family = int(family)
+    except (TypeError, ValueError):
+        suffix = f".{int(decimals or 0)}" if decimals else ""
+        return f"{family}{int(width)}{suffix}"
+    return json.dumps([numeric_family, width, decimals])
+
+
+def _export_variable(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "ordinal": int(row["source_ordinal"]),
+        "source_name": row["source_name"],
+        "physical_name": row["physical_name"],
+        "storage_kind": row["storage_kind"],
+        "string_width": row["declared_string_width"],
+        "label": row["variable_label"] or "",
+        "print_format": _format_json(
+            row["print_format_family"], row["print_format_width"],
+            row["print_format_decimals"],
+        ),
+        "write_format": _format_json(
+            row["write_format_family"], row["write_format_width"],
+            row["write_format_decimals"],
+        ),
+        "measure": row["measurement_level"],
+        "role": row["variable_role"],
+        "alignment": row["display_alignment"],
+        "display_width": row["display_width"],
+        "attributes": "{}",
+        "compat_name": None,
+        "value_labels": "{}",
+        "missing_ranges": "[]",
+    }
+
+
+def _collapse_attributes(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["attribute_name"]), []).append(
+            str(row["attribute_value"])
+        )
+    return {
+        name: values[0] if len(values) == 1 else values
+        for name, values in grouped.items()
+    }
+
+
+def _export_missing_rule(row: Mapping[str, Any]) -> Any:
+    if row["rule_kind"] == "discrete":
+        return (
+            row["numeric_value"]
+            if row["code_kind"] == "numeric" else row["string_value"]
+        )
+    lower = (
+        -sys.float_info.max
+        if row["lower_special"] == "LOWEST" else row["numeric_lower"]
+    )
+    upper = (
+        sys.float_info.max
+        if row["upper_special"] == "HIGHEST" else row["numeric_upper"]
+    )
+    return {"lo": lower, "hi": upper}
+
+
+def _export_response_set(
+    row: Mapping[str, Any], members: list[str],
+) -> dict[str, Any]:
+    definition: dict[str, Any] = {
+        "variable_list": members,
+        "is_dichotomy": str(row["set_kind"]).upper() == "MD",
+        "use_category_labels": row["category_label_behavior"] == "counted_values",
+        "use_first_var_label": row["label_source"] == "variable_label",
+    }
+    if row["set_label"] is not None:
+        definition["label"] = row["set_label"]
+    if row["counted_value_kind"] == "numeric":
+        definition["counted_value"] = row["counted_numeric_value"]
+    elif row["counted_value_kind"] == "string":
+        definition["counted_value"] = row["counted_string_value"]
+    return definition
+
+
+def read_fidelity_events(*, database_url: str, dataset_id: str) -> tuple[dict[str, Any], ...]:
+    """Read fidelity diagnostics from the normative catalog."""
+    engine = create_engine(database_url)
+    normative = normative_catalog(MetaData())
+    with engine.connect() as connection:
+        _verify_normative_catalog(connection, normative)
+        dataset = _resolve_normative_dataset(connection, normative, dataset_id)
+        events = connection.execute(
+            select(normative.fidelity_event)
+            .where(normative.fidelity_event.c.dataset_id == dataset["dataset_id"])
+            .order_by(normative.fidelity_event.c.event_code)
+        ).mappings().all()
+    result = []
+    for item in events:
+        details = json.loads(item["detail_json"] or "{}")
+        result.append({
+            "code": item["event_code"],
+            "detail": details.pop("message", ""),
+            "details": details,
+        })
+    return tuple(result)
 
 
 def record_export_operation(
@@ -1157,43 +971,32 @@ def record_export_operation(
     allowed_fidelity_events: Iterable[Mapping[str, Any]],
     operation_details: Mapping[str, Any] | None = None,
 ) -> str:
-    """Persist a completed export and the fidelity loss explicitly accepted by its caller."""
+    """Persist a completed export only in the normative audit catalog."""
+    del destination, operation_details
     engine = create_engine(database_url)
-    metadata = MetaData()
-    datasets, variables, fidelity_events, operations = catalog(metadata)
-    normative = normative_catalog(metadata)
-    multiple_response = multiple_response_set_catalog(metadata)
+    normative = normative_catalog(MetaData())
     operation_id = str(uuid4())
     events = tuple(allowed_fidelity_events)
     with engine.begin() as connection:
-        metadata.create_all(connection, tables=[datasets, variables, multiple_response, fidelity_events, operations])
-        create_normative_catalog(connection, normative)
-        normative_dataset_id = normative_dataset_id_for_name(connection, normative, dataset_id)
+        _verify_normative_catalog(connection, normative)
+        dataset = _resolve_normative_dataset(connection, normative, dataset_id)
         completed_at = datetime.now(UTC).replace(tzinfo=None)
         record_normative_operation(
             connection, normative, operation_id=operation_id,
             operation_kind="export", status="succeeded", source_format=None,
             started_at=completed_at, completed_at=completed_at,
         )
-        connection.execute(insert(operations).values(
-            operation_id=operation_id, direction="export", status="succeeded", dataset_id=dataset_id,
-            destination=destination, created_at=_now(), completed_at=_now(),
-            details=json.dumps({"allow_loss": [event["code"] for event in events], **dict(operation_details or {})}, sort_keys=True),
-        ))
-        rows = _event_rows(
-            operation_id=operation_id, dataset_id=dataset_id, direction="export",
-            fidelity_events=({**event, "severity": event.get("severity", "warning"),
-                              "details": {**event.get("details", {}), "accepted_by_user": True}}
-                             for event in events),
-        )
-        if rows:
-            connection.execute(insert(fidelity_events), rows)
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,
-            dataset_id=normative_dataset_id, direction="export",
-            events=({**event, "severity": event.get("severity", "warning"),
-                     "details": {**event.get("details", {}), "accepted_by_user": True}}
-                    for event in events),
+            dataset_id=str(dataset["dataset_id"]), direction="export",
+            events=({
+                **event,
+                "severity": event.get("severity", "warning"),
+                "details": {
+                    **event.get("details", {}),
+                    "accepted_by_user": True,
+                },
+            } for event in events),
         )
     return operation_id
 
@@ -1211,7 +1014,12 @@ def validate_wide_dataset(*, database_url: str, dataset_id: str) -> dict[str, An
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")
     expected_columns = {"__case_ordinal", *(item["physical_name"] for item in variables)}
-    reflected_table = Table(dataset["data_table"], MetaData(), autoload_with=create_engine(database_url))
+    engine = create_engine(database_url)
+    reflected_table = Table(
+        dataset["data_table"], MetaData(),
+        schema=dataset["physical_table_schema"],
+        autoload_with=engine,
+    )
     reflected_columns = {column.name: column for column in reflected_table.columns}
     actual_columns = set(reflected_columns)
     if actual_columns != expected_columns:

@@ -11,10 +11,10 @@ For each supported import, one source dataset becomes one dedicated wide SQL
 table. Cases are rows and source variables are physical SQL columns. The
 singular UUID-keyed tables from the specification (`dataset`, `variable`,
 `operation`, `fidelity_event`, and related metadata tables) are the public
-catalog contract. Historical `*_catalog` tables are an internal compatibility
-layer for the current exporter and are not the standard database interface.
-The adapter does not reshape data, create EAV
-or long-form tables, or harmonize studies or waves.
+catalog contract and the only catalog representation created or read by the
+adapter. Databases created with the former `*_catalog` compatibility schema
+must be remediated to the normative schema before use. The adapter does not
+reshape data, create EAV or long-form tables, or harmonize studies or waves.
 
 Unsupported source features, SQL targets, or export paths fail explicitly.
 There is no silent truncation, type conversion, metadata loss, or partial

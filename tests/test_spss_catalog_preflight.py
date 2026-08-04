@@ -56,17 +56,17 @@ def test_import_catalog_preflight_rejects_invalid_weight_atomically(
     assert error.value.code == expected_code
     assert error.value.details["reason"] == expected_code
     connection = sqlite3.connect(database_path)
-    assert connection.execute("select count(*) from dataset_catalog").fetchone() == (0,)
+    assert connection.execute("select count(*) from dataset").fetchone() == (0,)
     assert "data_weight" not in {
         row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")
     }
     assert connection.execute(
-        "select status, dataset_id from operation_catalog"
-    ).fetchall() == [("failed", None)]
+        "select status from operation"
+    ).fetchall() == [("failed",)]
     code, details = connection.execute(
-        "select code, details from fidelity_event_catalog"
+        "select event_code, detail_json from fidelity_event"
     ).fetchone()
-    assert code == expected_code
+    assert code == expected_code.replace("-", "_")
     assert json.loads(details)["reason"] == expected_code
     assert connection.execute("select count(*) from dataset").fetchone() == (0,)
     operation = connection.execute(
@@ -79,7 +79,7 @@ def test_import_catalog_preflight_rejects_invalid_weight_atomically(
         "select dataset_id, direction, severity, event_code, source_item, "
         "detail_json, created_at from fidelity_event"
     ).fetchone()
-    assert event[:5] == (None, "import", "error", expected_code, "weight.sav")
+    assert event[:5] == (None, "import", "error", expected_code.replace("-", "_"), "weight.sav")
     assert json.loads(event[5])["reason"] == expected_code
     assert event[6]
 
@@ -115,29 +115,32 @@ def _create_valid_dataset(database: str) -> None:
     [
         (
             lambda connection: connection.execute(
-                "update dataset_catalog set case_weight_variable = 'text' where dataset_id = 'mr'"
+                "update dataset_weight_variable set variable_id = "
+                "(select variable_id from variable where source_name = 'text')"
             ),
             "case-weight-variable-not-numeric",
         ),
         (
             lambda connection: connection.execute(
-                "update multiple_response_set_catalog set variable_name = 'missing' "
-                "where dataset_id = 'mr' and member_ordinal = 1"
+                "update multiple_response_member set variable_id = "
+                "'00000000-0000-0000-0000-000000000000' "
+                "where source_ordinal = 1"
             ),
             "multiple-response-member-not-found",
         ),
         (
             lambda connection: connection.execute(
-                "update multiple_response_set_catalog set variable_name = 'text' "
-                "where dataset_id = 'mr' and member_ordinal = 2"
+                "update multiple_response_member set variable_id = "
+                "(select variable_id from variable where source_name = 'text') "
+                "where source_ordinal = 2"
             ),
             "multiple-response-member-type-mismatch",
         ),
         (
             lambda connection: connection.execute(
-                "update multiple_response_set_catalog "
-                "set counted_value_type = 'text', counted_numeric = null, counted_text = 'yes' "
-                "where dataset_id = 'mr'"
+                "update multiple_response_set set "
+                "counted_value_kind = 'string', counted_numeric_value = null, "
+                "counted_string_value = 'yes'"
             ),
             "multiple-response-counted-value-type-mismatch",
         ),

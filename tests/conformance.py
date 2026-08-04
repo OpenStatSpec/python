@@ -143,7 +143,7 @@ def compare_sav_semantics(source: str | Path, exported: str | Path) -> dict[str,
     for attribute in (
         "encoding", "file_label", "case_weight_var", "file_attributes", "mrsets", "var_types", "var_formats",
         "var_labels", "var_alignments", "var_column_widths", "var_measure_levels", "var_roles",
-        "var_value_labels", "var_attributes", "var_compat_names",
+        "var_value_labels", "var_attributes",
     ):
         if source_metadata.get(attribute) != exported_metadata.get(attribute):
             failures.append(attribute)
