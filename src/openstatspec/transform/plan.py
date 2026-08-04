@@ -588,6 +588,19 @@ class TransformationPlan:
     def __post_init__(self) -> None:
         if not isinstance(self.contract, str) or self.contract not in _TRANSFORMATION_PLAN_CONTRACTS:
             _invalid("Plan contract is not a supported transformation-plan contract.")
+        if (
+            self.contract != TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT
+            and any(
+                isinstance(operation, (
+                    CreateVariableOperation, DeleteVariableOperation,
+                ))
+                for operation in self.operations
+            )
+        ):
+            _invalid(
+                "Create/delete schema operations require "
+                "openstatspec-transformation-plan-v0.3."
+            )
         if self.contract == TRANSFORMATION_PLAN_V1_CONTRACT and any(
             isinstance(operation, (
                 AssignOperation, ConditionalAssignOperation, SetFormatOperation,
@@ -710,7 +723,7 @@ def _match(raw: Any) -> RecodeMatch:
     _invalid("Unknown recode match kind.")
 
 def transformation_plan_from_dict(raw: Mapping[str, Any]) -> TransformationPlan:
-    """Strictly validate canonical v0.1 or additive v0.2 plan documents."""
+    """Strictly validate canonical v0.1, v0.2, or schema-change v0.3 plans."""
     if not isinstance(raw, Mapping):
         _invalid("Transformation plan must be an object.")
     _exact(raw, {"contract", "input_alias", "operations"}, "Transformation plan")

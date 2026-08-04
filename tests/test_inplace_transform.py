@@ -189,6 +189,67 @@ def test_string_declaration_creates_column_and_catalog_variable(catalog) -> None
     )["valid"] is True
 
 
+def test_delete_recanonicalizes_surviving_collision_columns(tmp_path) -> None:
+    path = tmp_path / "collision-delete.sqlite"
+    url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
+    base = _variables()[0]
+    variables = [
+        {
+            **base,
+            "ordinal": ordinal,
+            "source_name": source_name,
+            "physical_name": physical,
+        }
+        for ordinal, (source_name, physical) in enumerate((
+            ("a-b", "a_b"), ("a_b", "a_b_2"), ("keep", "keep"),
+        ), start=1)
+    ]
+    create_wide_dataset(
+        database_url=url,
+        dataset_id="collision_source",
+        source_name="collision.sav",
+        source_format="SAV",
+        source_sha256="c" * 64,
+        rows=[
+            {"a_b": 1.0, "a_b_2": 2.0, "keep": 3.0},
+            {"a_b": 4.0, "a_b_2": 5.0, "keep": 6.0},
+        ],
+        variables=variables,
+    )
+    openstatspec.install_in_place_transformation_schema(database_url=url)
+    connection = sqlite3.connect(path)
+    dataset_id = connection.execute(
+        "select dataset_id from dataset where dataset_name = 'collision_source'"
+    ).fetchone()[0]
+    connection.close()
+    plan = openstatspec.TransformationPlan(
+        (openstatspec.DeleteVariableOperation("a-b"),),
+        contract="openstatspec-transformation-plan-v0.3",
+    )
+
+    openstatspec.apply_transformation_plan_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        plan=plan,
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, physical_name, source_ordinal from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("a_b", "a_b", 1), ("keep", "keep", 2)]
+    assert connection.execute(
+        "select a_b, keep from data_collision_source order by __case_ordinal"
+    ).fetchall() == [(2.0, 3.0), (5.0, 6.0)]
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
 def test_delete_prunes_an_empty_multiple_response_set(catalog) -> None:
     url, path, dataset_id, _table_name = catalog
     connection = sqlite3.connect(path)
@@ -335,9 +396,10 @@ def test_generic_string_width_is_rejected_before_ddl(
             {"server_version": "3.35.0"},
         ),
     )
-    plan = openstatspec.TransformationPlan((
-        openstatspec.CreateVariableOperation("note", "string", 4),
-    ))
+    plan = openstatspec.TransformationPlan(
+        (openstatspec.CreateVariableOperation("note", "string", 4),),
+        contract="openstatspec-transformation-plan-v0.3",
+    )
 
     with pytest.raises(TargetCapabilityExceededError, match="permits 3"):
         openstatspec.apply_transformation_plan_in_place(

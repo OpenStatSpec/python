@@ -13,6 +13,7 @@ from ...transform.plan import (
     PredicateExpression, RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
     ReplaceValueLabelsOperation, SetFormatOperation,
     SetMeasurementLevelOperation, SetVariableLabelOperation,
+    TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT,
     TRANSFORMATION_PLAN_V1_CONTRACT,
     TransformationPlan, TypedValue, ValueLabel,
 )
@@ -491,10 +492,15 @@ def bind_spss_syntax(
     v01_types = (
         RecodeOperation, SetVariableLabelOperation, ReplaceValueLabelsOperation,
     )
+    schema_change_types = (CreateVariableOperation, DeleteVariableOperation)
     contract = (
-        TRANSFORMATION_PLAN_V1_CONTRACT
-        if all(isinstance(operation, v01_types) for operation in operations)
-        else "openstatspec-transformation-plan-v0.2"
+        TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT
+        if any(isinstance(operation, schema_change_types) for operation in operations)
+        else (
+            TRANSFORMATION_PLAN_V1_CONTRACT
+            if all(isinstance(operation, v01_types) for operation in operations)
+            else "openstatspec-transformation-plan-v0.2"
+        )
     )
     plan = TransformationPlan(
         tuple(operations), contract=contract, input_alias=input_alias,

@@ -709,6 +709,28 @@ def _apply_plan_on_connection(
             _compact_variable_ordinals(
                 connection, core=core, variables=variables,
             )
+            canonical_physical = {"__case_ordinal"}
+            for remaining_variable in variables:
+                expected_physical = physical_name(
+                    str(remaining_variable["source_name"]), canonical_physical,
+                )
+                current_physical = str(remaining_variable["physical_name"])
+                if current_physical == expected_physical:
+                    continue
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {qualified_table} RENAME COLUMN "
+                    f"{quote(current_physical)} TO {quote(expected_physical)}"
+                )
+                connection.execute(
+                    update(core.variable)
+                    .where(
+                        core.variable.c.variable_id
+                        == remaining_variable["variable_id"]
+                    )
+                    .values(physical_name=expected_physical)
+                )
+                remaining_variable["physical_name"] = expected_physical
+            used_physical = canonical_physical
             relation = Table(
                 table_name, MetaData(), schema=dataset.get("physical_table_schema"),
                 autoload_with=connection,

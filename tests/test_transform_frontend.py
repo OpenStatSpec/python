@@ -13,6 +13,7 @@ from openstatspec.frontends.spss import (
     spss_source_hash,
 )
 from openstatspec.transform import (
+    CreateVariableOperation,
     RecodeMatch,
     RecodeOperation,
     RecodeResult,
@@ -557,6 +558,28 @@ def test_v02_plan_and_schema_reject_decimal_format_that_cannot_fit() -> None:
             "target", "numeric", format_family="F",
             format_width=2, format_decimals=2,
         )
+
+
+def test_schema_operations_require_v03_contract() -> None:
+    operation = CreateVariableOperation("note", "string", 8)
+    with pytest.raises(TransformationFrontendError) as caught:
+        TransformationPlan((operation,))
+    assert caught.value.code == "invalid_transformation_plan"
+
+    plan = TransformationPlan(
+        (operation,), contract="openstatspec-transformation-plan-v0.3",
+    )
+    assert plan.contract == "openstatspec-transformation-plan-v0.3"
+
+
+def test_spss_schema_commands_emit_v03_contract() -> None:
+    schema = _schema(VariableDefinition("q1", "numeric"))
+    assert bind_spss_syntax(
+        parse_spss_syntax("STRING note (A8)."), schema,
+    ).plan.contract == "openstatspec-transformation-plan-v0.3"
+    assert bind_spss_syntax(
+        parse_spss_syntax("COMPUTE other = q1. DELETE VARIABLES q1."), schema,
+    ).plan.contract == "openstatspec-transformation-plan-v0.3"
 
 
 def test_custom_nonempty_input_alias_is_canonical() -> None:

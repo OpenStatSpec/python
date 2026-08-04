@@ -27,7 +27,7 @@ from .transform import (
 __all__ = [
     "AssignOperation", "BooleanExpression", "ComparisonExpression",
     "ConditionalAssignOperation", "ExecuteOperation", "Operand",
-    "ConditionalAssignOperation", "CreateVariableOperation", "DeleteVariableOperation",
+    "PredicateExpression", "CreateVariableOperation", "DeleteVariableOperation",
     "CapabilityDeclaration", "DoltConformanceSource", "LossReport",
     "SpssFrontendCompilation", "TransformationError",
     "TransformationFrontendError",
