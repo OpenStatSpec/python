@@ -16,6 +16,7 @@ from sqlalchemy import (
 
 from ..transform import (
     AssignOperation, BooleanExpression, ComparisonExpression,
+    CreateVariableOperation, DeleteVariableOperation,
     ConditionalAssignOperation, ExecuteOperation, Operand,
     RecodeOperation, RecodeResult, ReplaceValueLabelsOperation,
     SetFormatOperation, SetMeasurementLevelOperation,
@@ -57,7 +58,8 @@ def in_place_transformation_capabilities() -> dict[str, Any]:
         "parent_kinds": ["core"],
         "mutation": "same_dataset_same_physical_wide_table",
         "commands": ["RECODE", "COMPUTE", "IF", "VARIABLE LABELS",
-                     "VALUE LABELS", "FORMATS", "VARIABLE LEVEL", "EXECUTE"],
+                     "VALUE LABELS", "FORMATS", "VARIABLE LEVEL",
+                     "STRING", "DELETE VARIABLES", "EXECUTE"],
         "new_target_column": {
             "sqlite": True,
             "postgresql": True,
@@ -211,6 +213,10 @@ def _input_schema(
                 and str(row["storage_kind"]) == "numeric" else None
             ),
             measurement_level=row["measurement_level"],
+            declared_string_width=(
+                int(row["declared_string_width"])
+                if row["declared_string_width"] is not None else None
+            ),
         )
         for row in variables
     ))
@@ -301,6 +307,53 @@ def _replace_value_labels(
             label=item.label,
         ))
 
+def _delete_variable_metadata(
+    connection: Any,
+    *,
+    core: Any,
+    variable: dict[str, Any],
+) -> None:
+    """Delete one variable and every normative catalog row owned by it."""
+    variable_id = str(variable["variable_id"])
+    label_set_id = connection.execute(
+        select(core.variable_value_label_set.c.value_label_set_id).where(
+            core.variable_value_label_set.c.variable_id == variable_id
+        )
+    ).scalar_one_or_none()
+    connection.execute(delete(core.dataset_weight_variable).where(
+        core.dataset_weight_variable.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.variable_set_member).where(
+        core.variable_set_member.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.multiple_response_member).where(
+        core.multiple_response_member.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.variable_attribute).where(
+        core.variable_attribute.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.missing_rule).where(
+        core.missing_rule.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.variable_value_label_set).where(
+        core.variable_value_label_set.c.variable_id == variable_id
+    ))
+    if label_set_id is not None:
+        still_used = connection.execute(
+            select(core.variable_value_label_set.c.variable_id).where(
+                core.variable_value_label_set.c.value_label_set_id == label_set_id
+            )
+        ).first()
+        if still_used is None:
+            connection.execute(delete(core.value_label).where(
+                core.value_label.c.value_label_set_id == label_set_id
+            ))
+            connection.execute(delete(core.value_label_set).where(
+                core.value_label_set.c.value_label_set_id == label_set_id
+            ))
+    connection.execute(delete(core.variable).where(
+        core.variable.c.variable_id == variable_id
+    ))
 
 def _failure_boundary(_name: str) -> None:
     """Synthetic-test hook for schema/data/catalog/audit failure boundaries."""
@@ -382,17 +435,25 @@ def _apply_plan_on_connection(
         )
     create_operations = [
         operation for operation in plan.operations
-        if isinstance(operation, (RecodeOperation, AssignOperation))
-        and operation.target_mode == "create"
+        if isinstance(operation, CreateVariableOperation)
+        or (
+            isinstance(operation, (RecodeOperation, AssignOperation))
+            and operation.target_mode == "create"
+        )
     ]
-    if create_operations and not allow_schema_change:
+    schema_operations = create_operations + [
+        operation for operation in plan.operations
+        if isinstance(operation, DeleteVariableOperation)
+    ]
+    if schema_operations and not allow_schema_change:
         raise TransformationError(
             "schema_change_not_atomic",
             "This database profile has no coherent new-target strategy.",
         )
     unsupported_targets = [
         operation.target for operation in create_operations
-        if output_by_name[operation.target.casefold()].storage_kind != "numeric"
+        if not isinstance(operation, CreateVariableOperation)
+        and output_by_name[operation.target.casefold()].storage_kind != "numeric"
     ]
     if unsupported_targets:
         raise TransformationError(
@@ -449,10 +510,26 @@ def _apply_plan_on_connection(
     # Compensation is journal-bounded to target columns and catalog identities
     # created by this apply, without resetting unrelated database state.
     for operation in create_operations:
-        target_physical = physical_name(operation.target, used_physical)
+        target_name = (
+            operation.variable
+            if isinstance(operation, CreateVariableOperation)
+            else operation.target
+        )
+        target_physical = physical_name(target_name, used_physical)
+        storage_kind = (
+            operation.storage_kind
+            if isinstance(operation, CreateVariableOperation)
+            else "numeric"
+        )
+        string_width = (
+            operation.declared_string_width
+            if isinstance(operation, CreateVariableOperation)
+            else None
+        )
+        column_type = numeric_type if storage_kind == "numeric" else f"VARCHAR({string_width})"
         connection.exec_driver_sql(
             f"ALTER TABLE {qualified_table} ADD COLUMN "
-            f"{quote(target_physical)} {numeric_type} NULL"
+            f"{quote(target_physical)} {column_type} NULL"
         )
         if mutation_journal is not None:
             mutation_journal["added_columns"].append(target_physical)
@@ -460,9 +537,10 @@ def _apply_plan_on_connection(
             "variable_id": str(uuid4()),
             "dataset_id": dataset_id,
             "source_ordinal": next_ordinal,
-            "source_name": operation.target,
+            "source_name": target_name,
             "physical_name": target_physical,
-            "storage_kind": "numeric",
+            "storage_kind": storage_kind,
+            "declared_string_width": string_width,
             "variable_label": None,
         }
         next_ordinal += 1
@@ -549,6 +627,23 @@ def _apply_plan_on_connection(
                 core.variable.c.variable_id == variable["variable_id"]
             ).values(measurement_level=operation.level))
             _failure_boundary("catalog")
+        elif isinstance(operation, DeleteVariableOperation):
+            variable = by_name[operation.variable.casefold()]
+            connection.exec_driver_sql(
+                f"ALTER TABLE {qualified_table} DROP COLUMN "
+                f"{quote(variable['physical_name'])}"
+            )
+            _delete_variable_metadata(connection, core=core, variable=variable)
+            by_name.pop(operation.variable.casefold(), None)
+            variables = [
+                row for row in variables
+                if row["variable_id"] != variable["variable_id"]
+            ]
+            relation = Table(
+                table_name, MetaData(), schema=dataset.get("physical_table_schema"),
+                autoload_with=connection,
+            )
+            _failure_boundary("schema")
         elif isinstance(operation, ExecuteOperation):
             continue
         else:  # pragma: no cover

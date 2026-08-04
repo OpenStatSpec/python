@@ -16,7 +16,8 @@ from .errors import frontend_error
 
 TRANSFORMATION_PLAN_V1_CONTRACT = "openstatspec-transformation-plan-v0.1"
 TRANSFORMATION_PLAN_CONTRACT = "openstatspec-transformation-plan-v0.2"
-_TRANSFORMATION_PLAN_CONTRACTS = {TRANSFORMATION_PLAN_V1_CONTRACT, TRANSFORMATION_PLAN_CONTRACT}
+TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT = "openstatspec-transformation-plan-v0.3"
+_TRANSFORMATION_PLAN_CONTRACTS = {TRANSFORMATION_PLAN_V1_CONTRACT, TRANSFORMATION_PLAN_CONTRACT, TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT}
 _BINARY64 = re.compile(r"[0-9a-f]{16}")
 
 
@@ -504,10 +505,77 @@ class ExecuteOperation:
         return {"op": self.op}
 
 
+
+@dataclass(frozen=True)
+class CreateVariableOperation:
+    """Add one variable to the existing dataset and wide table."""
+
+    variable: str
+    storage_kind: Literal["numeric", "string"]
+    declared_string_width: int | None = None
+    op: Literal["create_variable"] = "create_variable"
+
+    def __post_init__(self) -> None:
+        if self.op != "create_variable":
+            _invalid("Create-variable operation discriminator is invalid.")
+        if not isinstance(self.variable, str) or not self.variable:
+            _invalid("Created variable name must be non-empty text.")
+        if self.variable.startswith("__"):
+            raise frontend_error(
+                "reserved_target_name",
+                f"Target name {self.variable!r} is reserved.",
+                target=self.variable,
+            )
+        if self.storage_kind not in {"numeric", "string"}:
+            _invalid("Created variable storage_kind must be numeric or string.")
+        if self.storage_kind == "string":
+            if (
+                not isinstance(self.declared_string_width, int)
+                or isinstance(self.declared_string_width, bool)
+                or self.declared_string_width < 1
+            ):
+                _invalid("String variables require a positive declared_string_width.")
+        elif self.declared_string_width is not None:
+            _invalid("Numeric variables cannot declare a string width.")
+
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "op": self.op,
+            "variable": self.variable,
+            "storage_kind": self.storage_kind,
+        }
+        if self.declared_string_width is not None:
+            result["declared_string_width"] = self.declared_string_width
+        return result
+
+
+@dataclass(frozen=True)
+class DeleteVariableOperation:
+    """Remove one variable and all of its normative metadata."""
+
+    variable: str
+    op: Literal["delete_variable"] = "delete_variable"
+
+    def __post_init__(self) -> None:
+        if self.op != "delete_variable":
+            _invalid("Delete-variable operation discriminator is invalid.")
+        if not isinstance(self.variable, str) or not self.variable:
+            _invalid("Deleted variable name must be non-empty text.")
+        if self.variable.startswith("__"):
+            raise frontend_error(
+                "reserved_target_name",
+                f"Variable name {self.variable!r} is reserved.",
+                variable=self.variable,
+            )
+
+    def as_dict(self) -> dict[str, str]:
+        return {"op": self.op, "variable": self.variable}
+
 PlanOperation = (
     RecodeOperation | AssignOperation | ConditionalAssignOperation
     | SetVariableLabelOperation | ReplaceValueLabelsOperation
     | SetFormatOperation | SetMeasurementLevelOperation | ExecuteOperation
+    | CreateVariableOperation | DeleteVariableOperation
 )
 
 
@@ -524,6 +592,7 @@ class TransformationPlan:
             isinstance(operation, (
                 AssignOperation, ConditionalAssignOperation, SetFormatOperation,
                 SetMeasurementLevelOperation, ExecuteOperation,
+                CreateVariableOperation, DeleteVariableOperation,
             ))
             for operation in self.operations
         ):
@@ -539,6 +608,7 @@ class TransformationPlan:
                     RecodeOperation, AssignOperation, ConditionalAssignOperation,
                     SetVariableLabelOperation, ReplaceValueLabelsOperation,
                     SetFormatOperation, SetMeasurementLevelOperation, ExecuteOperation,
+                    CreateVariableOperation, DeleteVariableOperation,
                 ),
             )
             for operation in self.operations
@@ -639,7 +709,6 @@ def _match(raw: Any) -> RecodeMatch:
         return RecodeMatch("system_missing")
     _invalid("Unknown recode match kind.")
 
-
 def transformation_plan_from_dict(raw: Mapping[str, Any]) -> TransformationPlan:
     """Strictly validate canonical v0.1 or additive v0.2 plan documents."""
     if not isinstance(raw, Mapping):
@@ -733,6 +802,22 @@ def transformation_plan_from_dict(raw: Mapping[str, Any]) -> TransformationPlan:
             operations.append(ReplaceValueLabelsOperation(
                 raw_operation["variable"], tuple(labels),
             ))
+        elif operation == "create_variable":
+            _exact(
+                raw_operation,
+                {"op", "variable", "storage_kind", "declared_string_width"}
+                if "declared_string_width" in raw_operation
+                else {"op", "variable", "storage_kind"},
+                "Create-variable operation",
+            )
+            operations.append(CreateVariableOperation(
+                variable=raw_operation["variable"],
+                storage_kind=raw_operation["storage_kind"],
+                declared_string_width=raw_operation.get("declared_string_width"),
+            ))
+        elif operation == "delete_variable":
+            _exact(raw_operation, {"op", "variable"}, "Delete-variable operation")
+            operations.append(DeleteVariableOperation(raw_operation["variable"]))
         else:
             _invalid(f"Unknown plan operation {operation!r}.")
     return TransformationPlan(

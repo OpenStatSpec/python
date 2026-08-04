@@ -21,6 +21,7 @@ class VariableDefinition:
     format_width: int | None = None
     format_decimals: int | None = None
     measurement_level: Literal["nominal", "ordinal", "scale"] | None = None
+    declared_string_width: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -28,6 +29,17 @@ class VariableDefinition:
         if self.storage_kind not in {"numeric", "string"}:
             raise ValueError("storage_kind must be numeric or string.")
         expected_type = "binary64" if self.storage_kind == "numeric" else "string"
+        if self.declared_string_width is not None:
+            if (
+                not isinstance(self.declared_string_width, int)
+                or isinstance(self.declared_string_width, bool)
+                or self.declared_string_width < 1
+            ):
+                raise ValueError("declared_string_width must be a positive integer.")
+            if self.storage_kind != "string":
+                raise ValueError(
+                    "declared_string_width is only valid for string variables."
+                )
         if any(label.value.type != expected_type for label in self.value_labels):
             raise ValueError(
                 "Value-label types must match their variable storage kind."

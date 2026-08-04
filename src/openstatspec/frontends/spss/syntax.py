@@ -137,6 +137,19 @@ class ExecuteCommandSyntax:
     span: SourceSpan
 
 
+@dataclass(frozen=True)
+class StringCommandSyntax:
+    variables: tuple[Token, ...]
+    width: int
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class DeleteVariablesCommandSyntax:
+    variables: tuple[Token, ...]
+    span: SourceSpan
+
+
 
 @dataclass(frozen=True)
 class VariableLabelSyntax:
@@ -175,6 +188,7 @@ SyntaxCommand = (
     RecodeCommandSyntax | ComputeCommandSyntax | IfCommandSyntax
     | VariableLabelsCommandSyntax | ValueLabelsCommandSyntax
     | FormatsCommandSyntax | VariableLevelCommandSyntax | ExecuteCommandSyntax
+    | StringCommandSyntax | DeleteVariablesCommandSyntax
 )
 
 
@@ -549,6 +563,43 @@ class _Parser:
         end = self.expects("period", "Expected '.' after EXECUTE.")
         return ExecuteCommandSyntax(_joined_span(start.span, end.span))
 
+    def string(self, start: Token) -> StringCommandSyntax:
+        variables = self.variable_list(
+            stop_kinds=frozenset({"left_paren", "period", "eof"}),
+        )
+        self.expects("left_paren", "Expected '(' before a STRING width.")
+        width_token = self.expects(
+            "identifier", "STRING requires a width such as A20.",
+        )
+        match = re.fullmatch(r"A([0-9]+)", width_token.text, re.IGNORECASE)
+        if match is None:
+            raise frontend_error(
+                "spss_syntax_error",
+                "STRING supports only character widths such as A20.",
+                span=width_token.span,
+            )
+        width = int(match.group(1))
+        if not 1 <= width <= 32767:
+            raise frontend_error(
+                "invalid_string_width",
+                "STRING width must be between 1 and 32767.",
+                span=width_token.span,
+                width=width,
+            )
+        self.expects("right_paren", "Expected ')' after a STRING width.")
+        end = self.expects("period", "Expected '.' after STRING.")
+        return StringCommandSyntax(
+            variables, width, _joined_span(start.span, end.span),
+        )
+
+    def delete_variables(self, start: Token) -> DeleteVariablesCommandSyntax:
+        self.expects_keyword("VARIABLES")
+        variables = self.variable_list(stop_kinds=frozenset({"period", "eof"}))
+        end = self.expects("period", "Expected '.' after DELETE VARIABLES.")
+        return DeleteVariablesCommandSyntax(
+            variables, _joined_span(start.span, end.span),
+        )
+
 
     def recode_result(self) -> RecodeResultSyntax:
         if (token := self.accepts_keyword("SYSMIS")) is not None:
@@ -692,6 +743,10 @@ class _Parser:
                 commands.append(self.formats(start))
             elif command == "execute":
                 commands.append(self.execute(start))
+            elif command == "string":
+                commands.append(self.string(start))
+            elif command == "delete":
+                commands.append(self.delete_variables(start))
             elif command == "variable":
                 if self.current.kind == "identifier" and self.current.text.casefold() == "level":
                     commands.append(self.variable_level(start))

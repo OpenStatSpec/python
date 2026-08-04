@@ -2,9 +2,11 @@
 
 from .errors import SourcePosition, SourceSpan, TransformationFrontendError
 from .plan import (
+    TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT,
     TRANSFORMATION_PLAN_CONTRACT,
     AssignOperation, BooleanExpression, ComparisonExpression,
-    ConditionalAssignOperation, ExecuteOperation, Operand, PredicateExpression,
+    ConditionalAssignOperation, CreateVariableOperation, DeleteVariableOperation,
+    ExecuteOperation, Operand, PredicateExpression,
     RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
     ReplaceValueLabelsOperation, SetFormatOperation,
     SetMeasurementLevelOperation, SetVariableLabelOperation, TransformationPlan,
@@ -17,7 +19,7 @@ from .schema import (
 from .validation import bind_transformation_plan
 __all__ = [
     "AssignOperation", "BooleanExpression", "ComparisonExpression",
-    "ConditionalAssignOperation", "ExecuteOperation", "Operand",
+    "ConditionalAssignOperation", "CreateVariableOperation", "DeleteVariableOperation",
     "PredicateExpression",
     "BoundTransformation",
     "RecodeMatch", "RecodeOperation", "RecodeResult",
