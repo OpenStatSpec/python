@@ -16,7 +16,9 @@ from openstatspec.sql.inplace_transform import (
 from openstatspec.sql.profiles import (
     DOLT, SQLITE, TargetCapabilityExceededError,
 )
-from openstatspec.sql.wide import create_wide_dataset, validate_wide_dataset
+from openstatspec.sql.wide import (
+    create_wide_dataset, read_wide_dataset, validate_wide_dataset,
+)
 
 
 def _variables() -> list[dict[str, object]]:
@@ -248,6 +250,50 @@ def test_delete_recanonicalizes_surviving_collision_columns(tmp_path) -> None:
     assert validate_wide_dataset(
         database_url=url, dataset_id=dataset_id,
     )["valid"] is True
+
+
+def test_delete_prunes_an_empty_spss_variable_set(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+    connection = sqlite3.connect(path)
+    variable_id = connection.execute(
+        "select variable_id from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone()[0]
+    variable_set_id = "00000000-0000-0000-0000-000000000002"
+    connection.execute(
+        "insert into variable_set "
+        "(variable_set_id, dataset_id, source_ordinal, set_name) "
+        "values (?, ?, 1, 'scores')",
+        (variable_set_id, dataset_id),
+    )
+    connection.execute(
+        "insert into variable_set_member "
+        "(variable_set_id, variable_id, source_ordinal) values (?, ?, 1)",
+        (variable_set_id, variable_id),
+    )
+    connection.commit()
+    connection.close()
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="COMPUTE other = score. DELETE VARIABLES score.",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select count(*) from variable_set where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone() == (0,)
+    assert connection.execute(
+        "select count(*) from variable_set_member"
+    ).fetchone() == (0,)
+    connection.close()
+    dataset, _variables, _rows = read_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )
+    assert dataset["source_extensions"] == {}
 
 
 def test_delete_prunes_an_empty_multiple_response_set(catalog) -> None:

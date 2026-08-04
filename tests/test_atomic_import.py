@@ -50,6 +50,9 @@ def test_failed_create_does_not_drop_a_concurrently_created_table(
         actual = real_inspect(bind)
 
         class Inspector:
+            def __getattr__(self, name):
+                return getattr(actual, name)
+
             def has_table(self, table_name):
                 nonlocal inspected_data_table
                 if table_name == "data_race":
@@ -298,6 +301,39 @@ def test_nonatomic_failure_after_normative_write_cleans_both_catalogs_and_data(
         "select direction, severity, event_code, dataset_id from fidelity_event"
     ).fetchall() == [("import", "error", "import_failed", None)]
 
+def test_occupied_foreign_view_namespace_fails_without_modification(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "foreign-view.sqlite"
+    database = f"sqlite:///{database_path}"
+    connection = sqlite3.connect(database_path)
+    connection.execute("create view foreign_view as select 1 as value")
+    before_schema = connection.execute(
+        "select name, type, sql from sqlite_master order by name"
+    ).fetchall()
+    connection.close()
+    variables = [{
+        "ordinal": 1, "source_name": "score", "physical_name": "score",
+        "storage_kind": "numeric", "string_width": None, "label": "",
+        "format": "F8.0", "measure": "scale", "alignment": "right",
+        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+
+    with pytest.raises(wide.UnsupportedOperationError, match="foreign"):
+        create_wide_dataset(
+            database_url=database, dataset_id="foreign-view",
+            source_name="fixture.sav", source_format="SAV",
+            rows=[{"score": 1.0}], variables=variables,
+        )
+
+    connection = sqlite3.connect(database_path)
+    assert connection.execute(
+        "select name, type, sql from sqlite_master order by name"
+    ).fetchall() == before_schema
+    assert connection.execute("select value from foreign_view").fetchall() == [(1,)]
+    connection.close()
+
+
 def test_occupied_foreign_namespace_fails_without_modification(tmp_path) -> None:
     database_path = tmp_path / "foreign.sqlite"
     database = f"sqlite:///{database_path}"
@@ -315,7 +351,7 @@ def test_occupied_foreign_namespace_fails_without_modification(tmp_path) -> None
         "format": "A8", "measure": "nominal", "alignment": "left",
         "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
     }]
-    with pytest.raises(RuntimeError, match="occupied"):
+    with pytest.raises(RuntimeError, match="foreign"):
         create_wide_dataset(
             database_url=database, dataset_id="foreign", source_name="fixture.sav",
             source_format="SAV", rows=[{"name": "ok"}], variables=variables,

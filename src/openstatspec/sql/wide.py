@@ -813,14 +813,18 @@ def create_wide_dataset(
         engine=engine, profile_name=profile.name, active=active_connection,
         audit_relations=audit_relations, phase="catalog initialization",
     ) as catalog_connection:
-        catalog_existed = inspect(catalog_connection).has_table(
-            normative.catalog_identity.name
-        )
-        create_normative_catalog(catalog_connection, normative)
-        if catalog_existed:
-            require_verified_catalog(catalog_connection)
+        inspector = inspect(catalog_connection)
+        existing_tables = set(inspector.get_table_names())
+        existing_views = set(inspector.get_view_names())
+        if existing_tables or existing_views:
+            if normative.catalog_identity.name not in existing_tables:
+                raise UnsupportedOperationError(
+                    "The selected database catalog is foreign; "
+                    "import is not permitted."
+                )
         else:
-            _verify_normative_catalog(catalog_connection, normative)
+            create_normative_catalog(catalog_connection, normative)
+        require_verified_catalog(catalog_connection)
     operation_id = str(uuid4())
     normative_dataset_id = str(uuid4())
     fidelity_events = tuple(fidelity_events)
@@ -873,12 +877,13 @@ def create_wide_dataset(
     data_table_created = False
     try:
         with engine.begin() as setup:
-            _verify_normative_catalog(setup, normative)
+            require_verified_catalog(setup)
         namespace_owned = True
         with _bound_catalog_transaction(
             engine=engine, profile_name=profile.name, active=active_connection,
             audit_relations={*audit_relations, data_table.name}, phase="import",
         ) as connection:
+            require_verified_catalog(connection)
             if connection.execute(
                 select(normative.dataset.c.dataset_id).where(or_(
                     normative.dataset.c.dataset_name == dataset_id,
