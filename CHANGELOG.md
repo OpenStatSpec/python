@@ -1,5 +1,6 @@
 # Changelog
 
+All notable changes to this reference implementation are documented here.
 
 ## Unreleased
 
@@ -13,7 +14,7 @@
 - Imports now reject dataset names that collide with normative UUID identifiers,
   cleanup drops only a physical table actually created by the failing import,
   and non-preserved SPSS compatible variable names are reported as an explicit
-All notable changes to this reference implementation are documented here.
+  loss requiring export consent.
 
 ## 0.4.0 — 2026-07-31
 
