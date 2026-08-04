@@ -108,6 +108,9 @@ def test_export_lifecycle_events_remain_linked_to_the_dataset(tmp_path):
         "backup_retained",
         "export_failed",
     }
+    assert wide.read_fidelity_events(
+        database_url=database_url, dataset_id="sample", direction="import",
+    ) == ()
     connection = sqlite3.connect(path)
     assert connection.execute(
         "select count(*) from fidelity_event "

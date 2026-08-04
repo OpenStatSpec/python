@@ -1322,9 +1322,10 @@ def _export_response_set(
 
 def read_fidelity_events(
     *, database_url: str, dataset_id: str,
+    direction: str | None = None,
     dolt_conformance_source: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Read fidelity diagnostics from the normative catalog."""
+    """Read fidelity diagnostics, optionally limited to one lifecycle direction."""
     effective_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
@@ -1333,12 +1334,18 @@ def read_fidelity_events(
     with engine.connect() as connection:
         require_verified_catalog(connection)
         dataset = _resolve_normative_dataset(connection, normative, dataset_id)
-        events = connection.execute(
+        statement = (
             select(normative.fidelity_event)
             .where(normative.fidelity_event.c.dataset_id == dataset["dataset_id"])
             .where(normative.fidelity_event.c.severity != "info")
-            .order_by(normative.fidelity_event.c.event_code)
-        ).mappings().all()
+        )
+        if direction is not None:
+            statement = statement.where(
+                normative.fidelity_event.c.direction == direction
+            )
+        events = connection.execute(statement.order_by(
+            normative.fidelity_event.c.event_code
+        )).mappings().all()
     result = []
     for item in events:
         details = json.loads(item["detail_json"] or "{}")

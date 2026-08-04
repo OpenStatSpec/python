@@ -684,6 +684,7 @@ def export_sav_dataset(
     )
     persisted_events = read_fidelity_events(
         database_url=database_url, dataset_id=dataset_id,
+        direction="import",
         dolt_conformance_source=dolt_conformance_source,
     )
     if legacy_locale is not None:
