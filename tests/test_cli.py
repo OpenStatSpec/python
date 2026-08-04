@@ -10,6 +10,7 @@ import pyspssio
 def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> None:
     source = tmp_path / "fixture.sav"
     database = f"sqlite:///{tmp_path / 'dataset.sqlite'}"
+    openstatspec.initialize_catalog(database_url=database)
     output = tmp_path / "output.zsav"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
 
@@ -25,7 +26,9 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
     assert imported["case_count"] == 1
 
     from openstatspec.core.results import OperationResult
-    assert isinstance(openstatspec.import_sav(source, database_url=f"sqlite:///{tmp_path / 'typed.sqlite'}", dataset_id="typed"), OperationResult)
+    typed_database = f"sqlite:///{tmp_path / 'typed.sqlite'}"
+    openstatspec.initialize_catalog(database_url=typed_database)
+    assert isinstance(openstatspec.import_sav(source, database_url=typed_database, dataset_id="typed"), OperationResult)
 
     assert openstatspec.cli.main(["validate", "--database-url", database, "--dataset-id", "fixture"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
@@ -41,7 +44,7 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
     matrix = openstatspec.capability_matrix()
     assert matrix["specification_status"] == "release_candidate"
     assert matrix["specification_release"] is None
-    assert matrix["specification_commit"] == "e49252c00890aed76dcaabc5d1ab5121b45929db"
+    assert matrix["specification_commit"] == "f2fdf687d8cb32b944ca55a3e9e7215ffc603019"
     assert matrix["directions"] == ["import", "export", "semantic_round_trip"]
     assert matrix["active_connection"] is None
     assert matrix["engine"]["package"] == "openstatspec-pyspssio"
@@ -102,6 +105,7 @@ def test_cli_installs_schema_and_applies_plan_or_spss(
     source = tmp_path / "transform-source.sav"
     database_path = tmp_path / "transform.sqlite"
     database_url = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database_url)
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
     openstatspec.import_sav(
         source,

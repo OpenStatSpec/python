@@ -230,6 +230,12 @@ def _bind_assign(
         ))
         return
     _, target = _resolve(variables, operation.target)
+    if target.storage_kind == "string":
+        raise frontend_error(
+            "expression_type_unsupported",
+            "String assignment targets are outside the bounded plan.",
+            variable=target.name,
+        )
     if output_type != _expected_type(target.storage_kind):
         raise frontend_error(
             "type_mismatch",
@@ -244,19 +250,25 @@ def _bind_conditional_assign(
 ) -> None:
     _validate_predicate(operation.condition, variables)
     _, target = _resolve(variables, operation.target)
-    output_type = _operand_type(operation.value, variables)
-    if output_type != _expected_type(target.storage_kind):
+    if target.storage_kind == "string":
         raise frontend_error(
-            "type_mismatch",
-            "Conditional assignment value must match the target storage kind.",
+            "expression_type_unsupported",
+            "String assignment targets are outside the bounded plan.",
             variable=target.name,
         )
+    output_type = _operand_type(operation.value, variables)
     if output_type == "string":
         raise frontend_error(
             "expression_type_unsupported",
             "String assignment is not supported until explicit width and "
             "profile-independent semantics are available.",
             variable=operation.target,
+        )
+    if output_type != _expected_type(target.storage_kind):
+        raise frontend_error(
+            "type_mismatch",
+            "Conditional assignment value must match the target storage kind.",
+            variable=target.name,
         )
 
 
@@ -299,8 +311,8 @@ def bind_transformation_plan(
             index, variable = _resolve(variables, operation.variable)
             if variable.storage_kind != "numeric":
                 raise frontend_error(
-                    "type_mismatch",
-                    "Numeric F formats require a numeric variable.",
+                    "expression_type_unsupported",
+                    "Numeric F formats cannot target string variables.",
                     variable=variable.name,
                 )
             variables[index] = replace(

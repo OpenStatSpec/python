@@ -32,10 +32,11 @@ from sqlglot.optimizer.scope import traverse_scope
 from ..core import UnsupportedOperationError
 from .capabilities import SPECIFICATION_COMMIT
 from .normative import (
-    CATALOG_CONTRACT_ID, CATALOG_SCHEMA_VERSION, catalog as core_catalog,
+    CATALOG_CONTRACT_ID, CATALOG_SCHEMA_VERSION, binary64_type,
+    catalog as core_catalog,
 )
 from .profiles import preflight, validate_connection_url
-from .wide import binary64_type, physical_name
+from .wide import physical_name
 
 PROFILE_ID = "openstatspec-sql-transformation-workflow-v0.1"
 PROFILE_SCHEMA_VERSION = 2

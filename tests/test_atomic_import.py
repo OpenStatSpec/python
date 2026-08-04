@@ -2,16 +2,15 @@ import sqlite3
 from dataclasses import replace
 
 import pytest
-from sqlalchemy.exc import IntegrityError
-
 import openstatspec.sql.wide as wide
-from openstatspec.sql.profiles import DOLT, MYSQL, SQLITE
+from openstatspec.sql.profiles import MYSQL, SQLITE, TargetCapabilityExceededError
 from openstatspec.sql.wide import create_wide_dataset
 
 
-def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
+def test_invalid_string_row_is_rejected_before_dataset_or_data_table(tmp_path) -> None:
     database_path = tmp_path / "dataset.sqlite"
     database = f"sqlite:///{database_path}"
+    wide.initialize_wide_catalog(database_url=database)
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "name",
         "storage_kind": "string", "string_width": 8, "label": "",
@@ -19,7 +18,7 @@ def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
         "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
     }]
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(TargetCapabilityExceededError, match="Target capability exceeded"):
         create_wide_dataset(
             database_url=database, dataset_id="broken", source_name="fixture.sav",
             source_format="SAV", rows=[{"name": None}], variables=variables,
@@ -33,14 +32,19 @@ def test_failed_row_insert_leaves_no_catalog_or_data_table(tmp_path) -> None:
     assert connection.execute("select count(*) from variable").fetchone() == (0,)
 
 
-def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path) -> None:
+def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "preflight.sqlite"
     database = f"sqlite:///{database_path}"
+    wide.initialize_wide_catalog(database_url=database)
+    too_many = SQLITE.max_source_variables + 1
+    monkeypatch.setattr(
+        wide, "effective_profile", lambda _url, **_kwargs: (SQLITE, {}),
+    )
 
     with pytest.raises(Exception, match="Target capability exceeded"):
         create_wide_dataset(
             database_url=database, dataset_id="too-wide", source_name="too-wide.sav",
-            source_format="SAV", rows=(), variables=[{}] * 2_001,
+            source_format="SAV", rows=(), variables=[{}] * too_many,
         )
 
     connection = sqlite3.connect(database_path)
@@ -55,12 +59,13 @@ def test_failed_preflight_persists_operation_without_creating_dataset(tmp_path) 
         "select direction, severity, code, details from fidelity_event_catalog"
     ).fetchone()
     assert (direction, severity, code) == ("import", "error", "target_capability_exceeded")
-    assert '"variable_count": 2001' in details
+    assert f'"variable_count": {too_many}' in details
 
 
 def test_identifier_mapping_preflight_records_failure_before_dataset_creation(tmp_path) -> None:
     database_path = tmp_path / "identifier.sqlite"
     database = f"sqlite:///{database_path}"
+    wide.initialize_wide_catalog(database_url=database)
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "wrong_name",
         "storage_kind": "string", "string_width": 8, "label": "",
@@ -84,9 +89,10 @@ def test_identifier_mapping_preflight_records_failure_before_dataset_creation(tm
 def test_declared_string_width_preflight_is_atomic_and_diagnostic(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "string-width.sqlite"
     database = f"sqlite:///{database_path}"
+    wide.initialize_wide_catalog(database_url=database)
     monkeypatch.setattr(
         wide, "effective_profile",
-        lambda _url: (replace(SQLITE, max_text_value_bytes=3), {}),
+        lambda _url, **_kwargs: (replace(SQLITE, max_text_value_bytes=3), {}),
     )
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "name",
@@ -118,6 +124,7 @@ def test_nonatomic_failure_after_normative_write_cleans_both_catalogs_and_data(
 ) -> None:
     database_path = tmp_path / "nonatomic-cleanup.sqlite"
     database = f"sqlite:///{database_path}"
+    wide.initialize_wide_catalog(database_url=database)
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "name",
         "storage_kind": "string", "string_width": 8, "label": "",
@@ -126,7 +133,7 @@ def test_nonatomic_failure_after_normative_write_cleans_both_catalogs_and_data(
     }]
     monkeypatch.setattr(
         wide, "effective_profile",
-        lambda _url: (replace(MYSQL, name="mysql"), {}),
+        lambda _url, **_kwargs: (replace(MYSQL, name="mysql"), {}),
     )
     real_store = wide.store_normative_dataset
 
@@ -191,17 +198,8 @@ def test_occupied_foreign_namespace_fails_without_modification(tmp_path) -> None
         "select name, sql from sqlite_master where type = 'table' order by name"
     ).fetchall()
 
-    variables = [{
-        "ordinal": 1, "source_name": "name", "physical_name": "name",
-        "storage_kind": "string", "string_width": 8, "label": "",
-        "format": "A8", "measure": "nominal", "alignment": "left",
-        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
-    }]
-    with pytest.raises(RuntimeError, match="occupied"):
-        create_wide_dataset(
-            database_url=database, dataset_id="foreign", source_name="fixture.sav",
-            source_format="SAV", rows=[{"name": "ok"}], variables=variables,
-        )
+    with pytest.raises(RuntimeError, match="foreign"):
+        wide.initialize_wide_catalog(database_url=database)
 
     assert connection.execute(
         "select name, sql from sqlite_master where type = 'table' order by name"
@@ -210,12 +208,12 @@ def test_occupied_foreign_namespace_fails_without_modification(tmp_path) -> None
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_dolt_nonfinite_preflight_creates_no_dataset_or_physical_table(
-    tmp_path, monkeypatch, value,
+def test_nonfinite_preflight_creates_no_dataset_or_physical_table(
+    tmp_path, value,
 ) -> None:
     database_path = tmp_path / "dolt-nonfinite.sqlite"
     database = f"sqlite:///{database_path}"
-    monkeypatch.setattr(wide, "effective_profile", lambda _url: (DOLT, {}))
+    wide.initialize_wide_catalog(database_url=database)
     variables = [{
         "ordinal": 1, "source_name": "value", "physical_name": "value",
         "storage_kind": "numeric", "string_width": None, "label": "",
@@ -246,18 +244,22 @@ def test_dolt_nonfinite_preflight_creates_no_dataset_or_physical_table(
     ).fetchall() == [(None, "target_capability_exceeded")]
 
 
-def test_empty_namespace_dolt_width_failure_initializes_identity_and_one_audit(
+def test_limited_width_failure_preserves_initialized_identity_and_one_audit(
     tmp_path, monkeypatch,
 ) -> None:
     database_path = tmp_path / "dolt-preflight.sqlite"
     database = f"sqlite:///{database_path}"
-    monkeypatch.setattr(wide, "effective_profile", lambda _url: (DOLT, {}))
+    wide.initialize_wide_catalog(database_url=database)
+    monkeypatch.setattr(
+        wide, "effective_profile",
+        lambda _url, **_kwargs: (replace(SQLITE, max_source_variables=1), {}),
+    )
 
     with pytest.raises(Exception, match="Target capability exceeded"):
         create_wide_dataset(
             database_url=database, dataset_id="too-wide-dolt",
             source_name="too-wide-dolt.sav", source_format="SAV",
-            rows=(), variables=[{}] * 306,
+            rows=(), variables=[{}, {}],
         )
 
     connection = sqlite3.connect(database_path)
@@ -284,6 +286,7 @@ def test_nonatomic_failure_during_final_completion_still_cleans_dataset(
 ) -> None:
     database_path = tmp_path / f"{failure_point}.sqlite"
     database = f"sqlite:///{database_path}"
+    wide.initialize_wide_catalog(database_url=database)
     dataset_id = f"cleanup-{failure_point}"
     variables = [{
         "ordinal": 1, "source_name": "name", "physical_name": "name",
@@ -293,7 +296,7 @@ def test_nonatomic_failure_during_final_completion_still_cleans_dataset(
     }]
     monkeypatch.setattr(
         wide, "effective_profile",
-        lambda _url: (replace(MYSQL, name="mysql"), {}),
+        lambda _url, **_kwargs: (replace(MYSQL, name="mysql"), {}),
     )
     triggered = False
     if failure_point == "mirror_completion":
@@ -356,3 +359,24 @@ def test_nonatomic_failure_during_final_completion_still_cleans_dataset(
     assert connection.execute(
         "select code, dataset_id from fidelity_event_catalog"
     ).fetchall() == [("import_failed", None)]
+
+def test_failed_table_create_never_claims_cleanup_ownership() -> None:
+    class ConcurrentTable:
+        def create(self, _connection):
+            raise RuntimeError("table already created by concurrent import")
+
+    state = {"data_table_created": False}
+
+    with pytest.raises(RuntimeError, match="concurrent import"):
+        wide._create_operation_owned_data_table(
+            object(), ConcurrentTable(), state,
+        )
+
+    assert state["data_table_created"] is False
+
+def test_transactional_profiles_never_run_stale_compensating_cleanup() -> None:
+    assert wide._requires_compensating_import_cleanup("sqlite") is False
+    assert wide._requires_compensating_import_cleanup("postgresql") is False
+    assert wide._requires_compensating_import_cleanup("mysql") is True
+    assert wide._requires_compensating_import_cleanup("mariadb") is True
+    assert wide._requires_compensating_import_cleanup("dolt") is True

@@ -249,7 +249,10 @@ class ReplaceValueLabelsOperation:
             _invalid("replace_value_labels labels must be typed value-label objects.")
         keys = [label.value.canonical_key() for label in self.labels]
         if len(keys) != len(set(keys)):
-            _invalid("replace_value_labels cannot contain duplicate typed values.")
+            raise frontend_error(
+                "duplicate_value_label",
+                "replace_value_labels cannot contain duplicate typed values.",
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -306,6 +309,16 @@ class ComparisonExpression:
             _invalid("A comparison requires two typed operands.")
         if not isinstance(self.operator, str) or self.operator not in {"=", "<", "<=", ">", ">="}:
             _invalid("Comparison operator is outside the bounded expression profile.")
+        if any(
+            operand.kind == "literal"
+            and operand.value is not None
+            and operand.value.type == "string"
+            for operand in (self.left, self.right)
+        ):
+            raise frontend_error(
+                "expression_type_unsupported",
+                "String predicates are outside the bounded expression profile.",
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -329,6 +342,15 @@ class BooleanExpression:
             _invalid("A boolean expression requires at least two operands.")
         if not all(isinstance(item, (ComparisonExpression, BooleanExpression)) for item in self.operands):
             _invalid("Boolean operands must be predicate expressions.")
+        if any(
+            isinstance(item, BooleanExpression) and item.operator == self.operator
+            for item in self.operands
+        ):
+            raise frontend_error(
+                "noncanonical_boolean_shape",
+                "A same-operator boolean chain must be flattened in source order.",
+                operator=self.operator,
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -354,8 +376,24 @@ class AssignOperation:
             _invalid("Assign target must be non-empty text.")
         if not isinstance(self.target_mode, str) or self.target_mode not in {"create", "replace"}:
             _invalid("Assign target_mode must be create or replace.")
+        if self.target_mode == "create" and self.target.startswith("__"):
+            raise frontend_error(
+                "reserved_target_name",
+                f"Target name {self.target!r} is reserved.",
+                target=self.target,
+            )
         if not isinstance(self.value, Operand):
             _invalid("Assign value must be a typed operand.")
+        if (
+            self.value.kind == "literal"
+            and self.value.value is not None
+            and self.value.value.type == "string"
+        ):
+            raise frontend_error(
+                "expression_type_unsupported",
+                "String assignment values are outside the bounded plan.",
+                variable=self.target,
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -380,6 +418,16 @@ class ConditionalAssignOperation:
             _invalid("Conditional-assign target must be non-empty text.")
         if not isinstance(self.value, Operand):
             _invalid("Conditional-assign value must be a typed operand.")
+        if (
+            self.value.kind == "literal"
+            and self.value.value is not None
+            and self.value.value.type == "string"
+        ):
+            raise frontend_error(
+                "expression_type_unsupported",
+                "String assignment values are outside the bounded plan.",
+                variable=self.target,
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {

@@ -14,7 +14,7 @@ from ...transform.errors import SourcePosition, SourceSpan, frontend_error
 TokenKind = Literal[
     "identifier", "number", "string", "left_paren", "right_paren",
     "equals", "less", "less_equal", "greater", "greater_equal",
-    "comma", "slash", "period", "eof",
+    "comma", "plus", "minus", "slash", "period", "eof",
 ]
 
 
@@ -185,7 +185,7 @@ class SpssSyntaxProgram:
 
 
 _NUMBER = re.compile(
-    r"[+-]?(?:(?:[0-9]+(?:\.[0-9]+)?)|(?:\.[0-9]+))(?:[Ee][+-]?[0-9]+)?"
+    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[Ee][+-]?[0-9]+)?"
 )
 _IDENTIFIER_START = frozenset("_@$#")
 _IDENTIFIER_CONTINUE = frozenset("_@$#")
@@ -228,8 +228,8 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
     offset = 0
     punctuation: dict[str, TokenKind] = {
         "(": "left_paren", ")": "right_paren", "=": "equals",
-        "<": "less", ">": "greater", ",": "comma", "/": "slash",
-        ".": "period",
+        "<": "less", ">": "greater", ",": "comma", "+": "plus",
+        "-": "minus", "/": "slash", ".": "period",
     }
     while offset < len(source):
         character = source[offset]
@@ -301,6 +301,12 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
                     continue
                 break
             text = source[start:offset]
+            if text.casefold() in {"nan", "infinity"}:
+                raise frontend_error(
+                    "spss_syntax_error",
+                    "NaN and Infinity are not finite-number tokens.",
+                    span=_span(source, start, offset),
+                )
             tokens.append(Token(
                 "identifier", text, text, _span(source, start, offset),
             ))
@@ -452,6 +458,18 @@ class _Parser:
         target = self.expects("identifier", "COMPUTE requires a target variable.")
         self.expects("equals", "Expected '=' in COMPUTE.")
         value = self.operand()
+        if (
+            self.current.kind in {"plus", "minus", "slash"}
+            or (
+                self.current.kind == "number"
+                and self.current.text.startswith("-")
+            )
+        ):
+            raise frontend_error(
+                "expression_type_unsupported",
+                "Arithmetic expressions are outside the bounded frontend.",
+                span=self.current.span,
+            )
         end = self.expects("period", "Expected '.' after COMPUTE.")
         return ComputeCommandSyntax(target, value, _joined_span(start.span, end.span))
 
@@ -492,18 +510,40 @@ class _Parser:
         assignments: list[VariableLevelAssignmentSyntax] = []
         while self.current.kind not in {"period", "eof"}:
             self.accepts("slash")
-            variable = self.expects("identifier", "VARIABLE LEVEL requires a variable name.")
+            variables = self.variable_list(
+                stop_kinds=frozenset({"left_paren", "period", "eof", "slash"}),
+            )
             self.expects("left_paren", "Expected '(' before a measurement level.")
             level = self.expects("identifier", "Expected NOMINAL, ORDINAL, or SCALE.")
             normalized = level.text.casefold()
             if normalized not in {"nominal", "ordinal", "scale"}:
-                raise frontend_error("invalid_measurement_level", "Expected NOMINAL, ORDINAL, or SCALE.", span=level.span, level=level.text)
-            right = self.expects("right_paren", "Expected ')' after a measurement level.")
-            assignments.append(VariableLevelAssignmentSyntax(variable, normalized, _joined_span(variable.span, right.span)))
+                raise frontend_error(
+                    "spss_syntax_error",
+                    "Expected NOMINAL, ORDINAL, or SCALE.",
+                    span=level.span,
+                    level=level.text,
+                )
+            right = self.expects(
+                "right_paren", "Expected ')' after a measurement level.",
+            )
+            assignments.extend(
+                VariableLevelAssignmentSyntax(
+                    variable,
+                    normalized,
+                    _joined_span(variable.span, right.span),
+                )
+                for variable in variables
+            )
         if not assignments:
-            raise frontend_error("spss_syntax_error", "VARIABLE LEVEL requires an assignment.", span=self.current.span)
+            raise frontend_error(
+                "spss_syntax_error",
+                "VARIABLE LEVEL requires an assignment.",
+                span=self.current.span,
+            )
         end = self.expects("period", "Expected '.' after VARIABLE LEVEL.")
-        return VariableLevelCommandSyntax(tuple(assignments), _joined_span(start.span, end.span))
+        return VariableLevelCommandSyntax(
+            tuple(assignments), _joined_span(start.span, end.span),
+        )
 
     def execute(self, start: Token) -> ExecuteCommandSyntax:
         end = self.expects("period", "Expected '.' after EXECUTE.")

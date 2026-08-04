@@ -45,6 +45,7 @@ def _variable(ordinal: int, name: str) -> dict[str, object]:
 def conditional_catalog(tmp_path):
     path = tmp_path / "conditional.sqlite"
     url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
     create_wide_dataset(
         database_url=url,
         dataset_id="conditional_source",
@@ -260,7 +261,7 @@ def test_dolt_mock_applies_exact_program_to_preexisting_target_without_schema_dd
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     states = iter([
         ("main", "abc123", 0),
@@ -297,7 +298,7 @@ def test_dolt_mock_rejects_create_target_before_schema_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -340,7 +341,7 @@ def test_dolt_mock_rechecks_clean_state_after_dataset_lock(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
     )
     states = iter([
         ("main", "abc123", 0),
@@ -378,4 +379,3 @@ def test_dolt_mock_rechecks_clean_state_after_dataset_lock(
         "SELECT COUNT(*) FROM transformation_apply"
     ).fetchone() == (1,)
     connection.close()
-

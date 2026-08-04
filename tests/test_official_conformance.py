@@ -226,6 +226,7 @@ def _assert_expected_catalog(database_url: str, dataset_name: str, expected: dic
 def _assert_round_trip(
     *, fixture: dict, source: Path, database_url: str, tmp_path: Path, profile: str,
 ) -> None:
+    openstatspec.initialize_catalog(database_url=database_url)
     assert fixture["directions"] == ["import", "export", "semantic_round_trip"]
     assert set(fixture["expects"]) <= SEMANTIC_EXPECTATIONS | CATALOG_EXPECTATIONS
     token = uuid4().hex[:10]
@@ -276,7 +277,6 @@ def test_official_manifest_round_trips_through_sqlite(
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
-        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 @pytest.mark.parametrize(("fixture", "source"), _round_trip_fixtures())
@@ -295,6 +295,7 @@ def test_official_manifest_round_trips_through_server_profiles(
 def _assert_official_preflight_failure(
     *, database_url: str, profile: str, tmp_path: Path,
 ) -> None:
+    openstatspec.initialize_catalog(database_url=database_url)
     fixture = next(
         item for item in _manifest()["fixtures"] if item["id"] == "preflight-failure"
     )
@@ -359,7 +360,6 @@ def test_official_preflight_failure_is_atomic_and_diagnostic(tmp_path: Path) -> 
         ("OPENSTATSPEC_POSTGRES_URL", "postgresql"),
         ("OPENSTATSPEC_MYSQL_URL", "mysql"),
         ("OPENSTATSPEC_MARIADB_URL", "mariadb"),
-        ("OPENSTATSPEC_DOLT_URL", "dolt"),
     ],
 )
 def test_official_preflight_failure_through_server_profiles(

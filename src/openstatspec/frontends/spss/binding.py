@@ -90,10 +90,17 @@ def _bind_predicate(
             )
         return ComparisonExpression(left, syntax.operator, right)
     assert isinstance(syntax, BooleanSyntax)
-    return BooleanExpression(
-        syntax.operator,
-        tuple(_bind_predicate(operand, variables) for operand in syntax.operands),
-    )
+    operands: list[PredicateExpression] = []
+    for operand in syntax.operands:
+        bound = _bind_predicate(operand, variables)
+        if (
+            isinstance(bound, BooleanExpression)
+            and bound.operator == syntax.operator
+        ):
+            operands.extend(bound.operands)
+        else:
+            operands.append(bound)
+    return BooleanExpression(syntax.operator, tuple(operands))
 
 
 def _assignment(
@@ -101,12 +108,26 @@ def _assignment(
     variables: list[VariableDefinition],
 ) -> AssignOperation:
     value, value_type = _bind_operand(value_syntax, variables)
+    if value_type == "string":
+        raise frontend_error(
+            "expression_type_unsupported",
+            "String assignment is not supported until explicit width and "
+            "profile-independent semantics are available.",
+            span=value_syntax.span, variable=target_name,
+        )
     matches = [
         (index, variable) for index, variable in enumerate(variables)
         if variable.name.casefold() == target_name.casefold()
     ]
     if matches:
         _, target = matches[0]
+        if target.storage_kind == "string":
+            raise frontend_error(
+                "expression_type_unsupported",
+                "String assignment targets are outside the bounded frontend.",
+                span=target_span,
+                variable=target.name,
+            )
         if value_type != _expected_type(target.storage_kind):
             raise frontend_error(
                 "type_mismatch",
@@ -308,8 +329,22 @@ def bind_spss_syntax(
                     span=command.target.span, variable=command.target.text,
                 )
             _, target = target_matches[0]
+            if target.storage_kind == "string":
+                raise frontend_error(
+                    "expression_type_unsupported",
+                    "String assignment targets are outside the bounded frontend.",
+                    span=command.target.span,
+                    variable=target.name,
+                )
             value, value_type = _bind_operand(command.value, variables)
             expected = _expected_type(target.storage_kind)
+            if value_type == "string":
+                raise frontend_error(
+                    "expression_type_unsupported",
+                    "String assignment is not supported until explicit width "
+                    "and profile-independent semantics are available.",
+                    span=command.value.span, variable=target.name,
+                )
             if value_type != expected:
                 raise frontend_error(
                     "type_mismatch",
@@ -329,8 +364,10 @@ def bind_spss_syntax(
                 )
                 if variable.storage_kind != "numeric":
                     raise frontend_error(
-                        "type_mismatch", "F formats require a numeric variable.",
-                        span=assignment.span, variable=variable.name,
+                        "expression_type_unsupported",
+                        "Numeric F formats cannot target string variables.",
+                        span=assignment.span,
+                        variable=variable.name,
                     )
                 operations.append(SetFormatOperation(
                     variable.name, assignment.family,

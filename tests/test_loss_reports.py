@@ -19,6 +19,7 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     source = tmp_path / "source.sav"
     database_path = tmp_path / "persisted.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     blocked = tmp_path / "blocked.sav"
     approved = tmp_path / "approved.sav"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
@@ -44,6 +45,7 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
 def test_loss_allowed_export_persists_accepted_diagnostics(tmp_path) -> None:
     database_path = tmp_path / "accepted-loss.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     source = tmp_path / "source.sav"
     destination = tmp_path / "accepted.sav"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
@@ -59,6 +61,7 @@ def test_loss_allowed_export_persists_accepted_diagnostics(tmp_path) -> None:
 def test_non_utf8_source_encoding_is_explicit_export_loss(tmp_path) -> None:
     database_path = tmp_path / "legacy-encoding.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     destination = tmp_path / "legacy-encoding.sav"
     create_wide_dataset(
         database_url=database, dataset_id="legacy-encoding", source_name="legacy.sav",
@@ -81,6 +84,7 @@ def test_non_utf8_source_encoding_is_explicit_export_loss(tmp_path) -> None:
 def test_explicit_legacy_locale_selects_the_single_engine_route(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "legacy-locale.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     destination = tmp_path / "legacy-locale.sav"
     create_wide_dataset(
         database_url=database, dataset_id="legacy-locale", source_name="legacy.sav",
@@ -100,6 +104,7 @@ def test_explicit_legacy_locale_selects_the_single_engine_route(tmp_path, monkey
     observed = {}
 
     def writer(destination_path, frame, dataset, variables, *, legacy_locale=None):
+        destination_path.touch()
         observed["locale"] = legacy_locale
         observed["encoding"] = dataset["source_encoding"]
         observed["values"] = frame["name"].tolist()
@@ -125,6 +130,7 @@ def test_compatible_variable_name_round_trips_from_current_sql_catalog(tmp_path,
     source = tmp_path / f"compat-source{suffix}"
     database_path = tmp_path / f"compat-{suffix[1:]}.sqlite"
     database = f"sqlite:///{database_path}"
+    openstatspec.initialize_catalog(database_url=database)
     destination = tmp_path / f"compat-destination{suffix}"
     source_name = "long_variable_name"
 

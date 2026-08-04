@@ -1,4 +1,4 @@
-"""Real-service conformance checks for PostgreSQL, MySQL, MariaDB, and Dolt."""
+"""Real-service conformance checks plus Dolt fail-closed and candidate probes."""
 
 import os
 from uuid import uuid4
@@ -10,8 +10,8 @@ from sqlalchemy import create_engine, inspect as inspect_database, text
 from sqlalchemy.exc import DBAPIError
 
 import openstatspec
-import openstatspec.sql.wide as wide
 from openstatspec.core import UnsupportedOperationError
+from openstatspec.sql.dolt_conformance import DoltConformanceSource
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 
@@ -37,12 +37,13 @@ def source_sav(tmp_path):
 
 @pytest.mark.parametrize(
     ("environment_name", "dataset_id"),
-    [("OPENSTATSPEC_POSTGRES_URL", "profile_pg"), ("OPENSTATSPEC_MYSQL_URL", "profile_mysql"), ("OPENSTATSPEC_MARIADB_URL", "profile_mariadb"), ("OPENSTATSPEC_DOLT_URL", "profile_dolt")],
+    [("OPENSTATSPEC_POSTGRES_URL", "profile_pg"), ("OPENSTATSPEC_MYSQL_URL", "profile_mysql"), ("OPENSTATSPEC_MARIADB_URL", "profile_mariadb")],
 )
 def test_live_profile_import_validate_and_export(environment_name, dataset_id, source_sav, tmp_path):
     database_url = os.environ.get(environment_name)
     if not database_url:
         pytest.skip(f"{environment_name} is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     runtime_dataset_id = f"{dataset_id}_{uuid4().hex[:8]}"
     imported = openstatspec.import_sav(
         source_sav, database_url=database_url, dataset_id=runtime_dataset_id,
@@ -69,13 +70,14 @@ def test_live_profile_import_validate_and_export(environment_name, dataset_id, s
 
 @pytest.mark.parametrize(
     ("environment_name", "dataset_id"),
-    [("OPENSTATSPEC_POSTGRES_URL", "semantics_pg"), ("OPENSTATSPEC_MYSQL_URL", "semantics_mysql"), ("OPENSTATSPEC_MARIADB_URL", "semantics_mariadb"), ("OPENSTATSPEC_DOLT_URL", "semantics_dolt")],
+    [("OPENSTATSPEC_POSTGRES_URL", "semantics_pg"), ("OPENSTATSPEC_MYSQL_URL", "semantics_mysql"), ("OPENSTATSPEC_MARIADB_URL", "semantics_mariadb")],
 )
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
 def test_live_profile_preserves_supported_sav_semantics(environment_name, dataset_id, suffix, tmp_path):
     database_url = os.environ.get(environment_name)
     if not database_url:
         pytest.skip(f"{environment_name} is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
     runtime_dataset_id = f"{dataset_id}_{suffix[1:]}_{uuid4().hex[:8]}"
     source = tmp_path / f"{runtime_dataset_id}{suffix}"
     destination = tmp_path / f"{runtime_dataset_id}-roundtrip{suffix}"
@@ -93,165 +95,43 @@ def test_live_profile_preserves_supported_sav_semantics(environment_name, datase
     )
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
 
-def test_live_dolt_conservative_source_width_envelope(tmp_path) -> None:
-    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
-    if not database_url:
-        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
-    token = uuid4().hex[:8]
-    accepted_id = f"dolt_width_accepted_{token}"
-    rejected_id = f"dolt_width_rejected_{token}"
-    accepted_source = tmp_path / f"{accepted_id}.sav"
-    rejected_source = tmp_path / f"{rejected_id}.sav"
-    accepted_columns = [f"v{ordinal:03d}" for ordinal in range(1, 306)]
-    rejected_columns = [*accepted_columns, "v306"]
-    pyspssio.write_sav(
-        str(accepted_source),
-        pd.DataFrame([[float(ordinal) for ordinal in range(1, 306)]],
-                     columns=accepted_columns),
-    )
-    pyspssio.write_sav(
-        str(rejected_source),
-        pd.DataFrame([[float(ordinal) for ordinal in range(1, 307)]],
-                     columns=rejected_columns),
-    )
-
-    imported = openstatspec.import_sav(
-        accepted_source, database_url=database_url, dataset_id=accepted_id,
-    )
-    assert imported["case_count"] == 1
-    assert openstatspec.validate(
-        database_url=database_url, dataset_id=accepted_id,
-    )["variable_count"] == 305
-
-    with pytest.raises(UnsupportedOperationError, match="Target capability exceeded"):
-        openstatspec.import_sav(
-            rejected_source, database_url=database_url, dataset_id=rejected_id,
-        )
-
-    engine = create_engine(database_url)
-    with engine.connect() as connection:
-        assert connection.execute(text(
-            "select count(*) from dataset where dataset_name = :name"
-        ), {"name": rejected_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "select count(*) from dataset_catalog where dataset_id = :name"
-        ), {"name": rejected_id}).scalar_one() == 0
-        mirror_event = connection.execute(text("""
-            select f.dataset_id, f.direction, f.severity, f.code
-              from fidelity_event_catalog f
-              join operation_catalog o on o.operation_id = f.operation_id
-             where o.source = :source
-        """), {"source": rejected_source.name}).mappings().one()
-        normative_event = connection.execute(text("""
-            select f.dataset_id, f.direction, f.severity, f.event_code
-              from fidelity_event f
-             where f.source_item = :source
-        """), {"source": rejected_source.name}).mappings().one()
-    assert tuple(mirror_event.values()) == (
-        None, "import", "error", "target_capability_exceeded",
-    )
-    assert tuple(normative_event.values()) == (
-        None, "import", "error", "target_capability_exceeded",
-    )
-    assert f"data_{rejected_id}" not in inspect_database(engine).get_table_names()
-
-
-def test_live_dolt_post_ddl_fault_has_complete_compensating_cleanup(
-    tmp_path, monkeypatch,
+def test_live_dolt_is_read_only_and_rejects_writes_without_declarations(
+    tmp_path,
 ) -> None:
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:
         pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
-    dataset_id = f"dolt_cleanup_{uuid4().hex[:8]}"
-    source = tmp_path / f"{dataset_id}.sav"
+
+    status = DoltConformanceSource.packaged().status()
+    assert status["status"] == "blocked_no_concrete_declarations"
+    assert status["declaration_count"] == 0
+    assert status["write_enabled"] is False
+
+    before = openstatspec.dolt_state_snapshot(database_url=database_url)
+    assert before["read_only"] is True
+    assert before["operational_write_enabled"] is False
+
+    rejection = "no concrete declarations; write rejected before mutation"
+    with pytest.raises(UnsupportedOperationError, match=rejection):
+        openstatspec.initialize_catalog(database_url=database_url)
+    after_initialize = openstatspec.dolt_state_snapshot(database_url=database_url)
+
+    source = tmp_path / "blocked-write.sav"
     pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
-    real_store = wide.store_normative_dataset
-
-    def fail_after_normative_write(*args, **kwargs):
-        real_store(*args, **kwargs)
-        raise RuntimeError("injected Dolt post-DDL fault")
-
-    monkeypatch.setattr(wide, "store_normative_dataset", fail_after_normative_write)
-
-    with pytest.raises(RuntimeError, match="injected Dolt post-DDL fault"):
+    with pytest.raises(UnsupportedOperationError, match=rejection):
         openstatspec.import_sav(
-            source, database_url=database_url, dataset_id=dataset_id,
+            source, database_url=database_url, dataset_id="blocked_write",
         )
+    after_import = openstatspec.dolt_state_snapshot(database_url=database_url)
 
-    engine = create_engine(database_url)
-    with engine.connect() as connection:
-        assert connection.execute(text(
-            "select count(*) from dataset where dataset_name = :name"
-        ), {"name": dataset_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "select count(*) from dataset_catalog where dataset_id = :name"
-        ), {"name": dataset_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "select status, dataset_id from operation_catalog where source = :source"
-        ), {"source": source.name}).one() == ("failed", None)
-        assert connection.execute(text("""
-            select f.dataset_id, f.direction, f.severity, f.code
-              from fidelity_event_catalog f
-              join operation_catalog o on o.operation_id = f.operation_id
-             where o.source = :source
-        """), {"source": source.name}).one() == (
-            None, "import", "error", "import_failed",
-        )
-    assert f"data_{dataset_id}" not in inspect_database(engine).get_table_names()
+    assert after_initialize["working_set_binding"] == before["working_set_binding"]
+    assert after_import["working_set_binding"] == before["working_set_binding"]
+    assert after_initialize["state"] == before["state"]
+    assert after_import["state"] == before["state"]
 
 
-def test_live_dolt_adapter_value_boundary_is_atomic() -> None:
-    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
-    if not database_url:
-        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
-    token = uuid4().hex[:8]
-    accepted_id = f"dolt_value_accepted_{token}"
-    rejected_id = f"dolt_value_rejected_{token}"
-    accepted_value = "é" * 32_752
-    rejected_value = accepted_value + "x"
-    assert len(accepted_value.encode("utf-8")) == 65_504
-    assert len(rejected_value.encode("utf-8")) == 65_505
-    variables = [{
-        "ordinal": 1, "source_name": "value", "physical_name": "value",
-        "storage_kind": "string", "string_width": 65_504, "label": "",
-        "format": "A65504", "measure": "nominal", "alignment": "left",
-        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
-    }]
-
-    imported = wide.create_wide_dataset(
-        database_url=database_url, dataset_id=accepted_id,
-        source_name="accepted.sav", source_format="SAV",
-        rows=[{"value": accepted_value}], variables=variables,
-    )
-    assert imported["case_count"] == 1
-
-    with pytest.raises(UnsupportedOperationError) as caught:
-        wide.create_wide_dataset(
-            database_url=database_url, dataset_id=rejected_id,
-            source_name="rejected.sav", source_format="SAV",
-            rows=[{"value": rejected_value}], variables=variables,
-        )
-    assert caught.value.details["reason"] == "text_value_limit"
-
-    engine = create_engine(database_url)
-    accepted_table = wide.data_table_name(accepted_id)
-    rejected_table = wide.data_table_name(rejected_id)
-    quote = engine.dialect.identifier_preparer.quote
-    with engine.connect() as connection:
-        assert connection.execute(text(
-            f"SELECT OCTET_LENGTH(value) FROM {quote(accepted_table)}"
-        )).scalar_one() == 65_504
-        assert connection.execute(text(
-            "SELECT COUNT(*) FROM dataset_catalog WHERE dataset_id = :dataset_id"
-        ), {"dataset_id": rejected_id}).scalar_one() == 0
-        assert connection.execute(text(
-            "SELECT COUNT(*) FROM dataset WHERE dataset_name = :dataset_id"
-        ), {"dataset_id": rejected_id}).scalar_one() == 0
-    assert rejected_table not in inspect_database(engine).get_table_names()
-    engine.dispose()
-
-
-def test_live_dolt_published_storage_and_identifier_evidence() -> None:
+@pytest.mark.candidate_evidence
+def test_live_dolt_candidate_limit_probe_smoke() -> None:
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:
         pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")

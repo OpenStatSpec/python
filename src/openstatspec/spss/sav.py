@@ -7,13 +7,22 @@ caller explicitly accepts that exact loss.
 """
 
 import hashlib
+import os
 import json
+import errno
 import math
-from contextlib import ExitStack
+import ctypes
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import Any
+from tempfile import mkstemp, TemporaryDirectory
+from typing import Any, Callable
+
+try:  # POSIX locks let independent export processes share one publication gate.
+    import fcntl
+except ImportError:  # pragma: no cover - the supported CI/runtime is POSIX.
+    fcntl = None
 
 import pandas as pd
 import pyspssio
@@ -37,17 +46,35 @@ from .dictionary import (
     set_variable_attribute_pairs,
     variable_attribute_pairs,
 )
-from ..core import UnsupportedOperationError
+from ..core import (
+    UnsupportedOperationError,
+    safe_error_identity as _export_error_identity,
+)
 from ..sql.capabilities import effective_profile
-from ..sql.profiles import preflight
+from ..sql.dolt_conformance import DoltConformanceSource
 from ..sql.wide import (
     create_wide_dataset,
+    fail_export_operation,
+    finish_export_operation,
     physical_name,
+    read_export_operation_state,
     read_fidelity_events,
     read_wide_dataset,
+    record_export_backup_retained,
+    record_export_cleanup_failure,
     record_export_operation,
     validate_spss_catalog,
 )
+
+
+class ExportRecoveryError(UnsupportedOperationError):
+    """Export publication could not restore the destination's prior state."""
+
+    def __init__(self, code: str, detail: str, *, details: dict[str, Any]) -> None:
+        super().__init__(f"OpenStatSpec export recovery failed [{code}]: {detail}")
+        self.code = code
+        self.details = {"reason": code, **details}
+
 
 _UTF8_ENCODINGS = {"UTF-8", "UTF8"}
 def engine_identity() -> dict[str, str]:
@@ -82,10 +109,16 @@ def _dictionary(source_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             )
         except RawDictionaryError as error:
             metadata["_documents"] = None
-            metadata["_documents_error"] = str(error)
+            metadata["_documents_error"] = _export_error_identity(
+                error,
+                phase="read_sav_documents",
+            )
     except Exception as error:  # The source stays importable, but not silently faithful.
         metadata["_var_sets"] = None
-        metadata["_var_sets_error"] = str(error)
+        metadata["_var_sets_error"] = _export_error_identity(
+            error,
+            phase="read_sav_variable_sets",
+        )
     return metadata, _engine_loss_report(metadata)
 
 
@@ -217,7 +250,10 @@ def inspect_sav(source: str | Path) -> dict[str, Any]:
     }
 
 
-def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str) -> dict[str, Any]:
+def import_sav_dataset(
+    *, source: str | Path, database_url: str, dataset_id: str,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> dict[str, Any]:
     source_path = Path(source)
     _require_source(source_path)
     frame, metadata = pyspssio.read_sav(
@@ -233,6 +269,7 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     result = create_wide_dataset(
         database_url=database_url,
         dataset_id=dataset_id,
+        dolt_conformance_source=dolt_conformance_source,
         source_name=source_path.name,
         source_format=source_path.suffix[1:].upper(),
         rows=_rows(frame, variables),
@@ -257,24 +294,398 @@ def import_sav_dataset(*, source: str | Path, database_url: str, dataset_id: str
     return {**result, "loss_report": loss_report}
 
 
+def _path_reference(path: Path, *, role: str) -> dict[str, str]:
+    """Return an opaque path identity without disclosing any path component."""
+    absolute_path = os.path.abspath(os.fspath(path))
+    return {
+        "role": role,
+        "path_sha256": hashlib.sha256(
+            absolute_path.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _path_reference_text(path: Path, *, role: str) -> str:
+    """Serialize a redacted path identity for legacy text audit columns."""
+    return json.dumps(
+        _path_reference(path, role=role),
+        sort_keys=True, separators=(",", ":"),
+    )
+
+
+def _path_entry_exists(path: Path) -> bool:
+    """Report directory entries without following a possibly dangling symlink."""
+    return path.exists() or path.is_symlink()
+
+
+_DESTINATION_IDENTITY_UNCHECKED = object()
+
+
+def _destination_identity(path: Path) -> tuple[int, int] | None:
+    """Identify the current directory entry without following symlinks."""
+    if not _path_entry_exists(path):
+        return None
+    status = path.lstat()
+    return status.st_dev, status.st_ino
+
+
+def _reserve_export_backup(destination: Path) -> Path:
+    descriptor, name = mkstemp(
+        dir=destination.parent, prefix=f".{destination.name}.",
+        suffix=".previous",
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _publish_staged_destination(
+    *, staged: Path, destination: Path, backup: Path,
+    state: dict[str, Any],
+) -> None:
+    """Publish without overwriting an entry created during export preparation."""
+    state.update({
+        "had_previous": False,
+        "backup_installed": False,
+        "published_identity": None,
+    })
+    if _path_entry_exists(destination):
+        os.replace(destination, backup)
+        state.update({"had_previous": True, "backup_installed": True})
+    else:
+        backup.unlink(missing_ok=True)
+    # The hard-link claim is atomic and fails if another process publishes the
+    # destination after the check above. Some portable filesystems do not
+    # implement hard links; the surrounding export lock serializes those
+    # fallback replacements with every other OpenStatSpec publisher.
+    try:
+        os.link(staged, destination)
+    except OSError as link_error:
+        if link_error.errno not in {
+            errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM, errno.EXDEV,
+        }:
+            raise
+        if _path_entry_exists(destination):
+            raise FileExistsError(
+                "The export destination was published by another operation."
+            ) from link_error
+        os.replace(staged, destination)
+    else:
+        staged.unlink()
+    published_identity = _destination_identity(destination)
+    if published_identity is None:
+        raise FileNotFoundError("The published export destination disappeared.")
+    state["published_identity"] = published_identity
+
+
+@contextmanager
+def _export_destination_lock(destination: Path):
+    """Serialize export publication and recovery across cooperating processes."""
+    if fcntl is not None:
+        descriptor = os.open(destination.parent, os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+        return
+
+    kernel32 = _windows_kernel32()
+    path_identity = os.path.normcase(os.path.abspath(os.fspath(destination)))
+    mutex_name = "Global\\OpenStatSpec.SAV." + hashlib.sha256(
+        path_identity.encode("utf-8")
+    ).hexdigest()
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        raise ctypes.WinError()
+    acquired = False
+    try:
+        wait_result = kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        if wait_result not in {0x00000000, 0x00000080}:
+            raise OSError(
+                f"Windows export mutex wait failed with status {wait_result}."
+            )
+        acquired = True
+        yield
+    finally:
+        try:
+            if acquired and not kernel32.ReleaseMutex(handle):
+                raise ctypes.WinError()
+        finally:
+            kernel32.CloseHandle(handle)
+
+
+def _windows_kernel32():
+    """Return a typed Win32 mutex API for cross-process export locking."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (
+        ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p,
+    )
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (
+        ctypes.c_void_p, ctypes.c_uint32,
+    )
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel32.ReleaseMutex.restype = ctypes.c_bool
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    return kernel32
+
+
+def _serialize_export_publication(
+    export: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
+    """Guard a complete export, including any post-publication recovery."""
+    @wraps(export)
+    def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        destination = kwargs.get("destination")
+        if destination is None:
+            raise TypeError("export requires a destination keyword argument")
+        with _export_destination_lock(Path(destination)):
+            return export(*args, **kwargs)
+    return guarded
+
+
+def _restore_export_destination(
+    *, destination: Path, backup: Path, had_previous: bool,
+    expected_identity: tuple[int, int] | None | object = (
+        _DESTINATION_IDENTITY_UNCHECKED
+    ),
+) -> None:
+    if (
+        expected_identity is not _DESTINATION_IDENTITY_UNCHECKED
+        and _destination_identity(destination) != expected_identity
+    ):
+        raise FileExistsError(
+            "The export destination is no longer owned by this operation."
+        )
+    if had_previous:
+        os.replace(backup, destination)
+    else:
+        destination.unlink(missing_ok=True)
+
+
+def _raise_export_cleanup_failed(
+    *, original_error: Exception, cleanup_error: Exception,
+    phase: str, destination: Path, backup: Path, staged: Path,
+    had_previous: bool, database_url: str, operation_id: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> None:
+    inventory = {
+        "destination": _path_reference(destination, role="destination"),
+        "destination_exists": destination.exists(),
+        "backup": _path_reference(backup, role="durable_backup"),
+        "backup_exists": _path_entry_exists(backup),
+        "staged_export": _path_reference(staged, role="staged_export"),
+        "staged_export_exists": staged.exists(),
+    }
+    inventory_sha256 = hashlib.sha256(
+        json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    action_id = hashlib.sha256(
+        json.dumps(
+            {
+                "destination_path_sha256": inventory["destination"]["path_sha256"],
+                "phase": phase,
+            },
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    recovery = {
+        "procedure_id": "openstatspec.export-destination-restore.v1",
+        "action_id": action_id,
+        "targets": {
+            "destination": inventory["destination"],
+            "durable_backup": inventory["backup"],
+            "staged_export": inventory["staged_export"],
+        },
+        "residual_inventory_sha256": inventory_sha256,
+        "cleanup_attempted": True,
+        "cleanup_succeeded": False,
+        "previous_destination_existed": had_previous,
+        "durable_backup_survives_staging_cleanup": _path_entry_exists(backup),
+    }
+    cleanup_audit_operation_id = None
+    cleanup_audit_fault = None
+    try:
+        cleanup_audit_operation_id = record_export_cleanup_failure(
+            database_url=database_url,
+            destination=_path_reference_text(
+                destination, role="destination",
+            ),
+            original_error=original_error, cleanup_error=cleanup_error,
+            residual_object_inventory=inventory,
+            deterministic_recovery_evidence=recovery,
+            operation_id=operation_id,
+            dolt_conformance_source=dolt_conformance_source,
+        )
+    except Exception as audit_error:
+        cleanup_audit_fault = _export_error_identity(
+            audit_error, phase="cleanup_failed_audit",
+        )
+    exception_recovery = {
+        **recovery,
+        "cleanup_failed_audit_persisted": cleanup_audit_fault is None,
+        "cleanup_failed_audit_operation_id": cleanup_audit_operation_id,
+        "terminal_reporting": (
+            "catalog_and_exception" if cleanup_audit_fault is None
+            else "out_of_band_exception"
+        ),
+    }
+    raise ExportRecoveryError(
+        "cleanup_failed",
+        "Export failed and the destination's prior state could not be restored.",
+        details={
+            "subcode": "export_destination_restore_failed",
+            "original_cause": _export_error_identity(
+                original_error, phase=f"export_{phase}",
+            ),
+            "cleanup_fault": _export_error_identity(
+                cleanup_error, phase="export_destination_restore",
+            ),
+            "residual_object_inventory": inventory,
+            "deterministic_recovery_evidence": exception_recovery,
+            "audit_fault": cleanup_audit_fault,
+            "success_forbidden": True,
+        },
+    ) from cleanup_error
+
+
+def _mark_export_failed_after_restore(
+    *, database_url: str, operation_id: str, error: Exception, phase: str,
+    destination: Path, backup: Path, had_previous: bool,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> None:
+    """Close a running audit after the old destination has been restored."""
+    failure = {
+        "phase": phase,
+        "cause": _export_error_identity(error, phase=f"export_{phase}"),
+        "destination": _path_reference(destination, role="destination"),
+        "durable_backup": _path_reference(backup, role="durable_backup"),
+        "previous_destination_existed": had_previous,
+        "destination_restored": True,
+    }
+    try:
+        fail_export_operation(
+            database_url=database_url, operation_id=operation_id,
+            failure_details=failure,
+            dolt_conformance_source=dolt_conformance_source,
+        )
+    except Exception as audit_error:
+        raise ExportRecoveryError(
+            "failure_audit_failed",
+            "The destination was restored, but the running export audit could not be closed.",
+            details={
+                "subcode": "export_failure_audit_failed",
+                "original_cause": failure["cause"],
+                "audit_fault": _export_error_identity(
+                    audit_error, phase="export_failure_audit",
+                ),
+                "residual_object_inventory": {
+                    "destination": _path_reference(
+                        destination, role="destination",
+                    ),
+                    "destination_exists": destination.exists(),
+                    "backup": _path_reference(
+                        backup, role="durable_backup",
+                    ),
+                    "backup_exists": _path_entry_exists(backup),
+                    "operation_id": operation_id,
+                },
+                "deterministic_recovery_evidence": {
+                    "procedure_id": "openstatspec.export-audit-reconciliation.v1",
+                    "action_id": operation_id,
+                    "phase": phase,
+                    "destination_restored": True,
+                    "operation_terminal_state_verified": False,
+                    "terminal_reporting": "out_of_band_exception",
+                },
+                "success_forbidden": True,
+            },
+        ) from audit_error
+
+
+@contextmanager
+def _export_staging_directory(
+    *, destination: Path, database_url: str,
+    publication_state: dict[str, Any],
+    dolt_conformance_source: DoltConformanceSource | None = None,
+):
+    """Compensate a published file if staging-directory cleanup fails."""
+    try:
+        with TemporaryDirectory(
+            dir=destination.parent,
+            prefix=f".{destination.name}.staging.",
+        ) as export_directory:
+            yield export_directory
+    except Exception as staging_error:
+        if not publication_state.get("published"):
+            raise
+        backup = publication_state["backup"]
+        staged = publication_state["staged"]
+        had_previous = publication_state["had_previous"]
+        operation_id = publication_state["operation_id"]
+        try:
+            _restore_export_destination(
+                destination=destination,
+                backup=backup,
+                had_previous=had_previous,
+                expected_identity=publication_state["published_identity"],
+            )
+        except Exception as restore_error:
+            _raise_export_cleanup_failed(
+                original_error=staging_error,
+                cleanup_error=restore_error,
+                phase="staging_cleanup",
+                destination=destination,
+                backup=backup,
+                staged=staged,
+                had_previous=had_previous,
+                database_url=database_url,
+                operation_id=operation_id,
+                dolt_conformance_source=dolt_conformance_source,
+            )
+        _mark_export_failed_after_restore(
+            database_url=database_url,
+            operation_id=operation_id,
+            error=staging_error,
+            phase="staging_cleanup",
+            destination=destination,
+            backup=backup,
+            had_previous=had_previous,
+            dolt_conformance_source=dolt_conformance_source,
+        )
+        raise
+
+
+@_serialize_export_publication
 def export_sav_dataset(
     *, database_url: str, dataset_id: str, destination: str | Path,
     allow_loss: tuple[str, ...] = (), legacy_locale: str | None = None,
+    dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, Any]:
     destination_path = Path(destination)
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
         raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
-    profile, _active = effective_profile(database_url)
-    dataset, variables, rows = read_wide_dataset(
-        database_url=database_url, dataset_id=dataset_id, profile=profile,
+    effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
     )
-    preflight(profile, variables, rows=rows)
+    dataset, variables, rows = read_wide_dataset(
+        database_url=database_url, dataset_id=dataset_id,
+        dolt_conformance_source=dolt_conformance_source,
+    )
     validate_spss_catalog(
         variables,
         case_weight_variable=dataset.get("case_weight_variable"),
         multiple_response_sets=dataset.get("multiple_response_sets"),
     )
-    persisted_events = read_fidelity_events(database_url=database_url, dataset_id=dataset_id)
+    persisted_events = read_fidelity_events(
+        database_url=database_url, dataset_id=dataset_id,
+        dolt_conformance_source=dolt_conformance_source,
+    )
     if legacy_locale is not None:
         persisted_events = tuple(
             event for event in persisted_events
@@ -300,22 +711,254 @@ def export_sav_dataset(
         ],
         columns=[variable["source_name"] for variable in variables],
     )
-    try:
-        _write_with_dictionary_bridge(
-            destination_path, frame, dataset, variables, legacy_locale=legacy_locale,
-        )
-    except Exception:
-        destination_path.unlink(missing_ok=True)
-        raise
-    operation_id = record_export_operation(
-        database_url=database_url,
-        dataset_id=dataset_id,
-        destination=str(destination_path),
-        allowed_fidelity_events=tuple(
-            event for event in loss_report if event["code"] in allow_loss
-        ),
-        operation_details={"engine": engine_identity(), "legacy_locale": legacy_locale},
+    accepted_events = tuple(
+        event for event in loss_report if event["code"] in allow_loss
     )
+    operation_id = None
+    publication_state: dict[str, Any] = {"published": False}
+    with _export_staging_directory(
+        destination=destination_path, database_url=database_url,
+        publication_state=publication_state,
+        dolt_conformance_source=dolt_conformance_source,
+    ) as export_directory:
+        staged_destination = Path(export_directory) / destination_path.name
+        _write_with_dictionary_bridge(
+            staged_destination, frame, dataset, variables,
+            legacy_locale=legacy_locale,
+        )
+        had_previous = _path_entry_exists(destination_path)
+        backup = _reserve_export_backup(destination_path)
+        if not had_previous:
+            backup.unlink()
+        try:
+            operation_id = record_export_operation(
+                database_url=database_url,
+                dataset_id=dataset_id,
+                destination=_path_reference_text(
+                    destination_path, role="destination",
+                ),
+                allowed_fidelity_events=accepted_events,
+                operation_details={
+                    "engine": engine_identity(), "legacy_locale": legacy_locale,
+                    "recovery": {
+                        "procedure_id": "openstatspec.export-destination-restore.v1",
+                        "phase": "prepared",
+                        "destination": _path_reference(
+                            destination_path, role="destination",
+                        ),
+                        "durable_backup": _path_reference(
+                            backup, role="durable_backup",
+                        ),
+                        "previous_destination_existed": had_previous,
+                        "publication_finalized": False,
+                    },
+                },
+                terminal=False,
+                dolt_conformance_source=dolt_conformance_source,
+            )
+        except Exception as audit_error:
+            try:
+                backup.unlink(missing_ok=True)
+            except Exception as cleanup_error:
+                _raise_export_cleanup_failed(
+                    original_error=audit_error, cleanup_error=cleanup_error,
+                    phase="audit_start_placeholder_cleanup",
+                    destination=destination_path, backup=backup,
+                    staged=staged_destination, had_previous=had_previous,
+                    database_url=database_url,
+                    dolt_conformance_source=dolt_conformance_source,
+                )
+            raise
+        backup_installed = False
+        try:
+            _publish_staged_destination(
+                staged=staged_destination,
+                destination=destination_path,
+                backup=backup,
+                state=publication_state,
+            )
+            had_previous = publication_state["had_previous"]
+            backup_installed = publication_state["backup_installed"]
+            publication_state.update({
+                "published": True,
+                "backup": backup,
+                "staged": staged_destination,
+                "operation_id": operation_id,
+            })
+        except Exception as publish_error:
+            had_previous = publication_state.get("had_previous", had_previous)
+            backup_installed = publication_state.get(
+                "backup_installed", backup_installed,
+            )
+            published_identity = publication_state.get("published_identity")
+            if backup_installed or not had_previous:
+                try:
+                    _restore_export_destination(
+                        destination=destination_path, backup=backup,
+                        had_previous=had_previous,
+                        expected_identity=published_identity,
+                    )
+                except Exception as cleanup_error:
+                    _raise_export_cleanup_failed(
+                        original_error=publish_error, cleanup_error=cleanup_error,
+                        phase="publish", destination=destination_path, backup=backup,
+                        staged=staged_destination, had_previous=had_previous,
+                        database_url=database_url, operation_id=operation_id,
+                        dolt_conformance_source=dolt_conformance_source,
+                    )
+            else:
+                try:
+                    backup.unlink(missing_ok=True)
+                except Exception as cleanup_error:
+                    _raise_export_cleanup_failed(
+                        original_error=publish_error,
+                        cleanup_error=cleanup_error,
+                        phase="publish_placeholder_cleanup",
+                        destination=destination_path, backup=backup,
+                        staged=staged_destination,
+                        had_previous=had_previous,
+                        database_url=database_url, operation_id=operation_id,
+                        dolt_conformance_source=dolt_conformance_source,
+                    )
+            _mark_export_failed_after_restore(
+                database_url=database_url, operation_id=operation_id,
+                error=publish_error, phase="publish", destination=destination_path,
+                backup=backup, had_previous=had_previous,
+                dolt_conformance_source=dolt_conformance_source,
+            )
+            raise
+    assert operation_id is not None
+    finalization_state = None
+    try:
+        finish_export_operation(
+            database_url=database_url, operation_id=operation_id,
+            dolt_conformance_source=dolt_conformance_source,
+        )
+    except Exception as finalization_error:
+        state_read_fault = None
+        try:
+            finalization_state = read_export_operation_state(
+                database_url=database_url, operation_id=operation_id,
+                dolt_conformance_source=dolt_conformance_source,
+            )
+        except Exception as state_error:
+            state_read_fault = _export_error_identity(
+                state_error, phase="export_finalization_state_read",
+            )
+        if (
+            finalization_state is not None
+            and finalization_state["classification"] == "succeeded"
+        ):
+            pass
+        elif (
+            finalization_state is not None
+            and finalization_state["classification"] == "running"
+        ):
+            try:
+                _restore_export_destination(
+                    destination=destination_path, backup=backup,
+                    had_previous=had_previous,
+                    expected_identity=publication_state["published_identity"],
+                )
+            except Exception as cleanup_error:
+                _raise_export_cleanup_failed(
+                    original_error=finalization_error,
+                    cleanup_error=cleanup_error,
+                    phase="audit_finalization",
+                    destination=destination_path,
+                    backup=backup,
+                    staged=staged_destination,
+                    had_previous=had_previous,
+                    database_url=database_url,
+                    operation_id=operation_id,
+                    dolt_conformance_source=dolt_conformance_source,
+                )
+            _mark_export_failed_after_restore(
+                database_url=database_url, operation_id=operation_id,
+                error=finalization_error, phase="audit_finalization",
+                destination=destination_path, backup=backup,
+                had_previous=had_previous,
+                dolt_conformance_source=dolt_conformance_source,
+            )
+            raise
+        else:
+            raise ExportRecoveryError(
+                "audit_finalization_ambiguous",
+                "The published export and durable backup were preserved because "
+                "the operation catalogs do not prove whether finalization committed.",
+                details={
+                    "subcode": "export_finalization_commit_ambiguous",
+                    "operation_id": operation_id,
+                    "finalization_cause": _export_error_identity(
+                        finalization_error, phase="export_audit_finalization",
+                    ),
+                    "state_read_fault": state_read_fault,
+                    "observed_operation_state": finalization_state,
+                    "residual_object_inventory": {
+                        "destination": _path_reference(
+                            destination_path, role="published_destination",
+                        ),
+                        "destination_exists": destination_path.exists(),
+                        "backup": _path_reference(
+                            backup, role="durable_backup",
+                        ),
+                        "backup_exists": _path_entry_exists(backup),
+                    },
+                    "deterministic_recovery_evidence": {
+                        "procedure_id": "openstatspec.export-audit-reconciliation.v1",
+                        "operation_terminal_state_verified": False,
+                        "automatic_filesystem_recovery_performed": False,
+                        "published_file_preserved": destination_path.exists(),
+                        "durable_backup_preserved": _path_entry_exists(backup),
+                        "manual_reconciliation_required": True,
+                        "terminal_reporting": "out_of_band_exception",
+                    },
+                    "success_forbidden": True,
+                },
+            ) from finalization_error
+    if _path_entry_exists(backup):
+        try:
+            backup.unlink()
+        except Exception as cleanup_error:
+            audit_fault = None
+            try:
+                record_export_backup_retained(
+                    database_url=database_url, operation_id=operation_id,
+                    destination=_path_reference_text(
+                        destination_path, role="destination",
+                    ),
+                    backup=_path_reference_text(
+                        backup, role="durable_backup",
+                    ),
+                    cleanup_error=cleanup_error,
+                    dolt_conformance_source=dolt_conformance_source,
+                )
+            except Exception as warning_error:
+                audit_fault = _export_error_identity(
+                    warning_error, phase="backup_retained_warning_audit",
+                )
+            raise ExportRecoveryError(
+                "backup_retained",
+                "The export succeeded, but its durable prior-file backup could not be removed.",
+                details={
+                    "subcode": "post_success_backup_retained",
+                    "operation_id": operation_id,
+                    "operation_status": "succeeded",
+                    "destination": _path_reference(
+                        destination_path, role="destination",
+                    ),
+                    "durable_backup": _path_reference(
+                        backup, role="durable_backup",
+                    ),
+                    "cleanup_fault": _export_error_identity(
+                        cleanup_error, phase="post_success_backup_disposal",
+                    ),
+                    "warning_audit_persisted": audit_fault is None,
+                    "audit_fault": audit_fault,
+                    "success_forbidden": False,
+                },
+            )
+
     return {
         "dataset_id": dataset_id,
         "destination": str(destination_path),
@@ -335,10 +978,21 @@ def _write_with_dictionary_bridge(
     pyspssio engine then copies it into the real SAV or ZSAV writer, which
     keeps any ZSAV internal dictionary offsets valid.
     """
+    compatible_names = {
+        str(variable["source_name"]): str(variable["compat_name"])
+        for variable in variables
+        if variable.get("compat_name")
+        and str(variable["compat_name"]).casefold()
+        != str(variable["source_name"]).casefold()
+    }
+    variable_sets = (dataset.get("source_extensions") or {}).get(
+        "spss.variable_sets"
+    )
     metadata = _writer_metadata(dataset, variables)
     documents = _json_load(dataset.get("documents"), [])
     source_encoding = str(dataset.get("source_encoding") or "UTF-8")
     legacy_output = _is_non_utf8_encoding(source_encoding) and legacy_locale is not None
+    output_encoding: str | None = None
     with ExitStack() as stack:
         document_source = None
         if documents:
@@ -393,24 +1047,18 @@ def _write_with_dictionary_bridge(
                 set_variable_attribute_pairs(
                     writer, variable["source_name"], attribute_pairs(values),
                 )
-        variable_sets = (dataset.get("source_extensions") or {}).get("spss.variable_sets")
         if variable_sets:
             writer.var_sets = variable_sets
         if document_source is not None:
             writer.copy_documents_from(document_source)
         writer.commit_header()
-        _require_matching_legacy_encoding(source_encoding, str(writer.file_encoding), legacy_output)
+        output_encoding = str(writer.file_encoding or "")
+        if not output_encoding:
+            raise RawDictionaryError("Writer did not expose its output file encoding.")
+        _require_matching_legacy_encoding(source_encoding, output_encoding, legacy_output)
         writer.write_data(frame)
-    write_compatible_names(
-        destination,
-        {
-            str(variable["source_name"]): str(variable["compat_name"])
-            for variable in variables
-            if variable.get("compat_name")
-            and str(variable["compat_name"]).casefold() != str(variable["source_name"]).casefold()
-        },
-        encoding="UTF-8",
-    )
+    if output_encoding is None:
+        raise RawDictionaryError("Writer output encoding was not captured.")
     extended_labels = {
         str(name): str(definition["label"])
         for name, definition in _json_load(dataset.get("multiple_response_sets"), {}).items()
@@ -420,7 +1068,12 @@ def _write_with_dictionary_bridge(
         and definition.get("label")
     }
     write_extended_mrset_labels(
-        destination, extended_labels, encoding=source_encoding,
+        destination, extended_labels, encoding=output_encoding,
+    )
+    write_compatible_names(
+        destination,
+        compatible_names,
+        encoding=output_encoding,
     )
 
 def _catalog_format(variable: dict[str, Any], key: str) -> tuple[int, int, int]:

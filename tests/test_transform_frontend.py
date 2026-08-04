@@ -200,6 +200,22 @@ def test_official_spss_frontend_v02_conformance_manifest() -> None:
         else:
             assert compilation.plan.contract == case["expected_plan_contract"], case["id"]
 
+def test_official_transformation_plan_v02_conformance_manifest() -> None:
+    manifest_path = (
+        _frontend_conformance_manifest_v02().parent
+        / "transformation-plan-0.2.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for case in manifest["cases"]:
+        if case["expected_error"] is not None:
+            with pytest.raises(TransformationFrontendError) as caught:
+                transformation_plan_from_dict(case["plan"])
+            assert caught.value.code == case["expected_error"], case["id"]
+            continue
+        plan = transformation_plan_from_dict(case["plan"])
+        assert plan.sha256() == case["expected_plan_hash"], case["id"]
+
+
 def test_recode_and_labels_lower_to_exact_canonical_plan() -> None:
     source = (
         "RECODE q1 (1,2 = 0) (3 THRU 5 = 1) (ELSE = SYSMIS) "
