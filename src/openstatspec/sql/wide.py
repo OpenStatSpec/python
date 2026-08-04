@@ -685,18 +685,23 @@ def initialize_wide_catalog(
         audit_relations=audit_relations, phase="catalog initialization",
     ) as connection:
         inspector = inspect(connection)
+        tables = set(inspector.get_table_names())
         views = set(inspector.get_view_names())
-        if views and not inspector.has_table(normative.catalog_identity.name):
-            raise UnsupportedOperationError(
-                "The selected database catalog is foreign; initialization is not permitted."
-            )
-        try:
-            create_normative_catalog(connection, normative)
-        except RuntimeError as error:
-            raise UnsupportedOperationError(
-                "The selected database catalog is foreign or incompatible; "
-                "initialization is not permitted."
-            ) from error
+        if tables or views:
+            if normative.catalog_identity.name not in tables:
+                raise UnsupportedOperationError(
+                    "The selected database catalog is foreign; "
+                    "initialization is not permitted."
+                )
+            require_verified_catalog(connection)
+        else:
+            try:
+                create_normative_catalog(connection, normative)
+            except RuntimeError as error:
+                raise UnsupportedOperationError(
+                    "The selected database catalog is foreign or incompatible; "
+                    "initialization is not permitted."
+                ) from error
         require_verified_catalog(connection)
     return {"profile": profile.name, "catalog": "verified"}
 
@@ -1345,6 +1350,26 @@ def read_fidelity_events(
     return tuple(result)
 
 
+@contextmanager
+def _bound_export_audit_transaction(
+    *, database_url: str, dolt_conformance_source: Any | None, phase: str,
+):
+    """Open one verified transaction bound to the effective Dolt working set."""
+    validate_connection_url(database_url)
+    require_persistent_database_url(database_url)
+    profile, active = effective_profile(
+        database_url, dolt_conformance_source=dolt_conformance_source,
+    )
+    engine = create_engine(database_url)
+    normative = normative_catalog(MetaData())
+    with _bound_catalog_transaction(
+        engine=engine, profile_name=profile.name, active=active,
+        audit_relations={normative.operation.name, normative.fidelity_event.name},
+        phase=phase,
+    ) as connection:
+        yield connection, normative
+
+
 def record_export_operation(
     *, database_url: str, dataset_id: str, destination: str,
     allowed_fidelity_events: Iterable[Mapping[str, Any]],
@@ -1354,14 +1379,12 @@ def record_export_operation(
 ) -> str:
     """Persist a completed export only in the normative audit catalog."""
     operation_details = dict(operation_details or {})
-    engine = create_engine(database_url)
-    effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    normative = normative_catalog(MetaData())
     operation_id = str(uuid4())
     events = tuple(allowed_fidelity_events)
-    with engine.begin() as connection:
+    with _bound_export_audit_transaction(
+        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
+        phase="export audit creation",
+    ) as (connection, normative):
         _verify_normative_catalog(connection, normative)
         dataset = _resolve_normative_dataset(connection, normative, dataset_id)
         completed_at = datetime.now(UTC).replace(tzinfo=None)
@@ -1416,11 +1439,10 @@ def finish_export_operation(
     dolt_conformance_source: Any | None = None,
 ) -> None:
     """Mark a started normative export operation as succeeded."""
-    effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    normative = normative_catalog(MetaData())
-    with create_engine(database_url).begin() as connection:
+    with _bound_export_audit_transaction(
+        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
+        phase="export audit finalization",
+    ) as (connection, normative):
         _verify_normative_catalog(connection, normative)
         row = _export_operation_row(connection, normative, operation_id)
         if row["status"] != "started":
@@ -1465,17 +1487,16 @@ def fail_export_operation(
     dolt_conformance_source: Any | None = None,
 ) -> None:
     """Close a started normative export after filesystem compensation."""
-    effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    normative = normative_catalog(MetaData())
     event = {
         "code": "export_failed",
         "detail": "Export publication or finalization failed after audit start.",
         "severity": "error",
         "details": dict(failure_details),
     }
-    with create_engine(database_url).begin() as connection:
+    with _bound_export_audit_transaction(
+        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
+        phase="export audit failure",
+    ) as (connection, normative):
         _verify_normative_catalog(connection, normative)
         row = _export_operation_row(connection, normative, operation_id)
         if row["status"] != "started":
@@ -1497,11 +1518,10 @@ def record_export_backup_retained(
     dolt_conformance_source: Any | None = None,
 ) -> None:
     """Append a warning to a successfully finalized normative export."""
-    effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    normative = normative_catalog(MetaData())
-    with create_engine(database_url).begin() as connection:
+    with _bound_export_audit_transaction(
+        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
+        phase="export backup-retention audit",
+    ) as (connection, normative):
         _verify_normative_catalog(connection, normative)
         row = _export_operation_row(connection, normative, operation_id)
         if row["status"] != "succeeded":
@@ -1532,10 +1552,6 @@ def record_export_cleanup_failure(
     dolt_conformance_source: Any | None = None,
 ) -> str:
     """Persist terminal cleanup failure in the normative audit catalog."""
-    effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    normative = normative_catalog(MetaData())
     operation_id = operation_id or str(uuid4())
     event = {
         "code": "cleanup_failed",
@@ -1551,7 +1567,10 @@ def record_export_cleanup_failure(
             ),
         },
     }
-    with create_engine(database_url).begin() as connection:
+    with _bound_export_audit_transaction(
+        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
+        phase="export cleanup-failure audit",
+    ) as (connection, normative):
         _verify_normative_catalog(connection, normative)
         row = connection.execute(
             select(normative.operation).where(
