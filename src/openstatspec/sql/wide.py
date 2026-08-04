@@ -89,10 +89,14 @@ def binary64_type() -> Float:
 def _record_failed_preflight(
     *, engine: Any, normative: Any, operation_id: str, source_name: str,
     source_format: str, variable_count: int, profile_name: str,
-    error: Exception,
+    active: Mapping[str, Any], error: Exception,
 ) -> None:
-    """Persist a failed preflight in the normative audit catalog."""
-    with engine.begin() as connection:
+    """Persist a failed preflight in the bound normative audit catalog."""
+    with _bound_catalog_transaction(
+        engine=engine, profile_name=profile_name, active=active,
+        audit_relations={normative.operation.name, normative.fidelity_event.name},
+        phase="import preflight failure",
+    ) as connection:
         _verify_normative_catalog(connection, normative)
         failed_at = datetime.now(UTC).replace(tzinfo=None)
         record_normative_operation(
@@ -832,7 +836,8 @@ def create_wide_dataset(
         _record_failed_preflight(
             engine=engine, normative=normative, operation_id=operation_id,
             source_name=source_name, source_format=source_format,
-            variable_count=len(variables), profile_name=profile.name, error=error,
+            variable_count=len(variables), profile_name=profile.name,
+            active=active_connection, error=error,
         )
         raise
 

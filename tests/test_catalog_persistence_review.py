@@ -8,6 +8,7 @@ import pytest
 
 from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql import wide
+from openstatspec.sql.profiles import TargetCapabilityExceededError
 
 
 def _variables():
@@ -89,6 +90,38 @@ def test_import_routes_catalog_and_dataset_mutations_through_binding_guard(
     _create(database_url)
 
     assert phases == ["catalog initialization", "import"]
+
+
+def test_failed_import_preflight_routes_audit_through_binding_guard(
+    tmp_path, monkeypatch,
+):
+    database_url = f"sqlite:///{tmp_path / 'failed-preflight.sqlite'}"
+    real_bound_transaction = wide._bound_catalog_transaction
+    phases = []
+
+    @contextmanager
+    def observe(**kwargs):
+        phases.append(kwargs["phase"])
+        with real_bound_transaction(**kwargs) as connection:
+            yield connection
+
+    monkeypatch.setattr(wide, "_bound_catalog_transaction", observe)
+    variables = _variables()
+    variables[0].update({
+        "storage_kind": "numeric", "string_width": None,
+        "format": "F8.2", "alignment": "right",
+    })
+    with pytest.raises(TargetCapabilityExceededError):
+        wide.create_wide_dataset(
+            database_url=database_url,
+            dataset_id="invalid",
+            source_name="invalid.sav",
+            source_format="SAV",
+            rows=[{"name": "not-a-number"}],
+            variables=variables,
+        )
+
+    assert phases == ["catalog initialization", "import preflight failure"]
 
 
 def test_export_audit_mutations_route_through_binding_guard(tmp_path, monkeypatch):
