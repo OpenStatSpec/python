@@ -28,12 +28,15 @@ Planned adapter release: `0.5.0`, after lifecycle integration and final specific
   format, and measurement level in both normative and compatibility catalogs.
 - Dolt still requires an exact branch, exact HEAD, and clean working set;
   successful apply leaves an inspectable diff and never calls `DOLT_COMMIT`.
+- Dolt declaration validation is implemented by the Python adapter. The
+  specification remains a language-neutral source of JSON contracts and
+  fixtures and is not installed as a Python distribution.
 
 ### Specification basis
 
 - Release validation is pinned to the untagged OpenStatSpec specification
   release candidate at immutable commit
-  `8f1f750fb38a2be87be0a7431a14fa2d3130f873`. Its
+  `f2fdf687d8cb32b944ca55a3e9e7215ffc603019`. Its
   `specification_release` remains null until that commit receives a stable tag.
 
 ## 0.4.0 — 2026-07-31
@@ -144,9 +147,9 @@ SPSS profile.
 - SQLite, PostgreSQL, MySQL, and MariaDB profiles, including service-backed
   PostgreSQL 17/18, MySQL 8.4/9.7, and MariaDB 11.4/11.8/12.3 CI coverage.
 - Read-only positive Dolt identity and working-set inspection. Operational
-  Dolt writes load the shared `openstatspec-specification` declaration
-  validator and remain fail-closed because the packaged concrete declaration
-  set is empty.
+  Dolt writes use adapter-owned declaration validation and remain fail-closed
+  because the adapter ships no concrete declaration claim. The specification
+  remains language-neutral and is consumed only as JSON contracts and fixtures.
 - Added explicit packaged/directory conformance-source injection and exact
   single-match binding across active Dolt product version, adapter
   implementation and version, and specification commit before mutation.

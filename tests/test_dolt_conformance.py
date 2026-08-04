@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import tomllib
 from pathlib import Path
 
@@ -36,18 +38,78 @@ def test_directory_source_is_explicit_and_invalid_root_fails_closed(
     assert status["status"] == "blocked_invalid_or_unavailable_declaration_source"
 
 
-def test_packaged_companion_missing_is_reported_without_opening_write_gate(
-    monkeypatch: pytest.MonkeyPatch,
+def test_directory_source_validates_adapter_owned_declaration_and_evidence(
+    tmp_path: Path,
 ) -> None:
-    def missing_companion() -> tuple[object, object, object, object]:
-        raise UnsupportedOperationError("companion missing")
+    declaration_directory = tmp_path / "sql/dolt-adapter-declarations"
+    evidence = declaration_directory / "evidence/result.json"
+    evidence.parent.mkdir(parents=True)
+    payload = b"adapter-owned Dolt service evidence\n"
+    evidence.write_bytes(payload)
 
-    monkeypatch.setattr(
-        "openstatspec.sql.dolt_conformance._shared_api", missing_companion,
+    def effective(value: object, unit: str) -> list[dict[str, object]]:
+        return [{
+            "applicable": True,
+            "basis": "effective",
+            "evidence": ["service-matrix"],
+            "exact_versions": ["2.2.2"],
+            "scope": "adapter envelope",
+            "unit": unit,
+            "value": value,
+        }]
+
+    declaration = {
+        "active_product_version": "2.2.2",
+        "adapter_implementation_id": ADAPTER_IMPLEMENTATION_ID,
+        "adapter_version": ADAPTER_VERSION,
+        "conformance_run_id": "run-20260804",
+        "conformance_status": "tested",
+        "declaration_id": "python-dolt-2.2.2",
+        "declaration_schema_id": "openstatspec-dolt-adapter-declaration-v1",
+        "evidence_records": [{
+            "artifact_ref": (
+                "sql/dolt-adapter-declarations/evidence/result.json"
+            ),
+            "artifact_sha256": hashlib.sha256(payload).hexdigest(),
+            "evidence_id": "service-matrix",
+            "exact_versions": ["2.2.2"],
+        }],
+        "identifier_limit": {"repertoire": "generated ASCII identifiers"},
+        "import_enabled": True,
+        "limit_declarations": {
+            "physical_columns": effective(1017, "columns"),
+            "source_variables": effective(1016, "variables"),
+            "identifier": effective(64, "characters"),
+            "value": effective(65535, "bytes"),
+            "structural_row": effective(
+                {"kind": "not_applicable_proof"}, "not_applicable"
+            ),
+            "emitted_statement": effective(1_000_000, "bytes"),
+        },
+        "specification_commit": "a" * 40,
+    }
+    (declaration_directory / "dolt-2.2.2.json").write_text(
+        json.dumps(declaration), encoding="utf-8"
+    )
+    loaded = DoltConformanceSource.from_directory(tmp_path).validated_declarations()
+    assert loaded == (declaration,)
+
+
+def test_specification_is_not_a_python_runtime_dependency() -> None:
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    dependencies = pyproject["project"]["dependencies"]
+    assert not any(
+        dependency.startswith("openstatspec-specification")
+        for dependency in dependencies
     )
     declaration = capability_module.profile_declarations()["dolt"]
     assert declaration["operational_write_enabled"] is False
     assert declaration["write_conformance"]["write_enabled"] is False
+    assert declaration["write_conformance"]["status"] == "blocked_no_concrete_declarations"
     assert declaration["claimed_server_versions"] == []
     assert declaration["ci_tested_server_versions"] == []
 

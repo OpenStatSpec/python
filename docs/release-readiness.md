@@ -114,7 +114,7 @@ capability claim, or implied support.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
 6. Confirm CI, release fixtures, and capabilities use the untagged OpenStatSpec
    specification release candidate at exact commit
-   `8f1f750fb38a2be87be0a7431a14fa2d3130f873`, publish
+   `f2fdf687d8cb32b944ca55a3e9e7215ffc603019`, publish
    `specification_status=release_candidate`, and leave
    `specification_release` null. If that exact commit receives a stable tag
    before this package is tagged, update the identity and re-run every gate.

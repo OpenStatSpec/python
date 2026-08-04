@@ -34,7 +34,7 @@ def test_profile_declarations_publish_specification_candidate_provenance() -> No
         assert declaration["specification_release"] is None
         assert (
             declaration["specification_commit"]
-            == "8f1f750fb38a2be87be0a7431a14fa2d3130f873"
+            == "f2fdf687d8cb32b944ca55a3e9e7215ffc603019"
         )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:

@@ -16,16 +16,16 @@ from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, MYSQL_WIRE_PROFILES, SqlP
 from .profiles import validate_connection_url
 from ..core import UnsupportedOperationError
 
-# Release/build automation must bind this to the exact commit used to build
-# openstatspec-specification. An uncommitted source tree has no truthful pin.
-SPECIFICATION_COMMIT = "8f1f750fb38a2be87be0a7431a14fa2d3130f873"
+# Release/build automation binds the adapter to the exact language-neutral
+# specification revision used for normative fixtures and profile semantics.
+SPECIFICATION_COMMIT = "f2fdf687d8cb32b944ca55a3e9e7215ffc603019"
 SPECIFICATION_STATUS = "release_candidate"
 SPECIFICATION_RELEASE: str | None = None
 
 DOLT_WRITE_CONFORMANCE = {
     "declaration_schema_id": "openstatspec-dolt-adapter-declaration-v1",
     "write_enabled": False,
-    "status": "packaged_concrete_declarations_required",
+    "status": "adapter_owned_concrete_declarations_required",
 }
 
 
@@ -54,8 +54,8 @@ def _bound_specification_commit() -> str:
     ):
         raise UnsupportedOperationError(
             "The Python adapter is not bound to an exact "
-            "openstatspec-specification commit; Dolt write rejected before "
-            "mutation."
+            "language-neutral OpenStatSpec specification commit; Dolt write "
+            "rejected before mutation."
         )
     return SPECIFICATION_COMMIT
 
