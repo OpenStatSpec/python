@@ -97,7 +97,7 @@ def _record_failed_preflight(
         audit_relations={normative.operation.name, normative.fidelity_event.name},
         phase="import preflight failure",
     ) as connection:
-        _verify_normative_catalog(connection, normative)
+        require_verified_catalog(connection)
         failed_at = datetime.now(UTC).replace(tzinfo=None)
         record_normative_operation(
             connection, normative, operation_id=operation_id,

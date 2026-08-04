@@ -124,6 +124,46 @@ def test_failed_import_preflight_routes_audit_through_binding_guard(
     assert phases == ["catalog initialization", "import preflight failure"]
 
 
+def test_failed_import_preflight_rejects_catalog_drift_before_audit(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "failed-preflight-drift.sqlite"
+    database_url = f"sqlite:///{path}"
+    real_bound_transaction = wide._bound_catalog_transaction
+
+    @contextmanager
+    def inject_drift(**kwargs):
+        if kwargs["phase"] == "import preflight failure":
+            connection = sqlite3.connect(path)
+            connection.execute("create view foreign_view as select 1 as value")
+            connection.commit()
+            connection.close()
+        with real_bound_transaction(**kwargs) as connection:
+            yield connection
+
+    monkeypatch.setattr(wide, "_bound_catalog_transaction", inject_drift)
+    variables = _variables()
+    variables[0].update({
+        "storage_kind": "numeric", "string_width": None,
+        "format": "F8.2", "alignment": "right",
+    })
+
+    with pytest.raises(UnsupportedOperationError, match="foreign"):
+        wide.create_wide_dataset(
+            database_url=database_url,
+            dataset_id="invalid",
+            source_name="invalid.sav",
+            source_format="SAV",
+            rows=[{"name": "not-a-number"}],
+            variables=variables,
+        )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("select count(*) from operation").fetchone() == (0,)
+    assert connection.execute("select count(*) from fidelity_event").fetchone() == (0,)
+    connection.close()
+
+
 def test_export_audit_mutations_route_through_binding_guard(tmp_path, monkeypatch):
     database_url = f"sqlite:///{tmp_path / 'bound-export.sqlite'}"
     _create(database_url)
