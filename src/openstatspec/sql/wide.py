@@ -8,6 +8,7 @@ import sys
 from datetime import UTC, datetime
 from contextlib import contextmanager
 from uuid import uuid4
+from decimal import Decimal
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -711,6 +712,26 @@ def _bounded_batches(
         yield batch
 
 
+def _canonicalize_database_numeric_rows(
+    rows: Iterable[Mapping[str, Any]],
+    variables: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize finite DB-driver Decimal wrappers to binary64 values."""
+    numeric_names = {
+        str(variable["physical_name"])
+        for variable in variables
+        if variable.get("storage_kind") == "numeric"
+    }
+    normalized = []
+    for source in rows:
+        row = dict(source)
+        for name in numeric_names:
+            if isinstance(row.get(name), Decimal) and row[name].is_finite():
+                row[name] = float(row[name])
+        normalized.append(row)
+    return normalized
+
+
 def data_table_name(dataset_id: str) -> str:
     stem = _IDENTIFIER.sub("_", dataset_id).strip("_").lower() or "dataset"
     return f"data_{stem[:48]}"
@@ -755,7 +776,7 @@ def create_wide_dataset(
     operation_id = str(uuid4())
     normative_dataset_id = str(uuid4())
     fidelity_events = tuple(fidelity_events)
-    source_rows = list(rows)
+    source_rows = _canonicalize_database_numeric_rows(rows, variables)
     try:
         preflight(profile, variables, rows=source_rows)
         validate_spss_catalog(

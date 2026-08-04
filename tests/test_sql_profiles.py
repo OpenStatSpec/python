@@ -1,4 +1,5 @@
 from dataclasses import replace
+from decimal import Decimal
 import os
 from types import SimpleNamespace
 
@@ -664,6 +665,45 @@ def test_mysql_preflight_matches_emitted_text_limit() -> None:
 
     assert error.value.details["reason"] == "declared_string_width_limit"
     assert error.value.details["maximum"] == 65_535
+
+
+def test_database_decimal_numeric_wrappers_are_restored_to_binary64() -> None:
+    variables = [{"physical_name": "score", "storage_kind": "numeric"}]
+
+    rows = wide._canonicalize_database_numeric_rows(
+        [
+            {"score": Decimal("1.5000000000"), "name": "alpha"},
+            {"score": None, "name": "missing"},
+        ],
+        variables,
+    )
+
+    assert rows == [
+        {"score": 1.5, "name": "alpha"},
+        {"score": None, "name": "missing"},
+    ]
+    assert isinstance(rows[0]["score"], float)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+)
+def test_database_decimal_nonfinite_wrappers_remain_rejected(value) -> None:
+    variables = [{
+        "ordinal": 1,
+        "source_name": "score",
+        "physical_name": "score",
+        "storage_kind": "numeric",
+    }]
+    rows = wide._canonicalize_database_numeric_rows(
+        [{"score": value}], variables,
+    )
+
+    assert rows[0]["score"] is value
+    with pytest.raises(UnsupportedOperationError) as error:
+        preflight(MYSQL, variables, rows=rows)
+    assert error.value.details["reason"] == "numeric_value_type"
 
 
 @pytest.mark.parametrize(
