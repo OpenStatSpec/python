@@ -32,6 +32,7 @@ from .normative import (
     store_imported_dataset as store_normative_dataset,
 )
 from .catalog_verification import verify_catalog_relations
+from .database_urls import require_persistent_database_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -669,12 +670,20 @@ def initialize_wide_catalog(
 ) -> dict[str, Any]:
     """Initialize or verify the singular normative OpenStatSpec catalog."""
     validate_connection_url(database_url)
-    profile, _active = effective_profile(
+    require_persistent_database_url(database_url)
+    profile, active = effective_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
-    with engine.begin() as connection:
+    audit_relations = {
+        normative.fidelity_event.name,
+        normative.operation.name,
+    }
+    with _bound_catalog_transaction(
+        engine=engine, profile_name=profile.name, active=active,
+        audit_relations=audit_relations, phase="catalog initialization",
+    ) as connection:
         inspector = inspect(connection)
         views = set(inspector.get_view_names())
         if views and not inspector.has_table(normative.catalog_identity.name):
@@ -755,8 +764,9 @@ def create_wide_dataset(
     dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
     del source_table_name, source_created_at, source_modified_at
+    require_persistent_database_url(database_url)
     validate_connection_url(database_url)
-    profile, _active_connection = (
+    profile, active_connection = (
         effective_profile(database_url)
         if dolt_conformance_source is None
         else effective_profile(
@@ -765,7 +775,14 @@ def create_wide_dataset(
     )
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
-    with engine.begin() as catalog_connection:
+    audit_relations = {
+        normative.fidelity_event.name,
+        normative.operation.name,
+    }
+    with _bound_catalog_transaction(
+        engine=engine, profile_name=profile.name, active=active_connection,
+        audit_relations=audit_relations, phase="catalog initialization",
+    ) as catalog_connection:
         catalog_existed = inspect(catalog_connection).has_table(
             normative.catalog_identity.name
         )
@@ -827,7 +844,10 @@ def create_wide_dataset(
         with engine.begin() as setup:
             _verify_normative_catalog(setup, normative)
         namespace_owned = True
-        with engine.begin() as connection:
+        with _bound_catalog_transaction(
+            engine=engine, profile_name=profile.name, active=active_connection,
+            audit_relations=audit_relations, phase="import",
+        ) as connection:
             if connection.execute(
                 select(normative.dataset.c.dataset_id).where(or_(
                     normative.dataset.c.dataset_name == dataset_id,
@@ -1333,7 +1353,7 @@ def record_export_operation(
     dolt_conformance_source: Any | None = None,
 ) -> str:
     """Persist a completed export only in the normative audit catalog."""
-    del destination, operation_details
+    operation_details = dict(operation_details or {})
     engine = create_engine(database_url)
     effective_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
@@ -1354,14 +1374,26 @@ def record_export_operation(
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,
             dataset_id=str(dataset["dataset_id"]), direction="export",
-            events=({
-                **event,
-                "severity": event.get("severity", "warning"),
-                "details": {
-                    **event.get("details", {}),
-                    "accepted_by_user": True,
-                },
-            } for event in events),
+            events=(
+                *(
+                    {
+                        **event,
+                        "severity": event.get("severity", "warning"),
+                        "details": {
+                            **event.get("details", {}),
+                            "accepted_by_user": True,
+                        },
+                    }
+                    for event in events
+                ),
+                *(({
+                    "code": "operation-engine-identity",
+                    "detail": "Export engine identity recorded for audit.",
+                    "severity": "info",
+                    "source_item": destination,
+                    "details": operation_details,
+                },) if operation_details else ()),
+            ),
         )
     return operation_id
 

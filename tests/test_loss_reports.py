@@ -55,7 +55,7 @@ def test_loss_allowed_export_persists_accepted_diagnostics(tmp_path) -> None:
     result = openstatspec.export_sav(database_url=database, dataset_id="accepted", destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
 
     connection = sqlite3.connect(database_path)
-    rows = connection.execute("select direction, severity, event_code, detail_json from fidelity_event where operation_id = ? order by event_code", (result["operation_id"],)).fetchall()
+    rows = connection.execute("select direction, severity, event_code, detail_json from fidelity_event where operation_id = ? and severity != 'info' order by event_code", (result["operation_id"],)).fetchall()
     assert [(row[0], row[1], row[2]) for row in rows] == [("export", "warning", code) for code in _REQUIRED_ENGINE_LOSS]
     assert all('"accepted_by_user": true' in row[3] for row in rows)
 

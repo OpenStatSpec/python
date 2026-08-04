@@ -284,6 +284,9 @@ def test_dolt_nonfinite_preflight_creates_no_dataset_or_physical_table(
     database_path = tmp_path / "dolt-nonfinite.sqlite"
     database = f"sqlite:///{database_path}"
     monkeypatch.setattr(wide, "effective_profile", lambda _url: (DOLT, {}))
+    monkeypatch.setattr(
+        wide, "_capture_dolt_state", lambda *_args, **_kwargs: None,
+    )
     variables = [{
         "ordinal": 1, "source_name": "value", "physical_name": "value",
         "storage_kind": "numeric", "string_width": None, "label": "",
@@ -320,6 +323,9 @@ def test_empty_namespace_dolt_width_failure_initializes_identity_and_one_audit(
     database_path = tmp_path / "dolt-preflight.sqlite"
     database = f"sqlite:///{database_path}"
     monkeypatch.setattr(wide, "effective_profile", lambda _url: (DOLT, {}))
+    monkeypatch.setattr(
+        wide, "_capture_dolt_state", lambda *_args, **_kwargs: None,
+    )
 
     with pytest.raises(Exception, match="Target capability exceeded"):
         create_wide_dataset(
