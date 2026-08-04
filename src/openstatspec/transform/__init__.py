@@ -24,6 +24,7 @@ __all__ = [
     "BoundTransformation",
     "RecodeMatch", "RecodeOperation", "RecodeResult",
     "RecodeRule", "ReplaceValueLabelsOperation", "SPSS_FRONTEND_CONTRACT",
+    "SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT",
     "SetFormatOperation", "SetMeasurementLevelOperation",
     "SetVariableLabelOperation", "SourcePosition", "SourceSpan", "StorageKind",
     "SpssFrontendCompilation",
@@ -42,6 +43,7 @@ __all__ = [
 
 _SPSS_COMPAT_EXPORTS = {
     "SPSS_FRONTEND_CONTRACT",
+    "SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT",
     "SpssFrontendCompilation",
     "SpssSyntaxProgram",
     "bind_spss_syntax",

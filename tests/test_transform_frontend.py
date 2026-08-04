@@ -368,6 +368,17 @@ def test_source_normalization_hash_and_positions_are_stable() -> None:
     assert compilation.source_text_lf == lf
     assert compilation.source_hash == spss_source_hash(lf)
     assert compilation.plan_hash == compilation.plan.sha256()
+    assert compilation.frontend_contract == "openstatspec-spss-syntax-frontend-v0.2"
+
+
+def test_schema_commands_use_the_v03_frontend_contract() -> None:
+    compilation = compile_spss_syntax(
+        "STRING note (A4).",
+        _schema(VariableDefinition("q1", "numeric")),
+    )
+
+    assert compilation.plan.contract == "openstatspec-transformation-plan-v0.3"
+    assert compilation.frontend_contract == "openstatspec-spss-syntax-frontend-v0.3"
 
 def test_string_comparison_fails_closed_until_exact_collation_is_supported() -> None:
     error = _error(

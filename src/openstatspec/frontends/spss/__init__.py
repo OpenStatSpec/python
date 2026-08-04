@@ -1,7 +1,12 @@
 """SPSS syntax frontend for canonical OpenStatSpec transformation plans."""
 
 from .binding import bind_spss_syntax
-from .compiler import SpssFrontendCompilation, compile_spss_syntax
+from .compiler import (
+    SPSS_FRONTEND_CONTRACT,
+    SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT,
+    SpssFrontendCompilation,
+    compile_spss_syntax,
+)
 from .syntax import (
     SpssSyntaxProgram,
     normalize_spss_source,
@@ -11,10 +16,9 @@ from .syntax import (
 )
 
 
-SPSS_FRONTEND_CONTRACT = "openstatspec-spss-syntax-frontend-v0.2"
-
 __all__ = [
     "SPSS_FRONTEND_CONTRACT",
+    "SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT",
     "SpssFrontendCompilation",
     "SpssSyntaxProgram",
     "bind_spss_syntax",

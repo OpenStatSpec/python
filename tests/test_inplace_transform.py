@@ -447,6 +447,25 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     )
 
 
+def test_schema_commands_record_the_v03_frontend_contract(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="STRING note (A4).",
+        actor="test-agent",
+    )
+
+    audit = sqlite3.connect(path).execute(
+        "SELECT source_kind, frontend_contract FROM transformation_apply"
+    ).fetchone()
+    assert audit == (
+        "spss_syntax",
+        "openstatspec-spss-syntax-frontend-v0.3",
+    )
+
+
 @pytest.mark.parametrize("as_mapping", [False, True])
 def test_public_generic_plan_apply_accepts_object_and_mapping(
     catalog, as_mapping,

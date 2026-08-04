@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ...transform.plan import TransformationPlan
+from ...transform.plan import (
+    TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT,
+    TransformationPlan,
+)
 from ...transform.schema import BoundTransformation, VariableSchema
 from .binding import bind_spss_syntax
 from .syntax import (
@@ -12,6 +15,10 @@ from .syntax import (
     parse_spss_syntax,
     spss_source_hash,
 )
+
+
+SPSS_FRONTEND_CONTRACT = "openstatspec-spss-syntax-frontend-v0.2"
+SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT = "openstatspec-spss-syntax-frontend-v0.3"
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,12 @@ class SpssFrontendCompilation:
     @property
     def plan_hash(self) -> str:
         return self.plan.sha256()
+
+    @property
+    def frontend_contract(self) -> str:
+        if self.plan.contract == TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT:
+            return SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT
+        return SPSS_FRONTEND_CONTRACT
 
 
 def compile_spss_syntax(
