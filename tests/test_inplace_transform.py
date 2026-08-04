@@ -374,6 +374,55 @@ def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) ->
     )["valid"] is True
 
 
+def test_temporary_created_target_can_be_deleted_before_final_schema(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="COMPUTE tmp = score. DELETE VARIABLES tmp.",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, source_ordinal from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("score", 1)]
+    assert [
+        row[1] for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    ] == ["__case_ordinal", "score"]
+    connection.close()
+
+
+def test_temporary_target_type_is_not_taken_from_same_name_recreation(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text=(
+            "COMPUTE tmp = score. DELETE VARIABLES tmp. STRING tmp (A4)."
+        ),
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, storage_kind, declared_string_width "
+        "from variable where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("score", "numeric", None), ("tmp", "string", 4)]
+    assert connection.execute(
+        f'SELECT score, tmp FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0, ""), (2.0, ""), (3.0, "")]
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
 def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     url, path, dataset_id, table_name = catalog
     plan = _plan("RECODE score (1 = 0).")

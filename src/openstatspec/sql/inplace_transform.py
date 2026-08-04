@@ -484,10 +484,6 @@ def _apply_plan_on_connection(
         )
     ]
     preflight(target_profile, output_variables)
-    output_by_name = {
-        variable.name.casefold(): variable
-        for variable in bound.output_schema.variables
-    }
     audit = apply_audit_catalog(MetaData())
     if not inspect(connection).has_table("transformation_apply"):
         raise TransformationError(
@@ -528,11 +524,24 @@ def _apply_plan_on_connection(
             "delete_variable_not_supported",
             "This SQLite runtime does not support ALTER TABLE DROP COLUMN.",
         )
-    unsupported_targets = [
-        operation.target for operation in create_operations
-        if not isinstance(operation, CreateVariableOperation)
-        and output_by_name[operation.target.casefold()].storage_kind != "numeric"
-    ]
+    unsupported_targets: list[str] = []
+    for operation_index, operation in enumerate(plan.operations):
+        if not isinstance(operation, (RecodeOperation, AssignOperation)):
+            continue
+        if operation.target_mode != "create":
+            continue
+        prefix = TransformationPlan(
+            plan.operations[:operation_index + 1],
+            contract=plan.contract,
+            input_alias=plan.input_alias,
+        )
+        prefix_output = bind_transformation_plan(prefix, schema).output_schema
+        created = next(
+            variable for variable in prefix_output.variables
+            if variable.name.casefold() == operation.target.casefold()
+        )
+        if created.storage_kind != "numeric":
+            unsupported_targets.append(operation.target)
     if unsupported_targets:
         raise TransformationError(
             "in_place_target_type_unsupported",
