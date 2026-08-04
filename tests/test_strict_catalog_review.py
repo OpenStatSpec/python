@@ -75,6 +75,26 @@ def test_existing_normative_shape_drift_is_rejected(tmp_path):
         openstatspec.initialize_catalog(database_url=database)
 
 
+def test_read_and_export_reject_obsolete_catalog_relations(tmp_path):
+    path = tmp_path / "obsolete-read.sqlite"
+    database = f"sqlite:///{path}"
+    _create(database, "sample")
+    connection = sqlite3.connect(path)
+    connection.execute("create table dataset_catalog (dataset_id text primary key)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(UnsupportedOperationError, match="obsolete"):
+        wide.read_wide_dataset(database_url=database, dataset_id="sample")
+    with pytest.raises(UnsupportedOperationError, match="obsolete"):
+        wide.record_export_operation(
+            database_url=database,
+            dataset_id="sample",
+            destination="sample.sav",
+            allowed_fidelity_events=(),
+        )
+
+
 def test_verified_workflow_profile_remains_catalog_owned(tmp_path):
     path = tmp_path / "workflow-owned.sqlite"
     database = f"sqlite:///{path}"

@@ -1000,7 +1000,7 @@ def read_wide_dataset(
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
     with engine.connect() as connection:
-        _verify_normative_catalog(connection, normative)
+        require_verified_catalog(connection)
         dataset_row = _resolve_normative_dataset(connection, normative, dataset_id)
         core_id = str(dataset_row["dataset_id"])
         data_table = Table(
@@ -1331,7 +1331,7 @@ def read_fidelity_events(
     engine = create_engine(database_url)
     normative = normative_catalog(MetaData())
     with engine.connect() as connection:
-        _verify_normative_catalog(connection, normative)
+        require_verified_catalog(connection)
         dataset = _resolve_normative_dataset(connection, normative, dataset_id)
         events = connection.execute(
             select(normative.fidelity_event)
@@ -1367,6 +1367,7 @@ def _bound_export_audit_transaction(
         audit_relations={normative.operation.name, normative.fidelity_event.name},
         phase=phase,
     ) as connection:
+        require_verified_catalog(connection)
         yield connection, normative
 
 
@@ -1464,7 +1465,7 @@ def read_export_operation_state(
     )
     normative = normative_catalog(MetaData())
     with create_engine(database_url).connect() as connection:
-        _verify_normative_catalog(connection, normative)
+        require_verified_catalog(connection)
         row = _export_operation_row(connection, normative, operation_id)
     classification = {
         "started": "running",
