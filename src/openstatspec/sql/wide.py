@@ -31,6 +31,7 @@ from .normative import (
     record_operation as record_normative_operation,
     store_imported_dataset as store_normative_dataset,
 )
+from .catalog_verification import verify_catalog_relations
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -753,7 +754,7 @@ def create_wide_dataset(
     operation_details: Mapping[str, Any] | None = None,
     dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
-    del source_table_name, source_created_at, source_modified_at, operation_details
+    del source_table_name, source_created_at, source_modified_at
     validate_connection_url(database_url)
     profile, _active_connection = (
         effective_profile(database_url)
@@ -874,10 +875,22 @@ def create_wide_dataset(
             record_normative_fidelity_events(
                 connection, normative, operation_id=operation_id,
                 dataset_id=normative_dataset_id, direction="import",
-                events=fidelity_events,
+                events=(
+                    *fidelity_events,
+                    *(({
+                        "code": "operation-engine-identity",
+                        "detail": "Import engine identity recorded for audit.",
+                        "severity": "info",
+                        "source_item": source_name,
+                        "details": dict(operation_details),
+                    },) if operation_details else ()),
+                ),
             )
             if materialized:
-                connection.execute(insert(data_table), materialized)
+                for batch in _bounded_batches(
+                    materialized, variables, profile.max_statement_bytes,
+                ):
+                    connection.execute(insert(data_table), batch)
             finish_normative_operation(
                 connection, normative, operation_id=operation_id,
                 status="succeeded",
@@ -895,8 +908,15 @@ def create_wide_dataset(
                         delete_normative_dataset(
                             cleanup, normative, normative_dataset_id,
                         )
+                    table_is_owned = cleanup.execute(
+                        select(normative.dataset.c.dataset_id).where(
+                            normative.dataset.c.physical_table_name == data_table.name
+                        )
+                    ).first()
                     if (
                         data_table_created
+                        and profile.name != "postgresql"
+                        and table_is_owned is None
                         and inspect(cleanup).has_table(data_table.name)
                     ):
                         data_table.drop(cleanup, checkfirst=True)
@@ -1148,6 +1168,7 @@ def read_wide_dataset(
         )
         for row in response_sets
     }, ensure_ascii=False)
+    preflight(profile, variables, rows=rows)
     return dataset, variables, rows
 
 
@@ -1168,26 +1189,12 @@ def require_verified_catalog(
     *,
     allowed_migrations: Mapping[str, set[str]] | None = None,
 ) -> None:
-    """Verify that the namespace contains only the normative catalog and owned data."""
+    """Verify strict core shape, optional profiles, and owned physical relations."""
     normative = normative_catalog(MetaData())
     _verify_normative_catalog(connection, normative)
-    expected = {table.name for table in normative.all()}
-    expected.update(
-        str(name) for name in connection.execute(
-            select(normative.dataset.c.physical_table_name)
-        ).scalars()
+    verify_catalog_relations(
+        connection, normative, allowed_migrations=allowed_migrations,
     )
-    expected.update((allowed_migrations or {}).keys())
-    expected.add("transformation_apply")
-    inspector = inspect(connection)
-    unknown = set(inspector.get_table_names()) - expected
-    views = set(inspector.get_view_names())
-    if unknown or views:
-        relations = ", ".join(sorted(unknown | views))
-        raise UnsupportedOperationError(
-            "The selected database catalog contains foreign or obsolete "
-            f"relations: {relations}. Remove them manually before continuing."
-        )
 
 
 def _resolve_normative_dataset(
@@ -1304,6 +1311,7 @@ def read_fidelity_events(
         events = connection.execute(
             select(normative.fidelity_event)
             .where(normative.fidelity_event.c.dataset_id == dataset["dataset_id"])
+            .where(normative.fidelity_event.c.severity != "info")
             .order_by(normative.fidelity_event.c.event_code)
         ).mappings().all()
     result = []

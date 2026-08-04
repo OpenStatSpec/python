@@ -25,7 +25,11 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     imported = openstatspec.import_sav(source, database_url=database, dataset_id="persisted")
     assert {diagnostic.code for diagnostic in imported.diagnostics} == set(_REQUIRED_ENGINE_LOSS)
     connection = sqlite3.connect(database_path)
-    assert {row[0] for row in connection.execute("select event_code from fidelity_event")} == set(_REQUIRED_ENGINE_LOSS)
+    assert {
+        row[0] for row in connection.execute(
+            "select event_code from fidelity_event where severity != 'info'"
+        )
+    } == set(_REQUIRED_ENGINE_LOSS)
     assert connection.execute(
         "select operation_kind, status from operation order by started_at limit 1"
     ).fetchone() == ("import", "succeeded")
