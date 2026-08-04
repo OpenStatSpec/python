@@ -400,6 +400,7 @@ def _apply_plan_on_connection(
     actor: str,
     database_profile: str,
     allow_schema_change: bool,
+    allow_delete_variable: bool,
     dolt_branch: str | None,
     dolt_head: str | None,
     mutation_journal: dict[str, Any] | None = None,
@@ -450,6 +451,14 @@ def _apply_plan_on_connection(
             "schema_change_not_atomic",
             "This database profile has no coherent new-target strategy.",
         )
+    if any(
+        isinstance(operation, DeleteVariableOperation)
+        for operation in plan.operations
+    ) and not allow_delete_variable:
+        raise TransformationError(
+            "delete_variable_not_supported",
+            "This SQLite runtime does not support ALTER TABLE DROP COLUMN.",
+        )
     unsupported_targets = [
         operation.target for operation in create_operations
         if not isinstance(operation, CreateVariableOperation)
@@ -469,7 +478,7 @@ def _apply_plan_on_connection(
     by_name = {str(row["source_name"]).casefold(): row for row in variables}
     used_physical = {str(row["physical_name"]).casefold() for row in variables}
     next_ordinal = max(int(row["source_ordinal"]) for row in variables) + 1
-    target_rows: list[dict[str, Any]] = []
+    target_rows_by_operation: dict[int, dict[str, Any]] = {}
     quote = connection.dialect.identifier_preparer.quote
     qualified_table = connection.dialect.identifier_preparer.format_table(relation)
     numeric_type = (
@@ -544,24 +553,27 @@ def _apply_plan_on_connection(
             "variable_label": None,
         }
         next_ordinal += 1
-        target_rows.append(target_row)
+        target_rows_by_operation[id(operation)] = target_row
         if mutation_journal is not None:
             mutation_journal["target_rows"].append(dict(target_row))
     if create_operations:
         _failure_boundary("schema")
 
-    for target_row in target_rows:
-        connection.execute(insert(core.variable).values(**target_row))
-        variables.append(target_row)
-        by_name[str(target_row["source_name"]).casefold()] = target_row
-    if target_rows:
-        _failure_boundary("catalog")
+    if create_operations:
         relation = Table(
             table_name, MetaData(), schema=dataset.get("physical_table_schema"),
             autoload_with=connection,
         )
 
     for operation in plan.operations:
+        created_target = target_rows_by_operation.get(id(operation))
+        if created_target is not None:
+            connection.execute(insert(core.variable).values(**created_target))
+            variables.append(created_target)
+            by_name[str(created_target["source_name"]).casefold()] = created_target
+            _failure_boundary("catalog")
+        if isinstance(operation, CreateVariableOperation):
+            continue
         if isinstance(operation, RecodeOperation):
             source_variable = by_name[operation.source.casefold()]
             target_variable = by_name[operation.target.casefold()]
@@ -856,9 +868,16 @@ def _run_in_place_submission(
         raise TransformationError(
             "actor_required", "A non-empty actor identity is mandatory.",
         )
-    profile, _active = effective_profile(
+    profile, active = effective_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
+    allow_delete_variable = True
+    if profile.name == "sqlite":
+        sqlite_version_parts = tuple(
+            int(part) for part in str(active["server_version"]).split(".")
+        )
+        sqlite_version = (*sqlite_version_parts, 0, 0)[:3]
+        allow_delete_variable = sqlite_version >= (3, 35, 0)
     engine = create_engine(database_url)
     journal: dict[str, Any] = {}
     branch: str | None = None
@@ -905,6 +924,7 @@ def _run_in_place_submission(
                     actor=actor,
                     database_profile=profile.name,
                     allow_schema_change=profile.name in {"sqlite", "postgresql"},
+                    allow_delete_variable=allow_delete_variable,
                     dolt_branch=branch,
                     dolt_head=head,
                     mutation_journal=journal,

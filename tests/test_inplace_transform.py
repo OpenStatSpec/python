@@ -103,6 +103,7 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
             actor="test-agent",
             database_profile="sqlite",
             allow_schema_change=True,
+            allow_delete_variable=True,
             dolt_branch=None,
             dolt_head=None,
         )
@@ -151,6 +152,56 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
         "sqlite", None, None, None, "test-agent",
         "succeeded",
     )
+
+
+def test_string_declaration_creates_column_and_catalog_variable(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="STRING note (A8).",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, storage_kind, declared_string_width from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("score", "numeric", None), ("note", "string", 8)]
+    assert connection.execute(
+        f'SELECT note FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(None,), (None,), (None,)]
+    connection.close()
+
+
+def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text=(
+            "COMPUTE other = score. DELETE VARIABLES score. "
+            "RECODE other (2 = 9) (ELSE = COPY) INTO score."
+        ),
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    variables = connection.execute(
+        "select source_name, physical_name from variable where dataset_id = ? "
+        "order by source_ordinal",
+        (dataset_id,),
+    ).fetchall()
+    assert [row[0] for row in variables] == ["other", "score"]
+    physical = dict(variables)
+    assert connection.execute(
+        f'SELECT "{physical["other"]}", "{physical["score"]}" '
+        f'FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0, 1.0), (2.0, 9.0), (3.0, 3.0)]
+    connection.close()
 
 
 def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
@@ -364,6 +415,38 @@ def test_missing_audit_schema_fails_before_mutation(catalog) -> None:
     ).fetchall() == [(1.0,), (2.0,), (3.0,)]
 
 
+def test_delete_is_rejected_when_drop_column_is_unavailable(
+    catalog, monkeypatch,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    monkeypatch.setattr(
+        inplace_transform,
+        "effective_profile",
+        lambda _url, **_kwargs: (
+            SimpleNamespace(name="sqlite"),
+            {"server_version": "3.34.0"},
+        ),
+    )
+
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="COMPUTE other = score. DELETE VARIABLES score.",
+            actor="test-agent",
+        )
+
+    assert caught.value.code == "delete_variable_not_supported"
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0,), (2.0,), (3.0,)]
+    assert [
+        row[1] for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    ] == ["__case_ordinal", "score"]
+    connection.close()
+
+
 def test_nontransactional_ddl_profile_rejects_create_before_mutation(
     catalog,
 ) -> None:
@@ -381,6 +464,7 @@ def test_nontransactional_ddl_profile_rejects_create_before_mutation(
                 actor="test-agent",
                 database_profile="mysql",
                 allow_schema_change=False,
+                allow_delete_variable=True,
                 dolt_branch=None,
                 dolt_head=None,
             )
@@ -692,7 +776,10 @@ def test_transactional_ddl_rollback_skips_unlocked_compensation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name=profile_name), {}),
+        lambda _url, **_kwargs: (
+            SimpleNamespace(name=profile_name),
+            {"server_version": "3.35.0"},
+        ),
     )
 
     def fail_after_schema_change(
