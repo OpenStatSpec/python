@@ -18,8 +18,9 @@ from ..core import UnsupportedOperationError
 
 # Release/build automation must bind this to the exact commit used to build
 # openstatspec-specification. An uncommitted source tree has no truthful pin.
-SPECIFICATION_COMMIT = "5b62bce1d2f4d719ac6ca42d73f07e7a127c7093"
-SPECIFICATION_RELEASE = "v0.2.1"
+SPECIFICATION_COMMIT = "8f1f750fb38a2be87be0a7431a14fa2d3130f873"
+SPECIFICATION_STATUS = "release_candidate"
+SPECIFICATION_RELEASE: str | None = None
 
 DOLT_WRITE_CONFORMANCE = {
     "declaration_schema_id": "openstatspec-dolt-adapter-declaration-v1",
@@ -490,7 +491,11 @@ def _profile(
         if dolt_envelope else None
     )
     return {
-        "specification_status": "released",
+        "profile": name,
+        "engine": name,
+        "dialect": "mysql" if name == "dolt" else name,
+        "transport": "mysql_compatible" if name == "dolt" else name,
+        "specification_status": SPECIFICATION_STATUS,
         "specification_release": SPECIFICATION_RELEASE,
         "specification_commit": SPECIFICATION_COMMIT,
         "driver": "psycopg" if name == "postgresql" else "PyMySQL" if name in MYSQL_WIRE_PROFILES else "sqlite3",

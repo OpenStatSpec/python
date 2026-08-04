@@ -14,17 +14,25 @@ from .frontends.spss import SpssFrontendCompilation, compile_spss_syntax
 from .sql import DoltConformanceSource
 from .sql.workflow import TransformationError
 from .transform import (
+    AssignOperation, BooleanExpression, ComparisonExpression,
+    ConditionalAssignOperation, ExecuteOperation, Operand, PredicateExpression,
     RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
-    ReplaceValueLabelsOperation, SetVariableLabelOperation,
+    ReplaceValueLabelsOperation, SetFormatOperation,
+    SetMeasurementLevelOperation, SetVariableLabelOperation,
     TransformationFrontendError, TransformationPlan, TypedValue, ValueLabel,
     VariableDefinition, VariableSchema, transformation_plan_from_dict,
 )
 
 __all__ = [
-    "CapabilityDeclaration", "DoltConformanceSource", "LossReport", "TransformationError",
-    "SpssFrontendCompilation", "TransformationFrontendError",
+    "AssignOperation", "BooleanExpression", "ComparisonExpression",
+    "ConditionalAssignOperation", "ExecuteOperation", "Operand",
+    "PredicateExpression",
+    "CapabilityDeclaration", "DoltConformanceSource", "LossReport",
+    "SpssFrontendCompilation", "TransformationError",
+    "TransformationFrontendError",
     "RecodeMatch", "RecodeOperation", "RecodeResult", "RecodeRule",
-    "ReplaceValueLabelsOperation", "SetVariableLabelOperation",
+    "ReplaceValueLabelsOperation", "SetFormatOperation",
+    "SetMeasurementLevelOperation", "SetVariableLabelOperation",
     "TransformationPlan", "TypedValue", "ValueLabel",
     "VariableDefinition", "VariableSchema", "transformation_plan_from_dict",
     "apply_spss_in_place", "apply_transformation_plan_in_place",

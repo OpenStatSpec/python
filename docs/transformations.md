@@ -4,8 +4,13 @@ OpenStatSpec separates transformation syntax, canonical meaning, and database
 mutation. This lets multiple language frontends produce the same plan without
 coupling the executor to any one language.
 
-The implemented frontend accepts a small SPSS-like subset: `RECODE`,
-`VARIABLE LABELS`, and `VALUE LABELS`. Stata and SAS are not implemented.
+The implemented bounded SPSS-like frontend accepts `RECODE`, sequential
+`COMPUTE` and `IF`, `VARIABLE LABELS`, `VALUE LABELS`, numeric `FORMATS`,
+`VARIABLE LEVEL`, and `EXECUTE`. Predicates support typed variable/literal
+operands, parentheses, numeric comparisons, `AND`, and `OR`. String comparison
+and v0.2 string assignment fail closed until exact profile-independent
+collation and explicit-width semantics are available; arbitrary SPSS, Python,
+and SQL expressions are rejected. Stata and SAS are not implemented.
 
 ## Architecture
 
@@ -106,9 +111,13 @@ result = openstatspec.apply_spss_in_place(
     dataset_id="responses",
     actor="agent@example.org",
     source_text="""
-      RECODE age (18 THRU 34 = 1) (35 THRU 64 = 2).
-      VARIABLE LABELS age 'Age group'.
-      VALUE LABELS age 1 '18-34' 2 '35-64'.
+      COMPUTE target = 0.
+      IF (source_a = 1 AND source_b = 1) target = 1.
+      VARIABLE LABELS target 'Example label'.
+      VALUE LABELS target 0 'No' 1 'Yes'.
+      FORMATS target (F1.0).
+      VARIABLE LEVEL target (NOMINAL).
+      EXECUTE.
     """,
 )
 ```
@@ -130,20 +139,25 @@ On Dolt, also pass `--expected-branch` and `--expected-head`.
 Every successful apply preserves the logical `dataset_id` and physical
 schema/table identity. It creates no derived dataset, output table, full-table
 copy, staging table, snapshot, rollback artifact, or recovery/history layer.
-Existing-target recodes use direct `UPDATE`; label operations mutate existing
-catalog rows.
+Assignments and recodes use ordered `UPDATE` statements; later operations see
+earlier results. Label, value-label, format, and measurement-level operations
+update both the normative and compatibility catalogs.
 
-SQLite and PostgreSQL may add a numeric target where native transactions make
-the complete operation atomic. MySQL, MariaDB, and Dolt reject target-creating
-plans before the first mutation because implicit-commit DDL could leave a
-partial apply. Their target column and metadata must already exist.
+A numeric create target is supported atomically on SQLite and PostgreSQL.
+MySQL, MariaDB, and Dolt reject `target_mode=create` before mutation. On those
+profiles a separate versioned stage must first provision the nullable numeric
+physical column and both catalog representations; the transformation executor
+then sees a pre-existing target and performs no schema DDL.
+The public operation reports success only after physical data, both metadata
+representations, and the compact audit row are mutually complete.
 
-Dolt is the sole history, diff, branch, and rollback layer for Dolt-backed
-datasets. Before mutation, the executor verifies the expected branch and
-`HEAD` and requires clean `dolt_status`. Success changes the same working set
-without changing `HEAD`. OpenStatSpec does not call `DOLT_COMMIT`, switch
-branches, merge, reset, tag, or create a hidden recovery commit. The caller
-reviews `dolt diff` and separately decides whether to commit or restore.
+Before Dolt mutation, the executor verifies the expected branch and `HEAD` and
+requires clean `dolt_status`. Success changes the same working set without
+changing `HEAD`; OpenStatSpec does not call `DOLT_COMMIT`, `DOLT_RESET`, switch
+branches, merge, tag, or create a hidden recovery commit. It rechecks branch,
+HEAD, and a clean working set after locking the dataset and immediately before
+mutation. The caller reviews a successful `dolt diff` and
+separately decides whether to commit or restore.
 
 ## Audit and provenance
 

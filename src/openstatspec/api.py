@@ -34,7 +34,8 @@ from .sql.inplace_transform import (
 )
 from .transform import TransformationPlan
 from .sql.capabilities import (
-    SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, active_connection, catalog_binding,
+    SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, SPECIFICATION_STATUS,
+    active_connection, catalog_binding,
 )
 
 
@@ -54,7 +55,7 @@ def capability_matrix(
     """
     declaration = {
         "specification": "OpenStatSpec",
-        "specification_status": "released",
+        "specification_status": SPECIFICATION_STATUS,
         "specification_release": SPECIFICATION_RELEASE,
         "specification_commit": SPECIFICATION_COMMIT,
         "profile": "SPSS SAV/ZSAV 1.0",
@@ -223,7 +224,10 @@ def apply_spss_in_place(
     expected_head: str | None = None,
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> Mapping[str, Any]:
-    """Apply supported SPSS-like syntax to the same SQL dataset/table."""
+    """Apply bounded sequential SPSS syntax to one SQL dataset/table.
+
+    Supports typed COMPUTE/IF predicates and dictionary metadata operations.
+    """
     return result(_apply_spss_in_place(
         database_url=str(database_url),
         dataset_id=dataset_id,
