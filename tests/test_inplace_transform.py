@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,9 @@ import openstatspec.sql.inplace_transform as inplace_transform
 from openstatspec.sql.inplace_transform import (
     InPlacePlanSubmission,
     _apply_plan_on_connection,
+)
+from openstatspec.sql.profiles import (
+    DOLT, SQLITE, TargetCapabilityExceededError,
 )
 from openstatspec.sql.wide import create_wide_dataset, validate_wide_dataset
 
@@ -102,6 +106,7 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
             ),
             actor="test-agent",
             database_profile="sqlite",
+            target_profile=inplace_transform.effective_profile(url)[0],
             allow_schema_change=True,
             allow_delete_variable=True,
             dolt_branch=None,
@@ -318,6 +323,44 @@ def test_public_generic_plan_apply_accepts_object_and_mapping(
     )
 
 
+def test_generic_string_width_is_rejected_before_ddl(
+    catalog, monkeypatch,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    monkeypatch.setattr(
+        inplace_transform,
+        "effective_profile",
+        lambda _url, **_kwargs: (
+            replace(SQLITE, max_text_value_bytes=3),
+            {"server_version": "3.35.0"},
+        ),
+    )
+    plan = openstatspec.TransformationPlan((
+        openstatspec.CreateVariableOperation("note", "string", 4),
+    ))
+
+    with pytest.raises(TargetCapabilityExceededError, match="permits 3"):
+        openstatspec.apply_transformation_plan_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            plan=plan,
+            actor="test-agent",
+        )
+
+    connection = sqlite3.connect(path)
+    assert [
+        row[1] for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    ] == ["__case_ordinal", "score"]
+    assert connection.execute(
+        "select source_name from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchall() == [("score",)]
+    assert connection.execute(
+        "select count(*) from transformation_apply"
+    ).fetchone() == (0,)
+    connection.close()
+
+
 def test_generic_plan_is_bound_to_live_schema_before_mutation(catalog) -> None:
     url, path, dataset_id, table_name = catalog
     plan = openstatspec.TransformationPlan((
@@ -481,7 +524,7 @@ def test_delete_is_rejected_when_drop_column_is_unavailable(
         inplace_transform,
         "effective_profile",
         lambda _url, **_kwargs: (
-            SimpleNamespace(name="sqlite"),
+            SQLITE,
             {"server_version": "3.34.0"},
         ),
     )
@@ -521,6 +564,7 @@ def test_nontransactional_ddl_profile_rejects_create_before_mutation(
                 ),
                 actor="test-agent",
                 database_profile="mysql",
+                target_profile=inplace_transform.effective_profile(url)[0],
                 allow_schema_change=False,
                 allow_delete_variable=True,
                 dolt_branch=None,
@@ -546,7 +590,7 @@ def test_public_apply_binds_expected_dolt_branch_and_head(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     states = iter([
         ("feature/recode", "abc123", 0),
@@ -577,7 +621,7 @@ def test_public_apply_rejects_dirty_dolt_working_set_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -613,7 +657,7 @@ def test_public_apply_rejects_dolt_context_mismatch_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     monkeypatch.setattr(
         inplace_transform, "_dolt_state", lambda _connection: state

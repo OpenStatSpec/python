@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 
-from types import SimpleNamespace
 import pytest
 
 import openstatspec
 import openstatspec.sql.inplace_transform as inplace_transform
+from openstatspec.sql.profiles import DOLT
 from openstatspec.sql.wide import create_wide_dataset
 
 
@@ -254,7 +254,7 @@ def test_dolt_mock_applies_exact_program_to_preexisting_target_without_schema_dd
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     states = iter([
         ("main", "abc123", 0),
@@ -291,7 +291,7 @@ def test_dolt_mock_rejects_create_target_before_schema_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -334,7 +334,7 @@ def test_dolt_mock_rechecks_clean_state_after_dataset_lock(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     states = iter([
         ("main", "abc123", 0),

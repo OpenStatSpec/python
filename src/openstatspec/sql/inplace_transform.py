@@ -27,6 +27,7 @@ from ..transform import (
 from .capabilities import effective_profile
 from .dolt_conformance import DoltConformanceSource
 from .normative import catalog as core_catalog
+from .profiles import SqlProfile, preflight
 from .wide import physical_name, require_verified_catalog
 from .workflow import TransformationError
 
@@ -435,6 +436,7 @@ def _apply_plan_on_connection(
     submission: InPlacePlanSubmission,
     actor: str,
     database_profile: str,
+    target_profile: SqlProfile,
     allow_schema_change: bool,
     allow_delete_variable: bool,
     dolt_branch: str | None,
@@ -451,6 +453,22 @@ def _apply_plan_on_connection(
     table_name = _physical_table_name(dataset)
     plan = submission.plan
     bound = bind_transformation_plan(plan, schema)
+    output_used_physical = {"__case_ordinal"}
+    output_variables = [
+        {
+            "ordinal": source_ordinal,
+            "source_name": variable.name,
+            "physical_name": physical_name(
+                variable.name, output_used_physical,
+            ),
+            "storage_kind": variable.storage_kind,
+            "string_width": variable.declared_string_width,
+        }
+        for source_ordinal, variable in enumerate(
+            bound.output_schema.variables, start=1,
+        )
+    ]
+    preflight(target_profile, output_variables)
     output_by_name = {
         variable.name.casefold(): variable
         for variable in bound.output_schema.variables
@@ -963,6 +981,7 @@ def _run_in_place_submission(
                     submission=submission,
                     actor=actor,
                     database_profile=profile.name,
+                    target_profile=profile,
                     allow_schema_change=profile.name in {"sqlite", "postgresql"},
                     allow_delete_variable=allow_delete_variable,
                     dolt_branch=branch,

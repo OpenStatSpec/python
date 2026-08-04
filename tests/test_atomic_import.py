@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -193,6 +194,55 @@ def test_declared_string_width_preflight_is_atomic_and_diagnostic(tmp_path, monk
     ).fetchone()[0]
     assert '"reason": "declared_string_width_limit"' in details
     assert '"string_width": 4' in details
+
+def test_dolt_import_cleanup_uses_bound_catalog_transaction(
+    tmp_path, monkeypatch,
+) -> None:
+    database_path = tmp_path / "dolt-cleanup.sqlite"
+    database = f"sqlite:///{database_path}"
+    active = {
+        "working_set_binding": {
+            "database": "test",
+            "active_branch": "main",
+        },
+    }
+    monkeypatch.setattr(wide, "effective_profile", lambda _url: (DOLT, active))
+    monkeypatch.setattr(
+        wide, "_capture_dolt_state", lambda *_args, **_kwargs: None,
+    )
+    phases = []
+    real_bound = wide._bound_catalog_transaction
+
+    @contextmanager
+    def capture_bound(**kwargs):
+        phases.append(kwargs["phase"])
+        with real_bound(**kwargs) as connection:
+            yield connection
+
+    monkeypatch.setattr(wide, "_bound_catalog_transaction", capture_bound)
+    real_store = wide.store_normative_dataset
+
+    def fail_after_normative_write(*args, **kwargs):
+        real_store(*args, **kwargs)
+        raise RuntimeError("fault after Dolt normative write")
+
+    monkeypatch.setattr(wide, "store_normative_dataset", fail_after_normative_write)
+    variables = [{
+        "ordinal": 1, "source_name": "score", "physical_name": "score",
+        "storage_kind": "numeric", "string_width": None, "label": "",
+        "format": "F8.0", "measure": "scale", "alignment": "right",
+        "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+    }]
+
+    with pytest.raises(RuntimeError, match="fault after Dolt normative write"):
+        create_wide_dataset(
+            database_url=database, dataset_id="dolt-cleanup",
+            source_name="fixture.sav", source_format="SAV",
+            rows=[{"score": 1.0}], variables=variables,
+        )
+
+    assert phases[-2:] == ["import", "import cleanup"]
+
 
 def test_nonatomic_failure_after_normative_write_cleans_both_catalogs_and_data(
     tmp_path, monkeypatch,

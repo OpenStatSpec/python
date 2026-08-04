@@ -949,7 +949,12 @@ def create_wide_dataset(
     except Exception as error:
         if namespace_owned:
             try:
-                with engine.begin() as cleanup:
+                with _bound_catalog_transaction(
+                    engine=engine, profile_name=profile.name,
+                    active=active_connection,
+                    audit_relations={*audit_relations, data_table.name},
+                    phase="import cleanup",
+                ) as cleanup:
                     create_normative_catalog(cleanup, normative)
                     if cleanup.execute(
                         select(normative.dataset.c.dataset_id).where(
