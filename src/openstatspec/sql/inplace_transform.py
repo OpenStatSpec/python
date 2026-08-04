@@ -355,6 +355,25 @@ def _delete_variable_metadata(
         core.variable.c.variable_id == variable_id
     ))
 
+
+def _compact_variable_ordinals(
+    connection: Any,
+    *,
+    core: Any,
+    variables: list[dict[str, Any]],
+) -> None:
+    """Keep normative variable source order contiguous after deletion."""
+    for source_ordinal, variable in enumerate(variables, start=1):
+        if int(variable["source_ordinal"]) == source_ordinal:
+            continue
+        connection.execute(
+            update(core.variable)
+            .where(core.variable.c.variable_id == variable["variable_id"])
+            .values(source_ordinal=source_ordinal)
+        )
+        variable["source_ordinal"] = source_ordinal
+
+
 def _failure_boundary(_name: str) -> None:
     """Synthetic-test hook for schema/data/catalog/audit failure boundaries."""
 
@@ -477,8 +496,6 @@ def _apply_plan_on_connection(
     )
     by_name = {str(row["source_name"]).casefold(): row for row in variables}
     used_physical = {str(row["physical_name"]).casefold() for row in variables}
-    next_ordinal = max(int(row["source_ordinal"]) for row in variables) + 1
-    target_rows_by_operation: dict[int, dict[str, Any]] = {}
     quote = connection.dialect.identifier_preparer.quote
     qualified_table = connection.dialect.identifier_preparer.format_table(relation)
     numeric_type = (
@@ -515,59 +532,61 @@ def _apply_plan_on_connection(
                 "The Dolt working set changed after locking the dataset.",
             )
 
-    # All non-transactional DDL precedes every data/catalog mutation. This makes
-    # Compensation is journal-bounded to target columns and catalog identities
-    # created by this apply, without resetting unrelated database state.
-    for operation in create_operations:
-        target_name = (
-            operation.variable
-            if isinstance(operation, CreateVariableOperation)
-            else operation.target
-        )
-        target_physical = physical_name(target_name, used_physical)
-        storage_kind = (
-            operation.storage_kind
-            if isinstance(operation, CreateVariableOperation)
-            else "numeric"
-        )
-        string_width = (
-            operation.declared_string_width
-            if isinstance(operation, CreateVariableOperation)
-            else None
-        )
-        column_type = numeric_type if storage_kind == "numeric" else f"VARCHAR({string_width})"
-        connection.exec_driver_sql(
-            f"ALTER TABLE {qualified_table} ADD COLUMN "
-            f"{quote(target_physical)} {column_type} NULL"
-        )
-        if mutation_journal is not None:
-            mutation_journal["added_columns"].append(target_physical)
-        target_row = {
-            "variable_id": str(uuid4()),
-            "dataset_id": dataset_id,
-            "source_ordinal": next_ordinal,
-            "source_name": target_name,
-            "physical_name": target_physical,
-            "storage_kind": storage_kind,
-            "declared_string_width": string_width,
-            "variable_label": None,
-        }
-        next_ordinal += 1
-        target_rows_by_operation[id(operation)] = target_row
-        if mutation_journal is not None:
-            mutation_journal["target_rows"].append(dict(target_row))
-    if create_operations:
-        _failure_boundary("schema")
-
-    if create_operations:
-        relation = Table(
-            table_name, MetaData(), schema=dataset.get("physical_table_schema"),
-            autoload_with=connection,
-        )
-
+    # Schema changes are allowed only on profiles whose DDL participates in
+    # this apply transaction, so execute them in canonical operation order.
+    # That preserves deterministic physical naming across delete/recreate flows.
     for operation in plan.operations:
-        created_target = target_rows_by_operation.get(id(operation))
-        if created_target is not None:
+        creates_target = (
+            isinstance(operation, CreateVariableOperation)
+            or (
+                isinstance(operation, (RecodeOperation, AssignOperation))
+                and operation.target_mode == "create"
+            )
+        )
+        if creates_target:
+            target_name = (
+                operation.variable
+                if isinstance(operation, CreateVariableOperation)
+                else operation.target
+            )
+            target_physical = physical_name(target_name, used_physical)
+            storage_kind = (
+                operation.storage_kind
+                if isinstance(operation, CreateVariableOperation)
+                else "numeric"
+            )
+            string_width = (
+                operation.declared_string_width
+                if isinstance(operation, CreateVariableOperation)
+                else None
+            )
+            column_type = numeric_type if storage_kind == "numeric" else "TEXT"
+            null_clause = (
+                "NULL" if storage_kind == "numeric"
+                else "NOT NULL DEFAULT ''"
+            )
+            connection.exec_driver_sql(
+                f"ALTER TABLE {qualified_table} ADD COLUMN "
+                f"{quote(target_physical)} {column_type} {null_clause}"
+            )
+            created_target = {
+                "variable_id": str(uuid4()),
+                "dataset_id": dataset_id,
+                "source_ordinal": len(variables) + 1,
+                "source_name": target_name,
+                "physical_name": target_physical,
+                "storage_kind": storage_kind,
+                "declared_string_width": string_width,
+                "variable_label": None,
+            }
+            if mutation_journal is not None:
+                mutation_journal["added_columns"].append(target_physical)
+                mutation_journal["target_rows"].append(dict(created_target))
+            _failure_boundary("schema")
+            relation = Table(
+                table_name, MetaData(), schema=dataset.get("physical_table_schema"),
+                autoload_with=connection,
+            )
             connection.execute(insert(core.variable).values(**created_target))
             variables.append(created_target)
             by_name[str(created_target["source_name"]).casefold()] = created_target
@@ -647,10 +666,14 @@ def _apply_plan_on_connection(
             )
             _delete_variable_metadata(connection, core=core, variable=variable)
             by_name.pop(operation.variable.casefold(), None)
+            used_physical.discard(str(variable["physical_name"]).casefold())
             variables = [
                 row for row in variables
                 if row["variable_id"] != variable["variable_id"]
             ]
+            _compact_variable_ordinals(
+                connection, core=core, variables=variables,
+            )
             relation = Table(
                 table_name, MetaData(), schema=dataset.get("physical_table_schema"),
                 autoload_with=connection,

@@ -12,7 +12,7 @@ from openstatspec.sql.inplace_transform import (
     InPlacePlanSubmission,
     _apply_plan_on_connection,
 )
-from openstatspec.sql.wide import create_wide_dataset
+from openstatspec.sql.wide import create_wide_dataset, validate_wide_dataset
 
 
 def _variables() -> list[dict[str, object]]:
@@ -172,8 +172,16 @@ def test_string_declaration_creates_column_and_catalog_variable(catalog) -> None
     ).fetchall() == [("score", "numeric", None), ("note", "string", 8)]
     assert connection.execute(
         f'SELECT note FROM "{table_name}" ORDER BY __case_ordinal'
-    ).fetchall() == [(None,), (None,), (None,)]
+    ).fetchall() == [("",), ("",), ("",)]
+    note_column = next(
+        row for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+        if row[1] == "note"
+    )
+    assert note_column[2:5] == ("TEXT", 1, "''")
     connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
 
 
 def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) -> None:
@@ -191,17 +199,22 @@ def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) ->
 
     connection = sqlite3.connect(path)
     variables = connection.execute(
-        "select source_name, physical_name from variable where dataset_id = ? "
-        "order by source_ordinal",
+        "select source_name, physical_name, source_ordinal from variable "
+        "where dataset_id = ? order by source_ordinal",
         (dataset_id,),
     ).fetchall()
-    assert [row[0] for row in variables] == ["other", "score"]
-    physical = dict(variables)
+    assert [(row[0], row[2]) for row in variables] == [
+        ("other", 1), ("score", 2),
+    ]
+    physical = {row[0]: row[1] for row in variables}
     assert connection.execute(
         f'SELECT "{physical["other"]}", "{physical["score"]}" '
         f'FROM "{table_name}" ORDER BY __case_ordinal'
     ).fetchall() == [(1.0, 1.0), (2.0, 9.0), (3.0, 3.0)]
     connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
 
 
 def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
