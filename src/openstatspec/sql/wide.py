@@ -579,6 +579,11 @@ def _bound_catalog_transaction(
         try:
             with connection.begin():
                 yield connection
+                after = _capture_dolt_state(
+                    connection, profile_name=profile_name,
+                    audit_relations=audit_relations,
+                )
+                _require_dolt_success_identity(before, after, phase=phase)
         except Exception:
             after = _capture_dolt_state(
                 connection, profile_name=profile_name,
@@ -586,11 +591,6 @@ def _bound_catalog_transaction(
             )
             _dolt_failure_boundary_evidence(before, after)
             raise
-        after = _capture_dolt_state(
-            connection, profile_name=profile_name,
-            audit_relations=audit_relations,
-        )
-        _require_dolt_success_identity(before, after, phase=phase)
 
 
 def dolt_state_snapshot(
@@ -1417,6 +1417,13 @@ def record_export_operation(
                     "source_item": destination,
                     "details": operation_details,
                 },) if operation_details else ()),
+                {
+                    "code": "export-operation-dataset-binding",
+                    "detail": "Export operation dataset identity recorded for audit.",
+                    "severity": "info",
+                    "source_item": destination,
+                    "details": {},
+                },
             ),
         )
     return operation_id
@@ -1433,6 +1440,30 @@ def _export_operation_row(
     if row is None or row["operation_kind"] != "export":
         raise UnsupportedOperationError("The export operation does not exist.")
     return row
+
+
+def _export_operation_dataset_id(
+    connection: Any, normative: Any, operation_id: str,
+) -> str:
+    dataset_ids = set(connection.execute(
+        select(normative.fidelity_event.c.dataset_id)
+        .where(normative.fidelity_event.c.operation_id == operation_id)
+        .where(normative.fidelity_event.c.dataset_id.is_not(None))
+    ).scalars())
+    if len(dataset_ids) != 1:
+        raise UnsupportedOperationError(
+            "The export operation is not bound to exactly one dataset."
+        )
+    dataset_id = str(dataset_ids.pop())
+    if connection.execute(
+        select(normative.dataset.c.dataset_id).where(
+            normative.dataset.c.dataset_id == dataset_id
+        )
+    ).scalar_one_or_none() is None:
+        raise UnsupportedOperationError(
+            "The export operation dataset no longer exists."
+        )
+    return dataset_id
 
 
 def finish_export_operation(
@@ -1504,12 +1535,15 @@ def fail_export_operation(
             raise UnsupportedOperationError(
                 "Only a started export operation can be failed."
             )
+        dataset_id = _export_operation_dataset_id(
+            connection, normative, operation_id,
+        )
         finish_normative_operation(
             connection, normative, operation_id=operation_id, status="failed",
         )
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,
-            dataset_id=None, direction="export", events=(event,),
+            dataset_id=dataset_id, direction="export", events=(event,),
         )
 
 
@@ -1529,9 +1563,12 @@ def record_export_backup_retained(
             raise UnsupportedOperationError(
                 "A retained backup warning requires a succeeded export."
             )
+        dataset_id = _export_operation_dataset_id(
+            connection, normative, operation_id,
+        )
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,
-            dataset_id=None, direction="export", events=({
+            dataset_id=dataset_id, direction="export", events=({
                 "code": "backup_retained",
                 "detail": "A successful export retained its durable prior-file backup.",
                 "severity": "warning",
@@ -1578,6 +1615,7 @@ def record_export_cleanup_failure(
                 normative.operation.c.operation_id == operation_id
             )
         ).mappings().one_or_none()
+        dataset_id = None
         if row is None:
             failed_at = datetime.now(UTC).replace(tzinfo=None)
             record_normative_operation(
@@ -1590,12 +1628,15 @@ def record_export_cleanup_failure(
                 raise UnsupportedOperationError(
                     "Existing export operation cannot transition to cleanup failure."
                 )
+            dataset_id = _export_operation_dataset_id(
+                connection, normative, operation_id,
+            )
             finish_normative_operation(
                 connection, normative, operation_id=operation_id, status="failed",
             )
         record_normative_fidelity_events(
             connection, normative, operation_id=operation_id,
-            dataset_id=None, direction="export", events=(event,),
+            dataset_id=dataset_id, direction="export", events=(event,),
         )
     return operation_id
 
