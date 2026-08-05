@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+import openstatspec.transform as transform_module
 from openstatspec.frontends.spss import (
     bind_spss_syntax,
     compile_spss_syntax,
@@ -13,6 +14,7 @@ from openstatspec.frontends.spss import (
     spss_source_hash,
 )
 from openstatspec.transform import (
+    CreateVariableOperation,
     RecodeMatch,
     RecodeOperation,
     RecodeResult,
@@ -29,6 +31,14 @@ from openstatspec.transform import (
     canonical_plan_json,
     transformation_plan_from_dict,
 )
+
+
+def test_transform_star_exports_keep_public_plan_nodes() -> None:
+    assert {
+        "ExecuteOperation",
+        "Operand",
+        "TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT",
+    }.issubset(transform_module.__all__)
 
 
 def _schema(*variables: VariableDefinition) -> VariableSchema:
@@ -358,6 +368,17 @@ def test_source_normalization_hash_and_positions_are_stable() -> None:
     assert compilation.source_text_lf == lf
     assert compilation.source_hash == spss_source_hash(lf)
     assert compilation.plan_hash == compilation.plan.sha256()
+    assert compilation.frontend_contract == "openstatspec-spss-syntax-frontend-v0.2"
+
+
+def test_schema_commands_use_the_v03_frontend_contract() -> None:
+    compilation = compile_spss_syntax(
+        "STRING note (A4).",
+        _schema(VariableDefinition("q1", "numeric")),
+    )
+
+    assert compilation.plan.contract == "openstatspec-transformation-plan-v0.3"
+    assert compilation.frontend_contract == "openstatspec-spss-syntax-frontend-v0.3"
 
 def test_string_comparison_fails_closed_until_exact_collation_is_supported() -> None:
     error = _error(
@@ -557,6 +578,28 @@ def test_v02_plan_and_schema_reject_decimal_format_that_cannot_fit() -> None:
             "target", "numeric", format_family="F",
             format_width=2, format_decimals=2,
         )
+
+
+def test_schema_operations_require_v03_contract() -> None:
+    operation = CreateVariableOperation("note", "string", 8)
+    with pytest.raises(TransformationFrontendError) as caught:
+        TransformationPlan((operation,))
+    assert caught.value.code == "invalid_transformation_plan"
+
+    plan = TransformationPlan(
+        (operation,), contract="openstatspec-transformation-plan-v0.3",
+    )
+    assert plan.contract == "openstatspec-transformation-plan-v0.3"
+
+
+def test_spss_schema_commands_emit_v03_contract() -> None:
+    schema = _schema(VariableDefinition("q1", "numeric"))
+    assert bind_spss_syntax(
+        parse_spss_syntax("STRING note (A8)."), schema,
+    ).plan.contract == "openstatspec-transformation-plan-v0.3"
+    assert bind_spss_syntax(
+        parse_spss_syntax("COMPUTE other = q1. DELETE VARIABLES q1."), schema,
+    ).plan.contract == "openstatspec-transformation-plan-v0.3"
 
 
 def test_custom_nonempty_input_alias_is_canonical() -> None:

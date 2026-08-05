@@ -70,8 +70,8 @@ The gate must prove that:
 - the exact bounded `COMPUTE`/`IF` program compiles to all seven ordered
   operations without dropping `FORMATS`, `VARIABLE LEVEL`, or `EXECUTE`;
 - boolean data results match the equivalent expression and the target's label,
-  0/1 value labels, `F1.0` print/write format, and nominal level exist in both
-  normative and compatibility catalogs;
+  0/1 value labels, `F1.0` print/write format, and nominal level exist in the
+  normative catalog;
 - injected schema, data, catalog, and audit failures leave no partial apply;
 - compensation tracks only newly created targets and never drops or rewrites a
   pre-existing target;

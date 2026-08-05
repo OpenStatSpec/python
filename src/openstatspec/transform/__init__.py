@@ -2,9 +2,11 @@
 
 from .errors import SourcePosition, SourceSpan, TransformationFrontendError
 from .plan import (
+    TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT,
     TRANSFORMATION_PLAN_CONTRACT,
     AssignOperation, BooleanExpression, ComparisonExpression,
-    ConditionalAssignOperation, ExecuteOperation, Operand, PredicateExpression,
+    ConditionalAssignOperation, CreateVariableOperation, DeleteVariableOperation,
+    ExecuteOperation, Operand, PredicateExpression,
     RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
     ReplaceValueLabelsOperation, SetFormatOperation,
     SetMeasurementLevelOperation, SetVariableLabelOperation, TransformationPlan,
@@ -17,15 +19,17 @@ from .schema import (
 from .validation import bind_transformation_plan
 __all__ = [
     "AssignOperation", "BooleanExpression", "ComparisonExpression",
-    "ConditionalAssignOperation", "ExecuteOperation", "Operand",
-    "PredicateExpression",
+    "ConditionalAssignOperation", "CreateVariableOperation", "DeleteVariableOperation",
+    "ExecuteOperation", "Operand", "PredicateExpression",
     "BoundTransformation",
     "RecodeMatch", "RecodeOperation", "RecodeResult",
     "RecodeRule", "ReplaceValueLabelsOperation", "SPSS_FRONTEND_CONTRACT",
+    "SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT",
     "SetFormatOperation", "SetMeasurementLevelOperation",
     "SetVariableLabelOperation", "SourcePosition", "SourceSpan", "StorageKind",
     "SpssFrontendCompilation",
-    "SpssSyntaxProgram", "TRANSFORMATION_PLAN_CONTRACT", "TransformationFrontendError",
+    "SpssSyntaxProgram", "TRANSFORMATION_PLAN_CONTRACT",
+    "TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT", "TransformationFrontendError",
     "TransformationPlan", "TypedValue", "ValueLabel",
     "VariableDefinition",
     "VariableSchema", "bind_spss_syntax", "bind_transformation_plan",
@@ -39,6 +43,7 @@ __all__ = [
 
 _SPSS_COMPAT_EXPORTS = {
     "SPSS_FRONTEND_CONTRACT",
+    "SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT",
     "SpssFrontendCompilation",
     "SpssSyntaxProgram",
     "bind_spss_syntax",

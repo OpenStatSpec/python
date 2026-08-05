@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,12 @@ from openstatspec.sql.inplace_transform import (
     InPlacePlanSubmission,
     _apply_plan_on_connection,
 )
-from openstatspec.sql.wide import create_wide_dataset
+from openstatspec.sql.profiles import (
+    DOLT, SQLITE, TargetCapabilityExceededError,
+)
+from openstatspec.sql.wide import (
+    create_wide_dataset, read_wide_dataset, validate_wide_dataset,
+)
 
 
 def _variables() -> list[dict[str, object]]:
@@ -102,7 +108,9 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
             ),
             actor="test-agent",
             database_profile="sqlite",
+            target_profile=inplace_transform.effective_profile(url)[0],
             allow_schema_change=True,
+            allow_delete_variable=True,
             dolt_branch=None,
             dolt_head=None,
         )
@@ -142,9 +150,7 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
     assert connection.execute(
         "SELECT numeric_code, label FROM value_label ORDER BY ordinal"
     ).fetchall() == [(0.0, "Lower"), (1.0, "Upper")]
-    assert connection.execute(
-        "SELECT label FROM variable_catalog WHERE source_name = 'score_band'"
-    ).fetchone() == ("Score band",)
+    assert "variable_catalog" not in tables
     assert connection.execute(
         "SELECT database_profile, dolt_branch, dolt_head_before, "
         "dolt_head_after, actor, status "
@@ -153,6 +159,268 @@ def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
         "sqlite", None, None, None, "test-agent",
         "succeeded",
     )
+
+
+def test_string_declaration_creates_column_and_catalog_variable(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="STRING note (A8).",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, storage_kind, declared_string_width from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("score", "numeric", None), ("note", "string", 8)]
+    assert connection.execute(
+        f'SELECT note FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [("",), ("",), ("",)]
+    note_column = next(
+        row for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+        if row[1] == "note"
+    )
+    assert note_column[2:5] == ("TEXT", 1, "''")
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
+def test_delete_recanonicalizes_surviving_collision_columns(tmp_path) -> None:
+    path = tmp_path / "collision-delete.sqlite"
+    url = f"sqlite:///{path}"
+    openstatspec.initialize_catalog(database_url=url)
+    base = _variables()[0]
+    variables = [
+        {
+            **base,
+            "ordinal": ordinal,
+            "source_name": source_name,
+            "physical_name": physical,
+        }
+        for ordinal, (source_name, physical) in enumerate((
+            ("a-b", "a_b"), ("a_b", "a_b_2"), ("keep", "keep"),
+        ), start=1)
+    ]
+    create_wide_dataset(
+        database_url=url,
+        dataset_id="collision_source",
+        source_name="collision.sav",
+        source_format="SAV",
+        source_sha256="c" * 64,
+        rows=[
+            {"a_b": 1.0, "a_b_2": 2.0, "keep": 3.0},
+            {"a_b": 4.0, "a_b_2": 5.0, "keep": 6.0},
+        ],
+        variables=variables,
+    )
+    openstatspec.install_in_place_transformation_schema(database_url=url)
+    connection = sqlite3.connect(path)
+    dataset_id = connection.execute(
+        "select dataset_id from dataset where dataset_name = 'collision_source'"
+    ).fetchone()[0]
+    connection.close()
+    plan = openstatspec.TransformationPlan(
+        (openstatspec.DeleteVariableOperation("a-b"),),
+        contract="openstatspec-transformation-plan-v0.3",
+    )
+
+    openstatspec.apply_transformation_plan_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        plan=plan,
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, physical_name, source_ordinal from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("a_b", "a_b", 1), ("keep", "keep", 2)]
+    assert connection.execute(
+        "select a_b, keep from data_collision_source order by __case_ordinal"
+    ).fetchall() == [(2.0, 3.0), (5.0, 6.0)]
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
+def test_delete_prunes_an_empty_spss_variable_set(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+    connection = sqlite3.connect(path)
+    variable_id = connection.execute(
+        "select variable_id from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone()[0]
+    variable_set_id = "00000000-0000-0000-0000-000000000002"
+    connection.execute(
+        "insert into variable_set "
+        "(variable_set_id, dataset_id, source_ordinal, set_name) "
+        "values (?, ?, 1, 'scores')",
+        (variable_set_id, dataset_id),
+    )
+    connection.execute(
+        "insert into variable_set_member "
+        "(variable_set_id, variable_id, source_ordinal) values (?, ?, 1)",
+        (variable_set_id, variable_id),
+    )
+    connection.commit()
+    connection.close()
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="COMPUTE other = score. DELETE VARIABLES score.",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select count(*) from variable_set where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone() == (0,)
+    assert connection.execute(
+        "select count(*) from variable_set_member"
+    ).fetchone() == (0,)
+    connection.close()
+    dataset, _variables, _rows = read_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )
+    assert dataset["source_extensions"] == {}
+
+
+def test_delete_prunes_an_empty_multiple_response_set(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+    connection = sqlite3.connect(path)
+    variable_id = connection.execute(
+        "select variable_id from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone()[0]
+    response_set_id = "00000000-0000-0000-0000-000000000001"
+    connection.execute(
+        "insert into multiple_response_set "
+        "(multiple_response_set_id, dataset_id, source_ordinal, set_name, "
+        "set_kind, counted_value_kind, counted_numeric_value) "
+        "values (?, ?, 1, '$scores', 'MD', 'numeric', 1.0)",
+        (response_set_id, dataset_id),
+    )
+    connection.execute(
+        "insert into multiple_response_member "
+        "(multiple_response_set_id, variable_id, source_ordinal) "
+        "values (?, ?, 1)",
+        (response_set_id, variable_id),
+    )
+    connection.commit()
+    connection.close()
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="COMPUTE other = score. DELETE VARIABLES score.",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select count(*) from multiple_response_set where dataset_id = ?",
+        (dataset_id,),
+    ).fetchone() == (0,)
+    assert connection.execute(
+        "select count(*) from multiple_response_member"
+    ).fetchone() == (0,)
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
+def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text=(
+            "COMPUTE other = score. DELETE VARIABLES score. "
+            "RECODE other (2 = 9) (ELSE = COPY) INTO score."
+        ),
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    variables = connection.execute(
+        "select source_name, physical_name, source_ordinal from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall()
+    assert [(row[0], row[2]) for row in variables] == [
+        ("other", 1), ("score", 2),
+    ]
+    physical = {row[0]: row[1] for row in variables}
+    assert connection.execute(
+        f'SELECT "{physical["other"]}", "{physical["score"]}" '
+        f'FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0, 1.0), (2.0, 9.0), (3.0, 3.0)]
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
+
+
+def test_temporary_created_target_can_be_deleted_before_final_schema(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="COMPUTE tmp = score. DELETE VARIABLES tmp.",
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, source_ordinal from variable "
+        "where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("score", 1)]
+    assert [
+        row[1] for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    ] == ["__case_ordinal", "score"]
+    connection.close()
+
+
+def test_temporary_target_type_is_not_taken_from_same_name_recreation(catalog) -> None:
+    url, path, dataset_id, table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text=(
+            "COMPUTE tmp = score. DELETE VARIABLES tmp. STRING tmp (A4)."
+        ),
+        actor="test-agent",
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "select source_name, storage_kind, declared_string_width "
+        "from variable where dataset_id = ? order by source_ordinal",
+        (dataset_id,),
+    ).fetchall() == [("score", "numeric", None), ("tmp", "string", 4)]
+    assert connection.execute(
+        f'SELECT score, tmp FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0, ""), (2.0, ""), (3.0, "")]
+    connection.close()
+    assert validate_wide_dataset(
+        database_url=url, dataset_id=dataset_id,
+    )["valid"] is True
 
 
 def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
@@ -176,6 +444,25 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     assert audit == (
         "spss_syntax",
         "openstatspec-spss-syntax-frontend-v0.2",
+    )
+
+
+def test_schema_commands_record_the_v03_frontend_contract(catalog) -> None:
+    url, path, dataset_id, _table_name = catalog
+
+    openstatspec.apply_spss_in_place(
+        database_url=url,
+        dataset_id=dataset_id,
+        source_text="STRING note (A4).",
+        actor="test-agent",
+    )
+
+    audit = sqlite3.connect(path).execute(
+        "SELECT source_kind, frontend_contract FROM transformation_apply"
+    ).fetchone()
+    assert audit == (
+        "spss_syntax",
+        "openstatspec-spss-syntax-frontend-v0.3",
     )
 
 
@@ -209,6 +496,45 @@ def test_public_generic_plan_apply_accepts_object_and_mapping(
         None,
         plan.sha256(),
     )
+
+
+def test_generic_string_width_is_rejected_before_ddl(
+    catalog, monkeypatch,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    monkeypatch.setattr(
+        inplace_transform,
+        "effective_profile",
+        lambda _url, **_kwargs: (
+            replace(SQLITE, max_text_value_bytes=3),
+            {"server_version": "3.35.0"},
+        ),
+    )
+    plan = openstatspec.TransformationPlan(
+        (openstatspec.CreateVariableOperation("note", "string", 4),),
+        contract="openstatspec-transformation-plan-v0.3",
+    )
+
+    with pytest.raises(TargetCapabilityExceededError, match="permits 3"):
+        openstatspec.apply_transformation_plan_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            plan=plan,
+            actor="test-agent",
+        )
+
+    connection = sqlite3.connect(path)
+    assert [
+        row[1] for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    ] == ["__case_ordinal", "score"]
+    assert connection.execute(
+        "select source_name from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchall() == [("score",)]
+    assert connection.execute(
+        "select count(*) from transformation_apply"
+    ).fetchone() == (0,)
+    connection.close()
 
 
 def test_generic_plan_is_bound_to_live_schema_before_mutation(catalog) -> None:
@@ -366,6 +692,38 @@ def test_missing_audit_schema_fails_before_mutation(catalog) -> None:
     ).fetchall() == [(1.0,), (2.0,), (3.0,)]
 
 
+def test_delete_is_rejected_when_drop_column_is_unavailable(
+    catalog, monkeypatch,
+) -> None:
+    url, path, dataset_id, table_name = catalog
+    monkeypatch.setattr(
+        inplace_transform,
+        "effective_profile",
+        lambda _url, **_kwargs: (
+            SQLITE,
+            {"server_version": "3.34.0"},
+        ),
+    )
+
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="COMPUTE other = score. DELETE VARIABLES score.",
+            actor="test-agent",
+        )
+
+    assert caught.value.code == "delete_variable_not_supported"
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
+    ).fetchall() == [(1.0,), (2.0,), (3.0,)]
+    assert [
+        row[1] for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+    ] == ["__case_ordinal", "score"]
+    connection.close()
+
+
 def test_nontransactional_ddl_profile_rejects_create_before_mutation(
     catalog,
 ) -> None:
@@ -382,7 +740,9 @@ def test_nontransactional_ddl_profile_rejects_create_before_mutation(
                 ),
                 actor="test-agent",
                 database_profile="mysql",
+                target_profile=inplace_transform.effective_profile(url)[0],
                 allow_schema_change=False,
+                allow_delete_variable=True,
                 dolt_branch=None,
                 dolt_head=None,
             )
@@ -406,7 +766,7 @@ def test_public_apply_binds_expected_dolt_branch_and_head(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     states = iter([
         ("feature/recode", "abc123", 0),
@@ -437,7 +797,7 @@ def test_public_apply_rejects_dirty_dolt_working_set_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -473,7 +833,7 @@ def test_public_apply_rejects_dolt_context_mismatch_before_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     monkeypatch.setattr(
         inplace_transform, "_dolt_state", lambda _connection: state
@@ -591,7 +951,7 @@ def test_schema_install_requires_initialized_verified_catalog(tmp_path) -> None:
 
     with pytest.raises(
         openstatspec.UnsupportedOperationError,
-        match="explicit catalog initialization",
+        match="catalog is absent",
     ):
         openstatspec.install_in_place_transformation_schema(database_url=url)
 
@@ -604,16 +964,15 @@ def test_schema_install_requires_initialized_verified_catalog(tmp_path) -> None:
 def test_public_apply_rejects_divergent_catalog_before_mutation(catalog) -> None:
     url, path, dataset_id, table_name = catalog
     connection = sqlite3.connect(path)
-    deleted = connection.execute("DELETE FROM dataset_catalog")
-    assert deleted.rowcount == 1
+    connection.execute("UPDATE catalog_identity SET schema_version = 999")
     connection.commit()
     before = connection.execute(
         f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
     ).fetchall()
 
     with pytest.raises(
-        openstatspec.UnsupportedOperationError,
-        match="explicit catalog initialization",
+        RuntimeError,
+        match="identity is incompatible",
     ):
         openstatspec.apply_spss_in_place(
             database_url=url,
@@ -660,16 +1019,16 @@ def test_public_apply_rejects_divergent_variable_mapping_before_mutation(
 ) -> None:
     url, path, dataset_id, table_name = catalog
     connection = sqlite3.connect(path)
-    deleted = connection.execute("DELETE FROM variable_catalog")
-    assert deleted.rowcount == 1
+    deleted = connection.execute("DELETE FROM variable")
+    assert deleted.rowcount > 0
     connection.commit()
     before = connection.execute(
         f'SELECT score FROM "{table_name}" ORDER BY __case_ordinal'
     ).fetchall()
 
     with pytest.raises(
-        openstatspec.UnsupportedOperationError,
-        match="explicit catalog initialization",
+        openstatspec.TransformationError,
+        match="no variables",
     ):
         openstatspec.apply_spss_in_place(
             database_url=url,
@@ -695,7 +1054,10 @@ def test_transactional_ddl_rollback_skips_unlocked_compensation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name=profile_name), {}),
+        lambda _url, **_kwargs: (
+            SimpleNamespace(name=profile_name),
+            {"server_version": "3.35.0"},
+        ),
     )
 
     def fail_after_schema_change(
@@ -724,4 +1086,3 @@ def test_transactional_ddl_rollback_skips_unlocked_compensation(
                 "RECODE score (1 = 0) INTO score_band."
             ),
         )
-

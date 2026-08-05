@@ -10,7 +10,6 @@ import pytest
 import openstatspec
 from openstatspec.spss.raw_dictionary import (
     read_document_lines,
-    write_compatible_names,
     write_document_lines,
 )
 
@@ -35,7 +34,7 @@ def test_document_lines_round_trip_through_sqlite(destination_suffix: str, tmp_p
     assert imported.diagnostics == ()
     connection = sqlite3.connect(tmp_path / "documents.sqlite")
     assert connection.execute(
-        "select ordinal, text from document_catalog order by ordinal"
+        "select source_ordinal, document_text from document order by source_ordinal"
     ).fetchall() == [(1, expected[0]), (2, expected[1])]
 
     openstatspec.export_sav(
@@ -75,7 +74,7 @@ def test_document_lines_import_from_zsav_and_export_to_sav(tmp_path: Path) -> No
     assert pyspssio.read_sav(str(destination))[0]["answer"].tolist() == [1.0, 2.0]
 
 
-def test_document_and_compatible_name_round_trip_to_zsav(tmp_path: Path) -> None:
+def test_document_and_long_variable_name_round_trip_to_zsav(tmp_path: Path) -> None:
     source = tmp_path / "source.sav"
     destination = tmp_path / "destination.zsav"
     database = f"sqlite:///{tmp_path / 'combined.sqlite'}"
@@ -83,13 +82,14 @@ def test_document_and_compatible_name_round_trip_to_zsav(tmp_path: Path) -> None
     source_name = "long_variable_name"
     pyspssio.write_sav(str(source), pd.DataFrame({source_name: [7.0]}))
     write_document_lines(source, ["Combined dictionary fixture."], encoding="UTF-8")
-    write_compatible_names(source, {source_name: "ANSWER"}, encoding="UTF-8")
 
     openstatspec.import_sav(source, database_url=database, dataset_id="combined")
-    openstatspec.export_sav(database_url=database, dataset_id="combined", destination=destination)
+    openstatspec.export_sav(
+        database_url=database, dataset_id="combined", destination=destination,
+        allow_loss=["compatible-variable-names-not-preserved"],
+    )
 
     assert read_document_lines(destination, encoding="UTF-8") == ["Combined dictionary fixture."]
-    assert pyspssio.read_metadata(str(destination))["var_compat_names"][source_name] == "ANSWER"
     assert pyspssio.read_sav(str(destination))[0][source_name].tolist() == [7.0]
 
 

@@ -15,7 +15,8 @@ from .sql import DoltConformanceSource
 from .sql.workflow import TransformationError
 from .transform import (
     AssignOperation, BooleanExpression, ComparisonExpression,
-    ConditionalAssignOperation, ExecuteOperation, Operand, PredicateExpression,
+    ConditionalAssignOperation, CreateVariableOperation, DeleteVariableOperation,
+    ExecuteOperation, Operand, PredicateExpression,
     RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
     ReplaceValueLabelsOperation, SetFormatOperation,
     SetMeasurementLevelOperation, SetVariableLabelOperation,
@@ -26,7 +27,7 @@ from .transform import (
 __all__ = [
     "AssignOperation", "BooleanExpression", "ComparisonExpression",
     "ConditionalAssignOperation", "ExecuteOperation", "Operand",
-    "PredicateExpression",
+    "PredicateExpression", "CreateVariableOperation", "DeleteVariableOperation",
     "CapabilityDeclaration", "DoltConformanceSource", "LossReport",
     "SpssFrontendCompilation", "TransformationError",
     "TransformationFrontendError",

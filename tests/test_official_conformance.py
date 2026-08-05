@@ -236,7 +236,9 @@ def _assert_round_trip(
     imported = openstatspec.import_sav(
         source, database_url=database_url, dataset_id=dataset_id,
     )
-    assert imported.diagnostics == ()
+    assert {diagnostic.code for diagnostic in imported.diagnostics} <= {
+        "compatible-variable-names-not-preserved",
+    }
     assert openstatspec.validate(
         database_url=database_url, dataset_id=dataset_id,
     )["valid"] is True
@@ -244,8 +246,11 @@ def _assert_round_trip(
 
     exported = openstatspec.export_sav(
         database_url=database_url, dataset_id=dataset_id, destination=destination,
+        allow_loss=["compatible-variable-names-not-preserved"],
     )
-    assert exported.diagnostics == ()
+    assert {diagnostic.code for diagnostic in exported.diagnostics} <= {
+        "compatible-variable-names-not-preserved",
+    }
     assert compare_sav_semantics(source, destination) == {
         "equivalent": True,
         "differences": [],

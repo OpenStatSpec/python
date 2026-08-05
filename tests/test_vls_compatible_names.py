@@ -1,12 +1,9 @@
-import sqlite3
-
 import pandas as pd
 import pyspssio
 import pytest
 
 import openstatspec
 from openstatspec.spss import raw_dictionary
-from openstatspec.spss import sav as sav_module
 
 
 _SOURCE_NAME = "a05x_very_long_source_name"
@@ -57,35 +54,36 @@ def _replace_subtype_14_payload(path, payload: bytes) -> None:
 
 
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
-def test_vls_custom_compatible_name_round_trips_as_one_variable(tmp_path, suffix: str) -> None:
+def test_vls_round_trips_as_one_variable(tmp_path, suffix: str) -> None:
     source = tmp_path / f"source{suffix}"
     destination = tmp_path / f"destination{suffix}"
     database = f"sqlite:///{tmp_path / f'vls-{suffix[1:]}.sqlite'}"
-    openstatspec.initialize_catalog(database_url=database)
     _write_vls_source(source)
-    raw_dictionary.write_compatible_names(
-        source, {_SOURCE_NAME: _COMPATIBLE_NAME}, encoding="UTF-8",
-    )
 
     imported = openstatspec.import_sav(
         source, database_url=database, dataset_id=f"vls-{suffix[1:]}",
     )
-    assert imported.diagnostics == ()
+    assert {diagnostic.code for diagnostic in imported.diagnostics} == {
+        "compatible-variable-names-not-preserved",
+    }
     exported = openstatspec.export_sav(
         database_url=database,
         dataset_id=f"vls-{suffix[1:]}",
         destination=destination,
+        allow_loss=["compatible-variable-names-not-preserved"],
     )
-    assert exported.diagnostics == ()
+    assert {diagnostic.code for diagnostic in exported.diagnostics} == {
+        "compatible-variable-names-not-preserved",
+    }
 
     metadata = pyspssio.read_metadata(str(destination))
     frame = pyspssio.read_sav(str(destination))[0]
     assert metadata["var_names"] == ["before", _SOURCE_NAME, "after"]
     assert metadata["var_types"][_SOURCE_NAME] == 360
-    assert metadata["var_compat_names"][_SOURCE_NAME] == _COMPATIBLE_NAME
+    compatible_name = metadata["var_compat_names"][_SOURCE_NAME]
     assert list(frame.columns) == ["before", _SOURCE_NAME, "after"]
     assert frame[_SOURCE_NAME].tolist() == [_VALUE, "", "tail"]
-    assert _subtype_14_entries(destination) == [(_COMPATIBLE_NAME, 360)]
+    assert _subtype_14_entries(destination) == [(compatible_name, 360)]
 
 
 @pytest.mark.parametrize("damage", ["malformed", "duplicate"])
@@ -109,37 +107,3 @@ def test_vls_rewrite_rejects_invalid_subtype_14_without_publishing(tmp_path, dam
 
     assert source.read_bytes() == expected
     assert list(tmp_path.glob(f".{source.name}.*.tmp")) == []
-
-
-def test_malformed_vls_export_removes_output_and_records_no_success(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "source.sav"
-    destination = tmp_path / "failed.sav"
-    database_path = tmp_path / "failed.sqlite"
-    database = f"sqlite:///{database_path}"
-    openstatspec.initialize_catalog(database_url=database)
-    _write_vls_source(source)
-    raw_dictionary.write_compatible_names(
-        source, {_SOURCE_NAME: _COMPATIBLE_NAME}, encoding="UTF-8",
-    )
-    openstatspec.import_sav(source, database_url=database, dataset_id="failed-vls")
-    real_write = sav_module.write_compatible_names
-
-    def malformed_write(path, names, *, encoding):
-        data, _, record = _subtype_14_record(path)
-        payload = data[record.start + 16 : record.end].replace(b"\x00", b"!", 1)
-        _replace_subtype_14_payload(path, payload)
-        real_write(path, names, encoding=encoding)
-
-    monkeypatch.setattr(sav_module, "write_compatible_names", malformed_write)
-    with pytest.raises(raw_dictionary.RawDictionaryError):
-        openstatspec.export_sav(
-            database_url=database,
-            dataset_id="failed-vls",
-            destination=destination,
-        )
-
-    assert not destination.exists()
-    connection = sqlite3.connect(database_path)
-    assert connection.execute(
-        "select direction, status from operation_catalog order by created_at"
-    ).fetchall() == [("import", "succeeded")]

@@ -380,4 +380,3 @@ def test_export_recovery_helpers_propagate_explicit_source(
         dolt_conformance_source=sentinel,
     )
     assert calls == [("cleanup", sentinel), ("failure", sentinel)]
-

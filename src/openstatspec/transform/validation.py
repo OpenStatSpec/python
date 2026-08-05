@@ -10,7 +10,9 @@ from .plan import (
     AssignOperation,
     BooleanExpression,
     ComparisonExpression,
+    CreateVariableOperation,
     ConditionalAssignOperation,
+    DeleteVariableOperation,
     ExecuteOperation,
     Operand,
     RecodeMatch,
@@ -271,7 +273,6 @@ def _bind_conditional_assign(
             variable=target.name,
         )
 
-
 def bind_transformation_plan(
     plan: TransformationPlan, schema: VariableSchema
 ) -> BoundTransformation:
@@ -282,6 +283,12 @@ def bind_transformation_plan(
         raise TypeError("schema must be a VariableSchema.")
     variables = list(schema.variables)
     for operation in plan.operations:
+        if isinstance(operation, CreateVariableOperation):
+            _bind_create(operation, variables)
+            continue
+        if isinstance(operation, DeleteVariableOperation):
+            _bind_delete(operation, variables)
+            continue
         if isinstance(operation, RecodeOperation):
             _bind_recode(operation, variables)
             continue
@@ -305,6 +312,16 @@ def bind_transformation_plan(
                     variable=variable.name,
                     expected_type=expected,
                 )
+            if variable.storage_kind == "string" and variable.declared_string_width is not None:
+                for label in operation.labels:
+                    assert label.value.value is not None
+                    if len(label.value.value.encode("utf-8")) > variable.declared_string_width:
+                        raise frontend_error(
+                            "string_width_exceeded",
+                            "A value-label code exceeds the variable's declared string width.",
+                            variable=variable.name,
+                            declared_string_width=variable.declared_string_width,
+                        )
             variables[index] = replace(variable, value_labels=operation.labels)
             continue
         if isinstance(operation, SetFormatOperation):
@@ -330,3 +347,32 @@ def bind_transformation_plan(
             continue
         raise AssertionError(f"Unknown plan operation: {type(operation)!r}")
     return BoundTransformation(plan, VariableSchema(tuple(variables)))
+def _bind_create(
+    operation: CreateVariableOperation,
+    variables: list[VariableDefinition],
+) -> None:
+    if any(variable.name.casefold() == operation.variable.casefold() for variable in variables):
+        raise frontend_error(
+            "target_already_exists",
+            f"Target name {operation.variable!r} already exists.",
+            target=operation.variable,
+        )
+    variables.append(VariableDefinition(
+        operation.variable,
+        operation.storage_kind,
+        declared_string_width=operation.declared_string_width,
+    ))
+
+
+def _bind_delete(
+    operation: DeleteVariableOperation,
+    variables: list[VariableDefinition],
+) -> None:
+    index, variable = _resolve(variables, operation.variable)
+    if len(variables) == 1:
+        raise frontend_error(
+            "cannot_delete_last_variable",
+            "A dataset must retain at least one variable.",
+            variable=variable.name,
+        )
+    del variables[index]

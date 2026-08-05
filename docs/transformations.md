@@ -141,15 +141,15 @@ schema/table identity. It creates no derived dataset, output table, full-table
 copy, staging table, snapshot, rollback artifact, or recovery/history layer.
 Assignments and recodes use ordered `UPDATE` statements; later operations see
 earlier results. Label, value-label, format, and measurement-level operations
-update both the normative and compatibility catalogs.
+update the normative catalog.
 
 A numeric create target is supported atomically on SQLite and PostgreSQL.
 MySQL, MariaDB, and Dolt reject `target_mode=create` before mutation. On those
 profiles a separate versioned stage must first provision the nullable numeric
-physical column and both catalog representations; the transformation executor
-then sees a pre-existing target and performs no schema DDL.
-The public operation reports success only after physical data, both metadata
-representations, and the compact audit row are mutually complete.
+physical column and normative variable row; the transformation executor then
+sees a pre-existing target and performs no schema DDL.
+The public operation reports success only after physical data, normative
+metadata, and the compact audit row are mutually complete.
 
 Before Dolt mutation, the executor verifies the expected branch and `HEAD` and
 requires clean `dolt_status`. Success changes the same working set without

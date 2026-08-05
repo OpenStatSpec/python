@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 
-from types import SimpleNamespace
 import pytest
 
 import openstatspec
 import openstatspec.sql.inplace_transform as inplace_transform
+from openstatspec.sql.profiles import DOLT
 from openstatspec.sql.wide import create_wide_dataset
 
 
@@ -116,10 +116,6 @@ def test_exact_bounded_program_applies_data_and_both_catalogs(
         "WHERE source_name = 'target'"
     ).fetchone() == ("Example label", "F", 1, 0, "F", 1, 0, "nominal")
     assert connection.execute(
-        "SELECT label, format, print_format, write_format, measure "
-        "FROM variable_catalog WHERE source_name = 'target'"
-    ).fetchone() == ("Example label", "F1.0", "[5, 1, 0]", "[5, 1, 0]", "nominal")
-    assert connection.execute(
         "SELECT numeric_code, label FROM value_label ORDER BY ordinal"
     ).fetchall() == [(0.0, "No"), (1.0, "Yes")]
     assert connection.execute(
@@ -167,9 +163,6 @@ def test_injected_boundary_failure_leaves_no_partial_apply(
     assert "target" not in columns
     assert connection.execute(
         "SELECT COUNT(*) FROM variable WHERE source_name = 'target'"
-    ).fetchone() == (0,)
-    assert connection.execute(
-        "SELECT COUNT(*) FROM variable_catalog WHERE source_name = 'target'"
     ).fetchone() == (0,)
     assert connection.execute(
         "SELECT COUNT(*) FROM transformation_apply"
@@ -261,7 +254,7 @@ def test_dolt_mock_applies_exact_program_to_preexisting_target_without_schema_dd
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     states = iter([
         ("main", "abc123", 0),
@@ -298,7 +291,7 @@ def test_dolt_mock_rejects_create_target_before_schema_mutation(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     monkeypatch.setattr(
         inplace_transform,
@@ -341,7 +334,7 @@ def test_dolt_mock_rechecks_clean_state_after_dataset_lock(
     monkeypatch.setattr(
         inplace_transform,
         "effective_profile",
-        lambda _url, **_kwargs: (SimpleNamespace(name="dolt"), {}),
+        lambda _url, **_kwargs: (DOLT, {}),
     )
     states = iter([
         ("main", "abc123", 0),

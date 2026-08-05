@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
 from typing import Any
 from uuid import uuid4
 
@@ -17,6 +16,7 @@ from sqlalchemy import (
 
 from ..transform import (
     AssignOperation, BooleanExpression, ComparisonExpression,
+    CreateVariableOperation, DeleteVariableOperation,
     ConditionalAssignOperation, ExecuteOperation, Operand,
     RecodeOperation, RecodeResult, ReplaceValueLabelsOperation,
     SetFormatOperation, SetMeasurementLevelOperation,
@@ -27,10 +27,8 @@ from ..transform import (
 from .capabilities import effective_profile
 from .dolt_conformance import DoltConformanceSource
 from .normative import catalog as core_catalog
-from .wide import catalog as legacy_catalog
-from .wide import (
-    normalized_metadata_tables, physical_name, require_verified_catalog,
-)
+from .profiles import SqlProfile, preflight
+from .wide import physical_name, require_verified_catalog
 from .workflow import TransformationError
 
 
@@ -61,7 +59,8 @@ def in_place_transformation_capabilities() -> dict[str, Any]:
         "parent_kinds": ["core"],
         "mutation": "same_dataset_same_physical_wide_table",
         "commands": ["RECODE", "COMPUTE", "IF", "VARIABLE LABELS",
-                     "VALUE LABELS", "FORMATS", "VARIABLE LEVEL", "EXECUTE"],
+                     "VALUE LABELS", "FORMATS", "VARIABLE LEVEL",
+                     "STRING", "DELETE VARIABLES", "EXECUTE"],
         "new_target_column": {
             "sqlite": True,
             "postgresql": True,
@@ -215,6 +214,10 @@ def _input_schema(
                 and str(row["storage_kind"]) == "numeric" else None
             ),
             measurement_level=row["measurement_level"],
+            declared_string_width=(
+                int(row["declared_string_width"])
+                if row["declared_string_width"] is not None else None
+            ),
         )
         for row in variables
     ))
@@ -252,32 +255,23 @@ def _target_identity_state(
     return str(row.dataset_id), schema, table_name, relation_count
 
 
-def _legacy_identifiers(dataset: dict[str, Any]) -> tuple[str, str]:
-    dataset_name = dataset.get("dataset_name")
+def _physical_table_name(dataset: dict[str, Any]) -> str:
     table_name = dataset.get("physical_table_name")
-    if not isinstance(dataset_name, str) or not dataset_name:
-        raise TransformationError(
-            "dataset_invalid", "The target lacks its legacy catalog identity."
-        )
     if not isinstance(table_name, str) or not table_name:
         raise TransformationError(
             "dataset_invalid", "The target lacks its physical wide-table name."
         )
-    return dataset_name, table_name
+    return table_name
 
 
 def _replace_value_labels(
     connection: Any,
     *,
     core: Any,
-    legacy_variable: Table,
-    legacy_labels: Table,
-    legacy_dataset_id: str,
     variable: dict[str, Any],
     labels: tuple[ValueLabel, ...],
 ) -> None:
     variable_id = str(variable["variable_id"])
-    ordinal = int(variable["source_ordinal"])
     old_set = connection.execute(
         select(core.variable_value_label_set.c.value_label_set_id).where(
             core.variable_value_label_set.c.variable_id == variable_id
@@ -313,27 +307,104 @@ def _replace_value_labels(
             string_code=(str(item.value.value) if item.value.type == "string" else None),
             label=item.label,
         ))
-    connection.execute(delete(legacy_labels).where(
-        legacy_labels.c.dataset_id == legacy_dataset_id,
-        legacy_labels.c.variable_ordinal == ordinal,
+
+def _delete_variable_metadata(
+    connection: Any,
+    *,
+    core: Any,
+    variable: dict[str, Any],
+) -> None:
+    """Delete one variable and every normative catalog row owned by it."""
+    variable_id = str(variable["variable_id"])
+    variable_set_ids = list(connection.execute(
+        select(core.variable_set_member.c.variable_set_id).where(
+            core.variable_set_member.c.variable_id == variable_id
+        )
+    ).scalars())
+    response_set_ids = list(connection.execute(
+        select(core.multiple_response_member.c.multiple_response_set_id).where(
+            core.multiple_response_member.c.variable_id == variable_id
+        )
+    ).scalars())
+    label_set_id = connection.execute(
+        select(core.variable_value_label_set.c.value_label_set_id).where(
+            core.variable_value_label_set.c.variable_id == variable_id
+        )
+    ).scalar_one_or_none()
+    connection.execute(delete(core.dataset_weight_variable).where(
+        core.dataset_weight_variable.c.variable_id == variable_id
     ))
-    for label_ordinal, item in enumerate(labels, start=1):
-        connection.execute(insert(legacy_labels).values(
-            dataset_id=legacy_dataset_id,
-            variable_ordinal=ordinal,
-            ordinal=label_ordinal,
-            value_type="numeric" if item.value.type == "binary64" else "text",
-            numeric_value=(item.value.number() if item.value.type == "binary64" else None),
-            text_value=(str(item.value.value) if item.value.type == "string" else None),
-            label=item.label,
-        ))
-    legacy_json = {
-        str(_typed_value(item.value)): item.label for item in labels
-    }
-    connection.execute(update(legacy_variable).where(
-        legacy_variable.c.dataset_id == legacy_dataset_id,
-        legacy_variable.c.ordinal == ordinal,
-    ).values(value_labels=json.dumps(legacy_json, ensure_ascii=False)))
+    connection.execute(delete(core.variable_set_member).where(
+        core.variable_set_member.c.variable_id == variable_id
+    ))
+    for variable_set_id in variable_set_ids:
+        remaining_member = connection.execute(
+            select(core.variable_set_member.c.variable_id).where(
+                core.variable_set_member.c.variable_set_id == variable_set_id
+            )
+        ).first()
+        if remaining_member is None:
+            connection.execute(delete(core.variable_set).where(
+                core.variable_set.c.variable_set_id == variable_set_id
+            ))
+    connection.execute(delete(core.multiple_response_member).where(
+        core.multiple_response_member.c.variable_id == variable_id
+    ))
+    for response_set_id in response_set_ids:
+        remaining_member = connection.execute(
+            select(core.multiple_response_member.c.variable_id).where(
+                core.multiple_response_member.c.multiple_response_set_id
+                == response_set_id
+            )
+        ).first()
+        if remaining_member is None:
+            connection.execute(delete(core.multiple_response_set).where(
+                core.multiple_response_set.c.multiple_response_set_id
+                == response_set_id
+            ))
+    connection.execute(delete(core.variable_attribute).where(
+        core.variable_attribute.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.missing_rule).where(
+        core.missing_rule.c.variable_id == variable_id
+    ))
+    connection.execute(delete(core.variable_value_label_set).where(
+        core.variable_value_label_set.c.variable_id == variable_id
+    ))
+    if label_set_id is not None:
+        still_used = connection.execute(
+            select(core.variable_value_label_set.c.variable_id).where(
+                core.variable_value_label_set.c.value_label_set_id == label_set_id
+            )
+        ).first()
+        if still_used is None:
+            connection.execute(delete(core.value_label).where(
+                core.value_label.c.value_label_set_id == label_set_id
+            ))
+            connection.execute(delete(core.value_label_set).where(
+                core.value_label_set.c.value_label_set_id == label_set_id
+            ))
+    connection.execute(delete(core.variable).where(
+        core.variable.c.variable_id == variable_id
+    ))
+
+
+def _compact_variable_ordinals(
+    connection: Any,
+    *,
+    core: Any,
+    variables: list[dict[str, Any]],
+) -> None:
+    """Keep normative variable source order contiguous after deletion."""
+    for source_ordinal, variable in enumerate(variables, start=1):
+        if int(variable["source_ordinal"]) == source_ordinal:
+            continue
+        connection.execute(
+            update(core.variable)
+            .where(core.variable.c.variable_id == variable["variable_id"])
+            .values(source_ordinal=source_ordinal)
+        )
+        variable["source_ordinal"] = source_ordinal
 
 
 def _failure_boundary(_name: str) -> None:
@@ -380,7 +451,9 @@ def _apply_plan_on_connection(
     submission: InPlacePlanSubmission,
     actor: str,
     database_profile: str,
+    target_profile: SqlProfile,
     allow_schema_change: bool,
+    allow_delete_variable: bool,
     dolt_branch: str | None,
     dolt_head: str | None,
     mutation_journal: dict[str, Any] | None = None,
@@ -392,13 +465,25 @@ def _apply_plan_on_connection(
             "The target dataset's physical wide table does not exist.",
         )
     dataset, variables, schema = _input_schema(connection, dataset_id)
-    legacy_dataset_id, table_name = _legacy_identifiers(dataset)
+    table_name = _physical_table_name(dataset)
     plan = submission.plan
     bound = bind_transformation_plan(plan, schema)
-    output_by_name = {
-        variable.name.casefold(): variable
-        for variable in bound.output_schema.variables
-    }
+    output_used_physical = {"__case_ordinal"}
+    output_variables = [
+        {
+            "ordinal": source_ordinal,
+            "source_name": variable.name,
+            "physical_name": physical_name(
+                variable.name, output_used_physical,
+            ),
+            "storage_kind": variable.storage_kind,
+            "string_width": variable.declared_string_width,
+        }
+        for source_ordinal, variable in enumerate(
+            bound.output_schema.variables, start=1,
+        )
+    ]
+    preflight(target_profile, output_variables)
     audit = apply_audit_catalog(MetaData())
     if not inspect(connection).has_table("transformation_apply"):
         raise TransformationError(
@@ -416,18 +501,47 @@ def _apply_plan_on_connection(
         )
     create_operations = [
         operation for operation in plan.operations
-        if isinstance(operation, (RecodeOperation, AssignOperation))
-        and operation.target_mode == "create"
+        if isinstance(operation, CreateVariableOperation)
+        or (
+            isinstance(operation, (RecodeOperation, AssignOperation))
+            and operation.target_mode == "create"
+        )
     ]
-    if create_operations and not allow_schema_change:
+    schema_operations = create_operations + [
+        operation for operation in plan.operations
+        if isinstance(operation, DeleteVariableOperation)
+    ]
+    if schema_operations and not allow_schema_change:
         raise TransformationError(
             "schema_change_not_atomic",
             "This database profile has no coherent new-target strategy.",
         )
-    unsupported_targets = [
-        operation.target for operation in create_operations
-        if output_by_name[operation.target.casefold()].storage_kind != "numeric"
-    ]
+    if any(
+        isinstance(operation, DeleteVariableOperation)
+        for operation in plan.operations
+    ) and not allow_delete_variable:
+        raise TransformationError(
+            "delete_variable_not_supported",
+            "This SQLite runtime does not support ALTER TABLE DROP COLUMN.",
+        )
+    unsupported_targets: list[str] = []
+    for operation_index, operation in enumerate(plan.operations):
+        if not isinstance(operation, (RecodeOperation, AssignOperation)):
+            continue
+        if operation.target_mode != "create":
+            continue
+        prefix = TransformationPlan(
+            plan.operations[:operation_index + 1],
+            contract=plan.contract,
+            input_alias=plan.input_alias,
+        )
+        prefix_output = bind_transformation_plan(prefix, schema).output_schema
+        created = next(
+            variable for variable in prefix_output.variables
+            if variable.name.casefold() == operation.target.casefold()
+        )
+        if created.storage_kind != "numeric":
+            unsupported_targets.append(operation.target)
     if unsupported_targets:
         raise TransformationError(
             "in_place_target_type_unsupported",
@@ -435,17 +549,12 @@ def _apply_plan_on_connection(
         )
 
     core = core_catalog(MetaData())
-    legacy_metadata = MetaData()
-    _, legacy_variable, _, _ = legacy_catalog(legacy_metadata)
-    _, legacy_labels, _, _ = normalized_metadata_tables(legacy_metadata)
     relation = Table(
         table_name, MetaData(), schema=dataset.get("physical_table_schema"),
         autoload_with=connection,
     )
     by_name = {str(row["source_name"]).casefold(): row for row in variables}
     used_physical = {str(row["physical_name"]).casefold() for row in variables}
-    next_ordinal = max(int(row["source_ordinal"]) for row in variables) + 1
-    target_rows: list[dict[str, Any]] = []
     quote = connection.dialect.identifier_preparer.quote
     qualified_table = connection.dialect.identifier_preparer.format_table(relation)
     numeric_type = (
@@ -454,7 +563,6 @@ def _apply_plan_on_connection(
     if mutation_journal is not None:
         mutation_journal.update({
             "table_schema": dataset.get("physical_table_schema"),
-            "legacy_dataset_id": legacy_dataset_id,
             "table_name": table_name,
             "added_columns": [],
             "target_rows": [],
@@ -483,57 +591,67 @@ def _apply_plan_on_connection(
                 "The Dolt working set changed after locking the dataset.",
             )
 
-    # All non-transactional DDL precedes every data/catalog mutation. This makes
-    # Compensation is journal-bounded to target columns and catalog identities
-    # created by this apply, without resetting unrelated database state.
-    for operation in create_operations:
-        target_physical = physical_name(operation.target, used_physical)
-        connection.exec_driver_sql(
-            f"ALTER TABLE {qualified_table} ADD COLUMN "
-            f"{quote(target_physical)} {numeric_type} NULL"
-        )
-        if mutation_journal is not None:
-            mutation_journal["added_columns"].append(target_physical)
-        target_row = {
-            "variable_id": str(uuid4()),
-            "dataset_id": dataset_id,
-            "source_ordinal": next_ordinal,
-            "source_name": operation.target,
-            "physical_name": target_physical,
-            "storage_kind": "numeric",
-            "variable_label": None,
-        }
-        next_ordinal += 1
-        target_rows.append(target_row)
-        if mutation_journal is not None:
-            mutation_journal["target_rows"].append(dict(target_row))
-    if create_operations:
-        _failure_boundary("schema")
-
-    for target_row in target_rows:
-        connection.execute(insert(core.variable).values(**target_row))
-        connection.execute(insert(legacy_variable).values(
-            dataset_id=legacy_dataset_id,
-            ordinal=target_row["source_ordinal"],
-            source_name=target_row["source_name"],
-            physical_name=target_row["physical_name"],
-            storage_kind="numeric",
-            string_width=None,
-            label="",
-            attributes="{}",
-            value_labels="{}",
-            missing_ranges="[]",
-        ))
-        variables.append(target_row)
-        by_name[str(target_row["source_name"]).casefold()] = target_row
-    if target_rows:
-        _failure_boundary("catalog")
-        relation = Table(
-            table_name, MetaData(), schema=dataset.get("physical_table_schema"),
-            autoload_with=connection,
-        )
-
+    # Schema changes are allowed only on profiles whose DDL participates in
+    # this apply transaction, so execute them in canonical operation order.
+    # That preserves deterministic physical naming across delete/recreate flows.
     for operation in plan.operations:
+        creates_target = (
+            isinstance(operation, CreateVariableOperation)
+            or (
+                isinstance(operation, (RecodeOperation, AssignOperation))
+                and operation.target_mode == "create"
+            )
+        )
+        if creates_target:
+            target_name = (
+                operation.variable
+                if isinstance(operation, CreateVariableOperation)
+                else operation.target
+            )
+            target_physical = physical_name(target_name, used_physical)
+            storage_kind = (
+                operation.storage_kind
+                if isinstance(operation, CreateVariableOperation)
+                else "numeric"
+            )
+            string_width = (
+                operation.declared_string_width
+                if isinstance(operation, CreateVariableOperation)
+                else None
+            )
+            column_type = numeric_type if storage_kind == "numeric" else "TEXT"
+            null_clause = (
+                "NULL" if storage_kind == "numeric"
+                else "NOT NULL DEFAULT ''"
+            )
+            connection.exec_driver_sql(
+                f"ALTER TABLE {qualified_table} ADD COLUMN "
+                f"{quote(target_physical)} {column_type} {null_clause}"
+            )
+            created_target = {
+                "variable_id": str(uuid4()),
+                "dataset_id": dataset_id,
+                "source_ordinal": len(variables) + 1,
+                "source_name": target_name,
+                "physical_name": target_physical,
+                "storage_kind": storage_kind,
+                "declared_string_width": string_width,
+                "variable_label": None,
+            }
+            if mutation_journal is not None:
+                mutation_journal["added_columns"].append(target_physical)
+                mutation_journal["target_rows"].append(dict(created_target))
+            _failure_boundary("schema")
+            relation = Table(
+                table_name, MetaData(), schema=dataset.get("physical_table_schema"),
+                autoload_with=connection,
+            )
+            connection.execute(insert(core.variable).values(**created_target))
+            variables.append(created_target)
+            by_name[str(created_target["source_name"]).casefold()] = created_target
+            _failure_boundary("catalog")
+        if isinstance(operation, CreateVariableOperation):
+            continue
         if isinstance(operation, RecodeOperation):
             source_variable = by_name[operation.source.casefold()]
             target_variable = by_name[operation.target.casefold()]
@@ -571,18 +689,11 @@ def _apply_plan_on_connection(
             connection.execute(update(core.variable).where(
                 core.variable.c.variable_id == variable["variable_id"]
             ).values(variable_label=operation.label))
-            connection.execute(update(legacy_variable).where(
-                legacy_variable.c.dataset_id == legacy_dataset_id,
-                legacy_variable.c.ordinal == variable["source_ordinal"],
-            ).values(label=operation.label))
             _failure_boundary("catalog")
         elif isinstance(operation, ReplaceValueLabelsOperation):
             _replace_value_labels(
                 connection,
                 core=core,
-                legacy_variable=legacy_variable,
-                legacy_labels=legacy_labels,
-                legacy_dataset_id=legacy_dataset_id,
                 variable=by_name[operation.variable.casefold()],
                 labels=operation.labels,
             )
@@ -599,26 +710,56 @@ def _apply_plan_on_connection(
                 write_format_width=operation.width,
                 write_format_decimals=operation.decimals,
             ))
-            encoded = json.dumps([5, operation.width, operation.decimals])
-            connection.execute(update(legacy_variable).where(
-                legacy_variable.c.dataset_id == legacy_dataset_id,
-                legacy_variable.c.ordinal == variable["source_ordinal"],
-            ).values(
-                format=f"F{operation.width}.{operation.decimals}",
-                print_format=encoded,
-                write_format=encoded,
-            ))
             _failure_boundary("catalog")
         elif isinstance(operation, SetMeasurementLevelOperation):
             variable = by_name[operation.variable.casefold()]
             connection.execute(update(core.variable).where(
                 core.variable.c.variable_id == variable["variable_id"]
             ).values(measurement_level=operation.level))
-            connection.execute(update(legacy_variable).where(
-                legacy_variable.c.dataset_id == legacy_dataset_id,
-                legacy_variable.c.ordinal == variable["source_ordinal"],
-            ).values(measure=operation.level))
             _failure_boundary("catalog")
+        elif isinstance(operation, DeleteVariableOperation):
+            variable = by_name[operation.variable.casefold()]
+            connection.exec_driver_sql(
+                f"ALTER TABLE {qualified_table} DROP COLUMN "
+                f"{quote(variable['physical_name'])}"
+            )
+            _delete_variable_metadata(connection, core=core, variable=variable)
+            by_name.pop(operation.variable.casefold(), None)
+            used_physical.discard(str(variable["physical_name"]).casefold())
+            variables = [
+                row for row in variables
+                if row["variable_id"] != variable["variable_id"]
+            ]
+            _compact_variable_ordinals(
+                connection, core=core, variables=variables,
+            )
+            canonical_physical = {"__case_ordinal"}
+            for remaining_variable in variables:
+                expected_physical = physical_name(
+                    str(remaining_variable["source_name"]), canonical_physical,
+                )
+                current_physical = str(remaining_variable["physical_name"])
+                if current_physical == expected_physical:
+                    continue
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {qualified_table} RENAME COLUMN "
+                    f"{quote(current_physical)} TO {quote(expected_physical)}"
+                )
+                connection.execute(
+                    update(core.variable)
+                    .where(
+                        core.variable.c.variable_id
+                        == remaining_variable["variable_id"]
+                    )
+                    .values(physical_name=expected_physical)
+                )
+                remaining_variable["physical_name"] = expected_physical
+            used_physical = canonical_physical
+            relation = Table(
+                table_name, MetaData(), schema=dataset.get("physical_table_schema"),
+                autoload_with=connection,
+            )
+            _failure_boundary("schema")
         elif isinstance(operation, ExecuteOperation):
             continue
         else:  # pragma: no cover
@@ -757,12 +898,8 @@ def _compensate_failed_apply(
     with engine.begin() as connection:
 
         core = core_catalog(MetaData())
-        legacy_metadata = MetaData()
-        _, legacy_variable, _, _ = legacy_catalog(legacy_metadata)
-        _, legacy_labels, _, _ = normalized_metadata_tables(legacy_metadata)
         target_rows = list(journal.get("target_rows") or ())
         variable_ids = [str(row["variable_id"]) for row in target_rows]
-        ordinals = [int(row["source_ordinal"]) for row in target_rows]
         if variable_ids:
             label_set_ids = list(connection.execute(
                 select(core.variable_value_label_set.c.value_label_set_id).where(
@@ -781,16 +918,6 @@ def _compensate_failed_apply(
                 ))
             connection.execute(delete(core.variable).where(
                 core.variable.c.variable_id.in_(variable_ids)
-            ))
-        legacy_dataset_id = journal.get("legacy_dataset_id")
-        if legacy_dataset_id is not None and ordinals:
-            connection.execute(delete(legacy_labels).where(
-                legacy_labels.c.dataset_id == legacy_dataset_id,
-                legacy_labels.c.variable_ordinal.in_(ordinals),
-            ))
-            connection.execute(delete(legacy_variable).where(
-                legacy_variable.c.dataset_id == legacy_dataset_id,
-                legacy_variable.c.ordinal.in_(ordinals),
             ))
         apply_id = journal.get("apply_id")
         if apply_id:
@@ -845,9 +972,16 @@ def _run_in_place_submission(
         raise TransformationError(
             "actor_required", "A non-empty actor identity is mandatory.",
         )
-    profile, _active = effective_profile(
+    profile, active = effective_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
+    allow_delete_variable = True
+    if profile.name == "sqlite":
+        sqlite_version_parts = tuple(
+            int(part) for part in str(active["server_version"]).split(".")
+        )
+        sqlite_version = (*sqlite_version_parts, 0, 0)[:3]
+        allow_delete_variable = sqlite_version >= (3, 35, 0)
     engine = create_engine(database_url)
     journal: dict[str, Any] = {}
     branch: str | None = None
@@ -893,7 +1027,9 @@ def _run_in_place_submission(
                     submission=submission,
                     actor=actor,
                     database_profile=profile.name,
+                    target_profile=profile,
                     allow_schema_change=profile.name in {"sqlite", "postgresql"},
+                    allow_delete_variable=allow_delete_variable,
                     dolt_branch=branch,
                     dolt_head=head,
                     mutation_journal=journal,

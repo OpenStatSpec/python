@@ -10,7 +10,6 @@ from ...sql.inplace_transform import (
     _run_in_place_submission,
     load_transformation_schema,
 )
-from . import SPSS_FRONTEND_CONTRACT
 from .compiler import compile_spss_syntax
 
 
@@ -37,7 +36,7 @@ def apply_spss_in_place(
             plan=compilation.plan,
             source_kind="spss_syntax",
             source_hash=compilation.source_hash,
-            frontend_contract=SPSS_FRONTEND_CONTRACT,
+            frontend_contract=compilation.frontend_contract,
         )
 
     return _run_in_place_submission(

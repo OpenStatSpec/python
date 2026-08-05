@@ -5,6 +5,18 @@ All notable changes to this reference implementation are documented here.
 ## Unreleased
 
 Planned adapter release: `0.5.0`, after lifecycle integration and final specification conformance.
+### Fixed
+
+- Removed the temporary `*_catalog` compatibility schema and made SAV/ZSAV
+  import, validation, export, fidelity reporting, and in-place metadata edits
+  use the normative UUID-keyed OpenStatSpec catalog exclusively.
+- Existing databases that contain former compatibility relations must be
+  remediated manually before further operations.
+- Imports now reject dataset names that collide with normative UUID identifiers,
+  cleanup drops only a physical table actually created by the failing import,
+  and non-preserved SPSS compatible variable names are reported as an explicit
+  loss requiring export consent.
+
 
 ### Added
 
@@ -24,8 +36,8 @@ Planned adapter release: `0.5.0`, after lifecycle integration and final specific
 
 - Bumped the canonical transformation-plan and SPSS frontend contracts to
   `v0.2`; canonical JSON and hashes include every sequential operation.
-- In-place apply now records variable label, value labels, `F` print/write
-  format, and measurement level in both normative and compatibility catalogs.
+- In-place apply records variable label, value labels, `F` print/write
+  format, and measurement level only in the normative catalog.
 - Dolt still requires an exact branch, exact HEAD, and clean working set;
   successful apply leaves an inspectable diff and never calls `DOLT_COMMIT`.
 - Dolt declaration validation is implemented by the Python adapter. The

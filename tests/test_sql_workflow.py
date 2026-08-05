@@ -500,6 +500,9 @@ def test_append_only_retire_remove_and_reconcile_protocol(catalog):
     assert openstatspec.reconcile_derived_removals(
         database_url=url,
     )["reconciled"] == 0
+    assert openstatspec.initialize_catalog(
+        database_url=url,
+    )["catalog"] == "verified"
 
 
 def test_sqlite_is_the_only_advertised_and_executable_workflow_backend():

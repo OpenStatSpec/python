@@ -8,10 +8,12 @@ from typing import Literal
 from ...transform.errors import SourceSpan, frontend_error
 from ...transform.plan import (
     AssignOperation, BooleanExpression, ComparisonExpression,
-    ConditionalAssignOperation, ExecuteOperation, Operand, PlanOperation,
+    ConditionalAssignOperation, CreateVariableOperation, DeleteVariableOperation,
+    ExecuteOperation, Operand, PlanOperation,
     PredicateExpression, RecodeMatch, RecodeOperation, RecodeResult, RecodeRule,
     ReplaceValueLabelsOperation, SetFormatOperation,
     SetMeasurementLevelOperation, SetVariableLabelOperation,
+    TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT,
     TRANSFORMATION_PLAN_V1_CONTRACT,
     TransformationPlan, TypedValue, ValueLabel,
 )
@@ -21,10 +23,11 @@ from ...transform.schema import (
 from ...transform.validation import bind_transformation_plan
 from .syntax import (
     BooleanSyntax, ComparisonSyntax, ComputeCommandSyntax, ExecuteCommandSyntax,
-    FormatsCommandSyntax, IfCommandSyntax, OperandSyntax, PredicateSyntax,
+    DeleteVariablesCommandSyntax, FormatsCommandSyntax, IfCommandSyntax,
+    OperandSyntax, PredicateSyntax,
     RecodeCommandSyntax, RecodeMatchSyntax, RecodeResultSyntax,
     SpssSyntaxProgram, SyntaxLiteral, ValueLabelsCommandSyntax,
-    VariableLabelsCommandSyntax, VariableLevelCommandSyntax,
+    StringCommandSyntax, VariableLabelsCommandSyntax, VariableLevelCommandSyntax,
 )
 
 
@@ -290,8 +293,6 @@ def _bind_recode(
         # replace intentionally preserves the existing variable metadata. A later
         # VALUE LABELS command replaces value labels explicitly.
     return operations, spans
-
-
 def bind_spss_syntax(
     program: SpssSyntaxProgram, schema: VariableSchema, *, input_alias: str = "parent",
 ) -> BoundTransformation:
@@ -305,6 +306,50 @@ def bind_spss_syntax(
     operations: list[PlanOperation] = []
     spans: list[SourceSpan] = []
     for command in program.commands:
+        if isinstance(command, StringCommandSyntax):
+            for variable_token in command.variables:
+                if variable_token.text.startswith("__"):
+                    raise frontend_error(
+                        "reserved_target_name",
+                        f"Target name {variable_token.text!r} is reserved.",
+                        span=variable_token.span,
+                        target=variable_token.text,
+                    )
+                if any(
+                    variable.name.casefold() == variable_token.text.casefold()
+                    for variable in variables
+                ):
+                    raise frontend_error(
+                        "target_already_exists",
+                        f"Target name {variable_token.text!r} already exists.",
+                        span=variable_token.span,
+                        target=variable_token.text,
+                    )
+                operations.append(CreateVariableOperation(
+                    variable_token.text, "string", command.width,
+                ))
+                spans.append(command.span)
+                variables.append(VariableDefinition(
+                    variable_token.text, "string",
+                    declared_string_width=command.width,
+                ))
+            continue
+        if isinstance(command, DeleteVariablesCommandSyntax):
+            for variable_token in command.variables:
+                index, variable = _resolve(
+                    variables, variable_token.text, variable_token.span,
+                )
+                if len(variables) == 1:
+                    raise frontend_error(
+                        "cannot_delete_last_variable",
+                        "DELETE VARIABLES cannot remove the final dataset variable.",
+                        span=variable_token.span,
+                        variable=variable.name,
+                    )
+                operations.append(DeleteVariableOperation(variable.name))
+                spans.append(command.span)
+                del variables[index]
+            continue
         if isinstance(command, RecodeCommandSyntax):
             recodes, recode_spans = _bind_recode(command, variables)
             operations.extend(recodes)
@@ -447,10 +492,15 @@ def bind_spss_syntax(
     v01_types = (
         RecodeOperation, SetVariableLabelOperation, ReplaceValueLabelsOperation,
     )
+    schema_change_types = (CreateVariableOperation, DeleteVariableOperation)
     contract = (
-        TRANSFORMATION_PLAN_V1_CONTRACT
-        if all(isinstance(operation, v01_types) for operation in operations)
-        else "openstatspec-transformation-plan-v0.2"
+        TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT
+        if any(isinstance(operation, schema_change_types) for operation in operations)
+        else (
+            TRANSFORMATION_PLAN_V1_CONTRACT
+            if all(isinstance(operation, v01_types) for operation in operations)
+            else "openstatspec-transformation-plan-v0.2"
+        )
     )
     plan = TransformationPlan(
         tuple(operations), contract=contract, input_alias=input_alias,

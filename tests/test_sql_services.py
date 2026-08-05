@@ -17,7 +17,7 @@ from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 pytestmark = pytest.mark.services
 _REQUIRED_ENGINE_LOSS = []
-_COMPAT_NAME_LOSS = _REQUIRED_ENGINE_LOSS
+_COMPAT_NAME_LOSS = [*_REQUIRED_ENGINE_LOSS, "compatible-variable-names-not-preserved"]
 
 
 @pytest.fixture
@@ -55,7 +55,10 @@ def test_live_profile_import_validate_and_export(environment_name, dataset_id, s
     engine = create_engine(database_url)
     with engine.connect() as connection:
         assert connection.execute(text(f"SELECT COUNT(*) FROM {imported['data_table']} ")).scalar_one() == 2
-        assert connection.execute(text("SELECT COUNT(*) FROM variable_catalog WHERE dataset_id = :dataset_id"), {"dataset_id": runtime_dataset_id}).scalar_one() == 2
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM variable v JOIN dataset d ON d.dataset_id = v.dataset_id "
+            "WHERE d.dataset_name = :dataset_name"
+        ), {"dataset_name": runtime_dataset_id}).scalar_one() == 2
     destination = tmp_path / f"{dataset_id}.sav"
     exported = openstatspec.export_sav(database_url=database_url, dataset_id=runtime_dataset_id, destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
     assert destination.exists()
