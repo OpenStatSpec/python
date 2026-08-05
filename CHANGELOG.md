@@ -19,7 +19,7 @@ All notable changes to this reference implementation are documented here.
 
 ## Unreleased
 
-Planned adapter release: `0.5.0`, after lifecycle integration and final specification conformance.
+Planned adapter release: next development release.
 ### Fixed
 
 - Removed the temporary `*_catalog` compatibility schema and made SAV/ZSAV
