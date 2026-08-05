@@ -509,6 +509,21 @@ def _capture_dolt_state(
         ),
         "diff_summaries": {},
     }
+
+    def allowed_audit_data_diff(row: Mapping[str, Any]) -> bool:
+        values = dict(row)
+        from_name = str(values.get("from_table_name") or "")
+        to_name = str(values.get("to_table_name") or "")
+        data_change = str(values.get("data_change")).strip().lower()
+        schema_change = str(values.get("schema_change")).strip().lower()
+        return (
+            from_name == to_name
+            and from_name in audit_relations
+            and str(values.get("diff_type") or "").strip().lower() == "modified"
+            and data_change in {"1", "true"}
+            and schema_change in {"0", "false"}
+        )
+
     for label, left, right in (
         ("head_to_working", "HEAD", "WORKING"),
         ("head_to_staged", "HEAD", "STAGED"),
@@ -530,12 +545,7 @@ def _capture_dolt_state(
         unrelated["diff_summaries"][label] = _dolt_evidence_block(
             (
                 row for row in rows
-                if not {
-                    str(value) for value in (
-                        dict(row).get("from_table_name"),
-                        dict(row).get("to_table_name"),
-                    ) if value
-                } <= audit_relations
+                if not allowed_audit_data_diff(row)
             ),
             expected_keys=expected_keys,
         )
