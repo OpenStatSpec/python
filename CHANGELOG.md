@@ -2,6 +2,10 @@
 
 All notable changes to this reference implementation are documented here.
 
+## Unreleased
+
+_No unreleased changes._
+
 ## 0.6.0 - 2026-08-05
 
 ### Added
@@ -17,9 +21,7 @@ All notable changes to this reference implementation are documented here.
 - Schema-changing SPSS plans use the v0.3 contract and fail closed for
   unsupported STRING/DELETE variable ranges.
 
-## Unreleased
-
-Planned adapter release: next development release.
+## 0.5.0 - 2026-08-05
 ### Fixed
 
 - Removed the temporary `*_catalog` compatibility schema and made SAV/ZSAV
