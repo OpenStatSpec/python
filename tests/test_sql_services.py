@@ -6,7 +6,7 @@ from uuid import uuid4
 import pandas as pd
 import pyspssio
 import pytest
-from sqlalchemy import create_engine, inspect as inspect_database, text
+from sqlalchemy import MetaData, create_engine, inspect as inspect_database, text
 from sqlalchemy.exc import DBAPIError
 
 import openstatspec
