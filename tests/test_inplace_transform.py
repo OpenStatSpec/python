@@ -191,7 +191,7 @@ def test_string_declaration_creates_column_and_catalog_variable(catalog) -> None
     )["valid"] is True
 
 
-def test_delete_recanonicalizes_surviving_collision_columns(tmp_path) -> None:
+def test_delete_preserves_surviving_physical_bindings_and_ordinals(tmp_path) -> None:
     path = tmp_path / "collision-delete.sqlite"
     url = f"sqlite:///{path}"
     openstatspec.initialize_catalog(database_url=url)
@@ -242,9 +242,9 @@ def test_delete_recanonicalizes_surviving_collision_columns(tmp_path) -> None:
         "select source_name, physical_name, source_ordinal from variable "
         "where dataset_id = ? order by source_ordinal",
         (dataset_id,),
-    ).fetchall() == [("a_b", "a_b", 1), ("keep", "keep", 2)]
+    ).fetchall() == [("a_b", "a_b_2", 2), ("keep", "keep", 3)]
     assert connection.execute(
-        "select a_b, keep from data_collision_source order by __case_ordinal"
+        "select a_b_2, keep from data_collision_source order by __case_ordinal"
     ).fetchall() == [(2.0, 3.0), (5.0, 6.0)]
     connection.close()
     assert validate_wide_dataset(
@@ -361,7 +361,7 @@ def test_delete_then_recreate_same_name_resolves_operations_in_order(catalog) ->
         (dataset_id,),
     ).fetchall()
     assert [(row[0], row[2]) for row in variables] == [
-        ("other", 1), ("score", 2),
+        ("other", 2), ("score", 3),
     ]
     physical = {row[0]: row[1] for row in variables}
     assert connection.execute(
@@ -414,8 +414,13 @@ def test_temporary_target_type_is_not_taken_from_same_name_recreation(catalog) -
         "from variable where dataset_id = ? order by source_ordinal",
         (dataset_id,),
     ).fetchall() == [("score", "numeric", None), ("tmp", "string", 4)]
+    physical = dict(connection.execute(
+        "select source_name, physical_name from variable where dataset_id = ?",
+        (dataset_id,),
+    ).fetchall())
     assert connection.execute(
-        f'SELECT score, tmp FROM "{table_name}" ORDER BY __case_ordinal'
+        f'SELECT "{physical["score"]}", "{physical["tmp"]}" '
+        f'FROM "{table_name}" ORDER BY __case_ordinal'
     ).fetchall() == [(1.0, ""), (2.0, ""), (3.0, "")]
     connection.close()
     assert validate_wide_dataset(

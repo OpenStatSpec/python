@@ -100,6 +100,38 @@ def _result_type(
     return result.value.type
 
 
+def _validate_recode_string_width(
+    result: RecodeResult,
+    source: VariableDefinition,
+    target: VariableDefinition,
+) -> None:
+    if target.storage_kind != "string" or target.declared_string_width is None:
+        return
+    if result.kind == "literal":
+        assert result.value is not None
+        if result.value.type != "string":
+            return
+        assert isinstance(result.value.value, str)
+        if len(result.value.value.encode("utf-8")) > target.declared_string_width:
+            raise frontend_error(
+                "string_width_exceeded",
+                "A RECODE string literal exceeds the target's declared string width.",
+                variable=target.name,
+                declared_string_width=target.declared_string_width,
+            )
+        return
+    if result.kind == "copy" and source.storage_kind == "string":
+        source_width = source.declared_string_width
+        if source_width is None or source_width > target.declared_string_width:
+            raise frontend_error(
+                "string_width_exceeded",
+                "A RECODE COPY result can exceed the target's declared string width.",
+                source=source.name,
+                variable=target.name,
+                declared_string_width=target.declared_string_width,
+            )
+
+
 def _bind_recode(
     operation: RecodeOperation, variables: list[VariableDefinition]
 ) -> None:
@@ -122,6 +154,10 @@ def _bind_recode(
             )
     for rule in operation.rules:
         _validate_match(rule.match, source)
+        if operation.target_mode == "replace":
+            _validate_recode_string_width(rule.result, source, source)
+    if operation.target_mode == "replace":
+        _validate_recode_string_width(operation.unmatched, source, source)
     result_types = {
         _result_type(result, source)
         for result in [
@@ -282,12 +318,16 @@ def bind_transformation_plan(
     if not isinstance(schema, VariableSchema):
         raise TypeError("schema must be a VariableSchema.")
     variables = list(schema.variables)
-    for operation in plan.operations:
+    for operation_index, operation in enumerate(plan.operations):
+        later_create = any(
+            isinstance(later_operation, CreateVariableOperation)
+            for later_operation in plan.operations[operation_index + 1:]
+        )
         if isinstance(operation, CreateVariableOperation):
             _bind_create(operation, variables)
             continue
         if isinstance(operation, DeleteVariableOperation):
-            _bind_delete(operation, variables)
+            _bind_delete(operation, variables, allow_empty=later_create)
             continue
         if isinstance(operation, RecodeOperation):
             _bind_recode(operation, variables)
@@ -367,9 +407,11 @@ def _bind_create(
 def _bind_delete(
     operation: DeleteVariableOperation,
     variables: list[VariableDefinition],
+    *,
+    allow_empty: bool,
 ) -> None:
     index, variable = _resolve(variables, operation.variable)
-    if len(variables) == 1:
+    if len(variables) == 1 and not allow_empty:
         raise frontend_error(
             "cannot_delete_last_variable",
             "A dataset must retain at least one variable.",
