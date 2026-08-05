@@ -2,6 +2,21 @@
 
 All notable changes to this reference implementation are documented here.
 
+## 0.6.0 - 2026-08-05
+
+### Added
+
+- Completed Python parity for bounded in-place SPSS schema transformations:
+  STRING, DELETE VARIABLES, string RECODE width validation, and durable
+  delete/recreate physical-column bindings.
+- Added PostgreSQL physical attribute-slot preflight and real-service
+  regression coverage for delete/recreate at the column limit.
+
+### Changed
+
+- Schema-changing SPSS plans use the v0.3 contract and fail closed for
+  unsupported STRING/DELETE variable ranges.
+
 ## Unreleased
 
 Planned adapter release: `0.5.0`, after lifecycle integration and final specification conformance.
