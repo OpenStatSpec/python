@@ -124,6 +124,7 @@ def preflight(
     variables_or_count: int | Iterable[Mapping[str, Any]],
     *,
     rows: Iterable[Mapping[str, Any]] | None = None,
+    require_canonical_mapping: bool = True,
 ) -> None:
     """Validate strict target capabilities before any source dataset is created."""
     variables = None if isinstance(variables_or_count, int) else list(variables_or_count)
@@ -143,6 +144,7 @@ def preflight(
 
     used = {"__case_ordinal"}
     source_names: set[str] = set()
+    physical_names = {"__case_ordinal"}
     for expected_ordinal, variable in enumerate(variables, start=1):
         source_name = variable.get("source_name")
         if not isinstance(source_name, str) or not source_name or source_name in source_names:
@@ -151,18 +153,36 @@ def preflight(
                 source_name=source_name,
             )
         source_names.add(source_name)
-        expected_name = _physical_name(source_name, used)
         actual_name = variable.get("physical_name")
-        if variable.get("ordinal") != expected_ordinal or actual_name != expected_name:
+        if not isinstance(actual_name, str) or not actual_name:
             raise _exceeded(
                 "physical_identifier_mapping_invalid",
-                f"{source_name!r} must map deterministically to {expected_name!r} in source order.",
-                source_name=source_name, expected_physical_name=expected_name,
-                actual_physical_name=actual_name,
+                f"{source_name!r} has no physical variable identifier.",
+                source_name=source_name, actual_physical_name=actual_name,
             )
-        preflight_identifier(
-            profile, expected_name, role="physical variable identifier",
-        )
+        if actual_name.casefold() in physical_names:
+            raise _exceeded(
+                "physical_identifier_collision",
+                "physical variable identifiers must be unique.",
+                source_name=source_name, physical_name=actual_name,
+            )
+        physical_names.add(actual_name.casefold())
+        if require_canonical_mapping:
+            expected_name = _physical_name(source_name, used)
+            if variable.get("ordinal") != expected_ordinal or actual_name != expected_name:
+                raise _exceeded(
+                    "physical_identifier_mapping_invalid",
+                    f"{source_name!r} must map deterministically to {expected_name!r} in source order.",
+                    source_name=source_name, expected_physical_name=expected_name,
+                    actual_physical_name=actual_name,
+                )
+            preflight_identifier(
+                profile, expected_name, role="physical variable identifier",
+            )
+        else:
+            preflight_identifier(
+                profile, actual_name, role="physical variable identifier",
+            )
         if variable.get("storage_kind") == "string":
             declared_width = variable.get("string_width")
             if declared_width is not None and (

@@ -1239,7 +1239,9 @@ def read_wide_dataset(
         )
         for row in response_sets
     }, ensure_ascii=False)
-    preflight(profile, variables, rows=rows)
+    preflight(
+        profile, variables, rows=rows, require_canonical_mapping=False,
+    )
     return dataset, variables, rows
 
 
@@ -1705,7 +1707,9 @@ def validate_wide_dataset(
         database_url=database_url, dataset_id=dataset_id, profile=profile,
         dolt_conformance_source=dolt_conformance_source,
     )
-    preflight(profile, variables, rows=rows)
+    preflight(
+        profile, variables, rows=rows, require_canonical_mapping=False,
+    )
     validate_spss_catalog(
         variables,
         case_weight_variable=dataset.get("case_weight_variable"),

@@ -389,22 +389,30 @@ def _delete_variable_metadata(
     ))
 
 
-def _compact_variable_ordinals(
+def _assert_postgresql_column_slot_available(
     connection: Any,
     *,
-    core: Any,
-    variables: list[dict[str, Any]],
+    relation: Table,
+    target_profile: SqlProfile,
 ) -> None:
-    """Keep normative variable source order contiguous after deletion."""
-    for source_ordinal, variable in enumerate(variables, start=1):
-        if int(variable["source_ordinal"]) == source_ordinal:
-            continue
-        connection.execute(
-            update(core.variable)
-            .where(core.variable.c.variable_id == variable["variable_id"])
-            .values(source_ordinal=source_ordinal)
+    """Reject PostgreSQL creates when dropped columns exhaust attribute slots."""
+    if connection.dialect.name != "postgresql":
+        return
+    qualified_relation = connection.dialect.identifier_preparer.format_table(relation)
+    attribute_slots = connection.execute(text(
+        "SELECT COUNT(*) FROM pg_attribute "
+        "WHERE attrelid = to_regclass(:relation_name) AND attnum > 0"
+    ), {"relation_name": qualified_relation}).scalar_one()
+    if not isinstance(attribute_slots, int) or attribute_slots < 1:
+        raise TransformationError(
+            "physical_table_missing",
+            "The target dataset's physical wide table does not exist.",
         )
-        variable["source_ordinal"] = source_ordinal
+    if attribute_slots >= target_profile.max_source_variables + 1:
+        raise TransformationError(
+            "source_variable_limit",
+            "PostgreSQL physical column slots are exhausted for this dataset table.",
+        )
 
 
 def _failure_boundary(_name: str) -> None:
@@ -555,6 +563,9 @@ def _apply_plan_on_connection(
     )
     by_name = {str(row["source_name"]).casefold(): row for row in variables}
     used_physical = {str(row["physical_name"]).casefold() for row in variables}
+    next_source_ordinal = max(
+        (int(row["source_ordinal"]) for row in variables), default=0,
+    ) + 1
     quote = connection.dialect.identifier_preparer.quote
     qualified_table = connection.dialect.identifier_preparer.format_table(relation)
     numeric_type = (
@@ -603,6 +614,9 @@ def _apply_plan_on_connection(
             )
         )
         if creates_target:
+            _assert_postgresql_column_slot_available(
+                connection, relation=relation, target_profile=target_profile,
+            )
             target_name = (
                 operation.variable
                 if isinstance(operation, CreateVariableOperation)
@@ -631,7 +645,7 @@ def _apply_plan_on_connection(
             created_target = {
                 "variable_id": str(uuid4()),
                 "dataset_id": dataset_id,
-                "source_ordinal": len(variables) + 1,
+                "source_ordinal": next_source_ordinal,
                 "source_name": target_name,
                 "physical_name": target_physical,
                 "storage_kind": storage_kind,
@@ -648,6 +662,7 @@ def _apply_plan_on_connection(
             )
             connection.execute(insert(core.variable).values(**created_target))
             variables.append(created_target)
+            next_source_ordinal += 1
             by_name[str(created_target["source_name"]).casefold()] = created_target
             _failure_boundary("catalog")
         if isinstance(operation, CreateVariableOperation):
@@ -725,36 +740,10 @@ def _apply_plan_on_connection(
             )
             _delete_variable_metadata(connection, core=core, variable=variable)
             by_name.pop(operation.variable.casefold(), None)
-            used_physical.discard(str(variable["physical_name"]).casefold())
             variables = [
                 row for row in variables
                 if row["variable_id"] != variable["variable_id"]
             ]
-            _compact_variable_ordinals(
-                connection, core=core, variables=variables,
-            )
-            canonical_physical = {"__case_ordinal"}
-            for remaining_variable in variables:
-                expected_physical = physical_name(
-                    str(remaining_variable["source_name"]), canonical_physical,
-                )
-                current_physical = str(remaining_variable["physical_name"])
-                if current_physical == expected_physical:
-                    continue
-                connection.exec_driver_sql(
-                    f"ALTER TABLE {qualified_table} RENAME COLUMN "
-                    f"{quote(current_physical)} TO {quote(expected_physical)}"
-                )
-                connection.execute(
-                    update(core.variable)
-                    .where(
-                        core.variable.c.variable_id
-                        == remaining_variable["variable_id"]
-                    )
-                    .values(physical_name=expected_physical)
-                )
-                remaining_variable["physical_name"] = expected_physical
-            used_physical = canonical_physical
             relation = Table(
                 table_name, MetaData(), schema=dataset.get("physical_table_schema"),
                 autoload_with=connection,

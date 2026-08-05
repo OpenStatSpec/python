@@ -6,12 +6,17 @@ from uuid import uuid4
 import pandas as pd
 import pyspssio
 import pytest
-from sqlalchemy import create_engine, inspect as inspect_database, text
+from sqlalchemy import MetaData, create_engine, inspect as inspect_database, text
 from sqlalchemy.exc import DBAPIError
 
 import openstatspec
 from openstatspec.core import UnsupportedOperationError
 from openstatspec.sql.dolt_conformance import DoltConformanceSource
+from openstatspec.sql.normative import (
+    catalog as normative_catalog,
+    delete_dataset_representation,
+)
+from openstatspec.sql.wide import create_wide_dataset
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 
@@ -205,5 +210,90 @@ def test_live_dolt_candidate_limit_probe_smoke() -> None:
             ):
                 connection.execute(text(
                     f"DROP TABLE IF EXISTS {quote(table_name)}"
+                ))
+        engine.dispose()
+
+def test_live_postgresql_in_place_create_rejects_exhausted_physical_slots() -> None:
+    database_url = os.environ.get("OPENSTATSPEC_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("OPENSTATSPEC_POSTGRES_URL is not configured")
+
+    token = uuid4().hex[:12]
+    dataset_name = f"inplace_slots_{token}"
+    base_variable = {
+        "storage_kind": "numeric",
+        "string_width": None,
+        "label": "",
+        "format": "F8.0",
+        "print_format": "[5, 8, 0]",
+        "write_format": "[5, 8, 0]",
+        "measure": "scale",
+        "role": "input",
+        "alignment": "right",
+        "display_width": 8,
+        "attributes": "{}",
+        "compat_name": None,
+        "value_labels": "{}",
+        "missing_ranges": "[]",
+    }
+    variables = [
+        {
+            **base_variable,
+            "ordinal": ordinal,
+            "source_name": f"v{ordinal}",
+            "physical_name": f"v{ordinal}",
+        }
+        for ordinal in range(1, 1_600)
+    ]
+    created = None
+    engine = create_engine(database_url)
+    try:
+        openstatspec.initialize_catalog(database_url=database_url)
+        created = create_wide_dataset(
+            database_url=database_url,
+            dataset_id=dataset_name,
+            source_name="slot-limit.sav",
+            source_format="SAV",
+            source_sha256="0" * 64,
+            rows=[],
+            variables=variables,
+        )
+        openstatspec.install_in_place_transformation_schema(
+            database_url=database_url,
+        )
+        plan = openstatspec.TransformationPlan(
+            (
+                openstatspec.DeleteVariableOperation("v1599"),
+                openstatspec.CreateVariableOperation("replacement", "numeric"),
+            ),
+            contract="openstatspec-transformation-plan-v0.3",
+        )
+
+        with pytest.raises(openstatspec.TransformationError) as caught:
+            openstatspec.apply_transformation_plan_in_place(
+                database_url=database_url,
+                dataset_id=created["dataset_id"],
+                plan=plan,
+                actor="service-test",
+            )
+
+        assert caught.value.code == "source_variable_limit"
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT COUNT(*) FROM variable WHERE dataset_id = :dataset_id"
+            ), {"dataset_id": created["dataset_id"]}).scalar_one() == 1_599
+            assert connection.execute(text(
+                "SELECT COUNT(*) FROM pg_attribute "
+                "WHERE attrelid = to_regclass(:relation_name) AND attnum > 0"
+            ), {"relation_name": created["data_table"]}).scalar_one() == 1_600
+    finally:
+        if created is not None:
+            with engine.begin() as connection:
+                delete_dataset_representation(
+                    connection, normative_catalog(MetaData()), created["dataset_id"],
+                )
+                quote = connection.dialect.identifier_preparer.quote
+                connection.execute(text(
+                    f"DROP TABLE IF EXISTS {quote(created['data_table'])}"
                 ))
         engine.dispose()

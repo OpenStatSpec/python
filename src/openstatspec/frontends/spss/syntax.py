@@ -563,10 +563,24 @@ class _Parser:
         end = self.expects("period", "Expected '.' after EXECUTE.")
         return ExecuteCommandSyntax(_joined_span(start.span, end.span))
 
+    @staticmethod
+    def reject_to_range(variables: tuple[Token, ...], command: str) -> None:
+        range_token = next(
+            (variable for variable in variables if variable.text.casefold() == "to"),
+            None,
+        )
+        if range_token is not None:
+            raise frontend_error(
+                "unsupported_spss_feature",
+                f"{command} variable ranges using TO are not supported.",
+                span=range_token.span,
+            )
+
     def string(self, start: Token) -> StringCommandSyntax:
         variables = self.variable_list(
             stop_kinds=frozenset({"left_paren", "period", "eof"}),
         )
+        self.reject_to_range(variables, "STRING")
         self.expects("left_paren", "Expected '(' before a STRING width.")
         width_token = self.expects(
             "identifier", "STRING requires a width such as A20.",
@@ -595,6 +609,7 @@ class _Parser:
     def delete_variables(self, start: Token) -> DeleteVariablesCommandSyntax:
         self.expects_keyword("VARIABLES")
         variables = self.variable_list(stop_kinds=frozenset({"period", "eof"}))
+        self.reject_to_range(variables, "DELETE VARIABLES")
         end = self.expects("period", "Expected '.' after DELETE VARIABLES.")
         return DeleteVariablesCommandSyntax(
             variables, _joined_span(start.span, end.span),

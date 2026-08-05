@@ -15,6 +15,7 @@ from openstatspec.frontends.spss import (
 )
 from openstatspec.transform import (
     CreateVariableOperation,
+    DeleteVariableOperation,
     RecodeMatch,
     RecodeOperation,
     RecodeResult,
@@ -609,6 +610,64 @@ def test_custom_nonempty_input_alias_is_canonical() -> None:
         input_alias="survey",
     ).plan
     assert plan.input_alias == "survey"
+
+
+@pytest.mark.parametrize(
+    ("source", "schema"),
+    [
+        (
+            "STRING first TO last (A8).",
+            _schema(
+                VariableDefinition("first", "numeric"),
+                VariableDefinition("last", "numeric"),
+            ),
+        ),
+        (
+            "DELETE VARIABLES first TO last.",
+            _schema(
+                VariableDefinition("first", "numeric"),
+                VariableDefinition("last", "numeric"),
+            ),
+        ),
+    ],
+)
+def test_string_and_delete_variables_reject_unsupported_to_ranges(
+    source: str, schema: VariableSchema,
+) -> None:
+    assert _error(source, schema).code == "unsupported_spss_feature"
+
+
+def test_delete_final_variable_requires_a_later_explicit_create() -> None:
+    schema = _schema(VariableDefinition("only", "numeric"))
+
+    assert _error("DELETE VARIABLES only.", schema).code == "cannot_delete_last_variable"
+
+    bound = _compile("DELETE VARIABLES only. STRING replacement (A3).", schema)
+    assert bound.plan.operations == (
+        DeleteVariableOperation("only"),
+        CreateVariableOperation("replacement", "string", 3),
+    )
+    assert bound.output_schema.variables == (
+        VariableDefinition("replacement", "string", declared_string_width=3),
+    )
+
+
+def test_recode_string_literals_respect_declared_width() -> None:
+    schema = _schema(VariableDefinition(
+        "note", "string", declared_string_width=3,
+    ))
+
+    assert _error("RECODE note ('a' = 'abcd').", schema).code == "string_width_exceeded"
+    assert _compile("RECODE note ('a' = '\u00e4b').", schema).plan.operations
+
+
+def test_recode_copy_preserves_source_declared_width() -> None:
+    schema = _schema(VariableDefinition(
+        "note", "string", declared_string_width=3,
+    ))
+
+    bound = _compile("RECODE note ('yes' = COPY).", schema)
+    assert bound.output_schema == schema
 
 
 def test_generic_plan_binding_validates_sequential_schema_state() -> None:

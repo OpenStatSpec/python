@@ -216,6 +216,41 @@ def _result_type(
     return result.value.type
 
 
+def _validate_recode_string_width(
+    result: RecodeResult,
+    source: VariableDefinition,
+    target: VariableDefinition,
+    span: SourceSpan,
+) -> None:
+    if target.storage_kind != "string" or target.declared_string_width is None:
+        return
+    if result.kind == "literal":
+        assert result.value is not None
+        if result.value.type != "string":
+            return
+        assert isinstance(result.value.value, str)
+        if len(result.value.value.encode("utf-8")) > target.declared_string_width:
+            raise frontend_error(
+                "string_width_exceeded",
+                "A RECODE string literal exceeds the target's declared string width.",
+                span=span,
+                variable=target.name,
+                declared_string_width=target.declared_string_width,
+            )
+        return
+    if result.kind == "copy" and source.storage_kind == "string":
+        source_width = source.declared_string_width
+        if source_width is None or source_width > target.declared_string_width:
+            raise frontend_error(
+                "string_width_exceeded",
+                "A RECODE COPY result can exceed the target's declared string width.",
+                span=span,
+                source=source.name,
+                variable=target.name,
+                declared_string_width=target.declared_string_width,
+            )
+
+
 def _bind_recode(
     command: RecodeCommandSyntax, variables: list[VariableDefinition],
 ) -> tuple[list[RecodeOperation], list[SourceSpan]]:
@@ -252,6 +287,8 @@ def _bind_recode(
         else_result: RecodeResult | None = None
         for clause in command.clauses:
             result = _result(clause.result, source)
+            if target_mode == "replace":
+                _validate_recode_string_width(result, source, source, clause.result.span)
             if clause.match.kind == "else":
                 else_result = result
                 continue
@@ -259,6 +296,8 @@ def _bind_recode(
         unmatched = else_result or RecodeResult(
             "system_missing" if target_mode == "create" else "copy"
         )
+        if target_mode == "replace" and else_result is None:
+            _validate_recode_string_width(unmatched, source, source, command.span)
         result_types = {
             _result_type(result, source)
             for result in [*(rule.result for rule in rules), unmatched]
@@ -339,13 +378,6 @@ def bind_spss_syntax(
                 index, variable = _resolve(
                     variables, variable_token.text, variable_token.span,
                 )
-                if len(variables) == 1:
-                    raise frontend_error(
-                        "cannot_delete_last_variable",
-                        "DELETE VARIABLES cannot remove the final dataset variable.",
-                        span=variable_token.span,
-                        variable=variable.name,
-                    )
                 operations.append(DeleteVariableOperation(variable.name))
                 spans.append(command.span)
                 del variables[index]
