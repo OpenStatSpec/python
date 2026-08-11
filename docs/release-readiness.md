@@ -1,4 +1,4 @@
-# 0.5.0 release readiness
+# 0.6.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
@@ -69,6 +69,8 @@ The gate must prove that:
   plan hash and in-place result;
 - the exact bounded `COMPUTE`/`IF` program compiles to all seven ordered
   operations without dropping `FORMATS`, `VARIABLE LEVEL`, or `EXECUTE`;
+- bounded `STRING` declarations and `DELETE VARIABLES` operations preserve
+  the resulting schema and physical-column identity on supported profiles;
 - boolean data results match the equivalent expression and the target's label,
   0/1 value labels, `F1.0` print/write format, and nominal level exist in the
   normative catalog;

@@ -309,6 +309,17 @@ def _bind_conditional_assign(
             variable=target.name,
         )
 
+
+def _creates_variable(operation: object) -> bool:
+    return (
+        isinstance(operation, CreateVariableOperation)
+        or (
+            isinstance(operation, AssignOperation)
+            and operation.target_mode == "create"
+        )
+    )
+
+
 def bind_transformation_plan(
     plan: TransformationPlan, schema: VariableSchema
 ) -> BoundTransformation:
@@ -320,7 +331,7 @@ def bind_transformation_plan(
     variables = list(schema.variables)
     for operation_index, operation in enumerate(plan.operations):
         later_create = any(
-            isinstance(later_operation, CreateVariableOperation)
+            _creates_variable(later_operation)
             for later_operation in plan.operations[operation_index + 1:]
         )
         if isinstance(operation, CreateVariableOperation):

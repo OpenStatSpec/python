@@ -652,6 +652,16 @@ def test_delete_final_variable_requires_a_later_explicit_create() -> None:
     )
 
 
+def test_delete_final_variable_allows_a_later_compute_create() -> None:
+    schema = _schema(VariableDefinition("only", "numeric"))
+
+    bound = _compile("DELETE VARIABLES only. COMPUTE replacement = 1.", schema)
+
+    assert bound.output_schema.variables == (
+        VariableDefinition("replacement", "numeric"),
+    )
+
+
 def test_recode_string_literals_respect_declared_width() -> None:
     schema = _schema(VariableDefinition(
         "note", "string", declared_string_width=3,

@@ -2,6 +2,9 @@ name: Release
 
 env:
   OPENSTATSPEC_SPECIFICATION_DIR: ${{ github.workspace }}/openstatspec-specification
+  OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR: ${{ github.workspace }}/openstatspec-specification-package
+  OPENSTATSPEC_SPECIFICATION_PACKAGE_REF: 2778b784afcb63868ce3c3235a5f1fa190100f9d
+  OPENSTATSPEC_SPECIFICATION_PACKAGE_VERSION: 0.1.0
 
 on:
   push:
@@ -21,11 +24,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ inputs.release_ref || github.ref_name }}
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Verify release tag exists and targets this package version
@@ -35,22 +38,119 @@ jobs:
           set -eu
           git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
           python .github/verify_release_ref.py
-      - run: python -m pip install --upgrade pip build
+      - run: python -m pip install --upgrade pip build twine pytest
       - name: Verify required SPSS engine is publicly installable
         run: >-
           python -m pip download --only-binary=:all: --no-deps
           --dest /tmp/openstatspec-engine-release
           openstatspec-pyspssio==0.5.1.post2
-      - name: Build clean release distributions
-        run: python -m build
       - name: Checkout normative specification fixtures
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenStatSpec/specification
           ref: f2fdf687d8cb32b944ca55a3e9e7215ffc603019
           path: openstatspec-specification
+      - name: Checkout specification package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: OpenStatSpec/specification
+          ref: ${{ env.OPENSTATSPEC_SPECIFICATION_PACKAGE_REF }}
+          path: openstatspec-specification-package
+      - name: Verify specification package source
+        env:
+          SPECIFICATION_PACKAGE_DIR: ${{ env.OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR }}
+          SPECIFICATION_PACKAGE_REF: ${{ env.OPENSTATSPEC_SPECIFICATION_PACKAGE_REF }}
+          SPECIFICATION_PACKAGE_VERSION: ${{ env.OPENSTATSPEC_SPECIFICATION_PACKAGE_VERSION }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          source = Path(os.environ["SPECIFICATION_PACKAGE_DIR"])
+          expected_ref = os.environ["SPECIFICATION_PACKAGE_REF"]
+          actual_ref = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], cwd=source, text=True,
+          ).strip()
+          if actual_ref != expected_ref:
+              raise SystemExit(
+                  f"specification package ref {actual_ref!r} does not match "
+                  f"expected {expected_ref!r}"
+              )
+          project = tomllib.loads(
+              (source / "pyproject.toml").read_text(encoding="utf-8")
+          )["project"]
+          if project["name"] != "openstatspec-specification":
+              raise SystemExit("unexpected specification package name")
+          expected_version = os.environ["SPECIFICATION_PACKAGE_VERSION"]
+          if project["version"] != expected_version:
+              raise SystemExit(
+                  f"specification package version {project['version']!r} does "
+                  f"not match expected {expected_version!r}"
+              )
+          for required in (
+              "pyproject.toml",
+              "src/openstatspec_specification/dolt.py",
+              "sql/dolt-adapter-declaration-schema.json",
+          ):
+              if not (source / required).is_file():
+                  raise SystemExit(f"missing specification package resource: {required}")
+          PY
+      - name: Verify specification package tests and repository
+        run: |
+          python -m pip install -e "$OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR"
+          python -m pytest -q "$OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR/tests/test_dolt_declarations.py"
+          python "$OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR/tools/validate_repository.py"
+      - name: Build clean release distributions
+        run: |
+          rm -rf dist /tmp/openstatspec-release-dists
+          mkdir -p dist/openstatspec dist/openstatspec-specification \
+            /tmp/openstatspec-release-dists/openstatspec \
+            /tmp/openstatspec-release-dists/specification
+          python -m build --outdir /tmp/openstatspec-release-dists/openstatspec .
+          python -m build --outdir /tmp/openstatspec-release-dists/specification "$OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR"
+          python -m twine check \
+            /tmp/openstatspec-release-dists/openstatspec/* \
+            /tmp/openstatspec-release-dists/specification/*
+          python - <<'PY'
+          from pathlib import Path
+          from shutil import copy2
+
+          sources = {
+              "openstatspec": (
+                  Path("/tmp/openstatspec-release-dists/openstatspec"),
+                  Path("dist/openstatspec"),
+              ),
+              "openstatspec_specification": (
+                  Path("/tmp/openstatspec-release-dists/specification"),
+                  Path("dist/openstatspec-specification"),
+              ),
+          }
+          copied = []
+          for normalized_name, (source, destination_dir) in sources.items():
+              destination_dir.mkdir(parents=True, exist_ok=True)
+              files = sorted(path for path in source.iterdir() if path.is_file())
+              if len(files) != 2 or {path.suffix for path in files} != {".whl", ".gz"}:
+                  raise SystemExit(
+                      f"expected one wheel and one sdist for {normalized_name}, got "
+                      f"{[path.name for path in files]}"
+                  )
+              for path in files:
+                  normalized_artifact = path.name.replace("-", "_").lower()
+                  if not normalized_artifact.startswith(normalized_name + "_"):
+                      raise SystemExit(
+                          f"unexpected artifact name for {normalized_name}: {path.name}"
+                      )
+                  destination = destination_dir / path.name
+                  copy2(path, destination)
+                  copied.append(destination)
+          if len(copied) != 4:
+              raise SystemExit(f"expected four release artifacts, got {len(copied)}")
+          print("release artifacts:", ", ".join(path.name for path in copied))
+          PY
       - name: Checkout required SPSS engine
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TonisOrmisson/pyspssio
           ref: e069adf33c70bcd9e8e6ee495106479463a84fa2
@@ -60,9 +160,21 @@ jobs:
       - run: python -m pytest -m "not services"
       - run: python -m venv /tmp/openstatspec-release-smoke
       - run: /tmp/openstatspec-release-smoke/bin/python -m pip install ./openstatspec-pyspssio
-      - run: /tmp/openstatspec-release-smoke/bin/python -m pip install dist/*.whl
+      - run: /tmp/openstatspec-release-smoke/bin/python -m pip install dist/openstatspec/openstatspec-*.whl
       - run: /tmp/openstatspec-release-smoke/bin/openstatspec capabilities
-      - uses: actions/upload-artifact@v7
+      - name: Smoke-test specification wheel
+        run: |
+          python -m venv /tmp/openstatspec-specification-release-smoke
+          /tmp/openstatspec-specification-release-smoke/bin/python -m pip install dist/openstatspec-specification/openstatspec_specification-*.whl
+          /tmp/openstatspec-specification-release-smoke/bin/python - <<'PY'
+          from openstatspec_specification import DoltDeclarationSource
+
+          source = DoltDeclarationSource.packaged()
+          schema = source.read_json("sql/dolt-adapter-declaration-schema.json")
+          if schema.get("schema_id") != "openstatspec-dolt-adapter-declaration-v1":
+              raise SystemExit("packaged specification schema has the wrong identifier")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-distributions
           path: dist/
@@ -76,10 +188,17 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: python-distributions
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish openstatspec to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
+          packages-dir: dist/openstatspec/
+          skip-existing: true
+      - name: Publish openstatspec-specification to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/openstatspec-specification/
           skip-existing: true

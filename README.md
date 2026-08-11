@@ -68,6 +68,7 @@ implemented capability boundary.
 ## SPSS-like transformation frontend
 
 The bounded SPSS-like frontend lowers `RECODE`, sequential `COMPUTE` and `IF`,
+`STRING` declarations, and `DELETE VARIABLES`,
 `VARIABLE LABELS`, `VALUE LABELS`, numeric `FORMATS`, `VARIABLE LEVEL`, and
 `EXECUTE` into a language-neutral typed canonical plan. Conditions support
 parentheses, variable and numeric literal operands, comparisons, `AND`, and
