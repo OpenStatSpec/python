@@ -4,9 +4,10 @@ OpenStatSpec separates transformation syntax, canonical meaning, and database
 mutation. This lets multiple language frontends produce the same plan without
 coupling the executor to any one language.
 
-The implemented bounded SPSS-like frontend accepts `RECODE`, sequential
-`COMPUTE` and `IF`, `VARIABLE LABELS`, `VALUE LABELS`, numeric `FORMATS`,
-`VARIABLE LEVEL`, and `EXECUTE`. Predicates support typed variable/literal
+The implemented bounded SPSS-like frontend accepts bounded `STRING`
+declarations, `RECODE`, sequential `COMPUTE` and `IF`, `DELETE VARIABLES`,
+`VARIABLE LABELS`, `VALUE LABELS`, numeric `FORMATS`, `VARIABLE LEVEL`, and
+`EXECUTE`. Predicates support typed variable/literal
 operands, parentheses, numeric comparisons, `AND`, and `OR`. String comparison
 and v0.2 string assignment fail closed until exact profile-independent
 collation and explicit-width semantics are available; arbitrary SPSS, Python,
