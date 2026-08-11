@@ -6,6 +6,16 @@ All notable changes to this reference implementation are documented here.
 
 _No unreleased changes._
 
+## 0.7.0 - 2026-08-11
+
+### Added
+
+- Added root release workflow support for publishing the normative
+  `openstatspec-specification` companion distribution, with independent
+  artifact validation, smoke tests, and PyPI publishing.
+- Carried the complete 0.6.0 transformation, PostgreSQL, and documentation
+  work forward into the versioned 0.7.0 release from `main`.
+
 ## 0.6.0 - 2026-08-05
 
 ### Added
