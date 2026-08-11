@@ -105,7 +105,9 @@ jobs:
       - name: Build clean release distributions
         run: |
           rm -rf dist /tmp/openstatspec-release-dists
-          mkdir -p dist /tmp/openstatspec-release-dists/openstatspec /tmp/openstatspec-release-dists/specification
+          mkdir -p dist/openstatspec dist/openstatspec-specification \
+            /tmp/openstatspec-release-dists/openstatspec \
+            /tmp/openstatspec-release-dists/specification
           python -m build --outdir /tmp/openstatspec-release-dists/openstatspec .
           python -m build --outdir /tmp/openstatspec-release-dists/specification "$OPENSTATSPEC_SPECIFICATION_PACKAGE_DIR"
           python -m twine check \
@@ -116,11 +118,18 @@ jobs:
           from shutil import copy2
 
           sources = {
-              "openstatspec": Path("/tmp/openstatspec-release-dists/openstatspec"),
-              "openstatspec_specification": Path("/tmp/openstatspec-release-dists/specification"),
+              "openstatspec": (
+                  Path("/tmp/openstatspec-release-dists/openstatspec"),
+                  Path("dist/openstatspec"),
+              ),
+              "openstatspec_specification": (
+                  Path("/tmp/openstatspec-release-dists/specification"),
+                  Path("dist/openstatspec-specification"),
+              ),
           }
           copied = []
-          for normalized_name, source in sources.items():
+          for normalized_name, (source, destination_dir) in sources.items():
+              destination_dir.mkdir(parents=True, exist_ok=True)
               files = sorted(path for path in source.iterdir() if path.is_file())
               if len(files) != 2 or {path.suffix for path in files} != {".whl", ".gz"}:
                   raise SystemExit(
@@ -133,7 +142,7 @@ jobs:
                       raise SystemExit(
                           f"unexpected artifact name for {normalized_name}: {path.name}"
                       )
-                  destination = Path("dist") / path.name
+                  destination = destination_dir / path.name
                   copy2(path, destination)
                   copied.append(destination)
           if len(copied) != 4:
@@ -151,12 +160,12 @@ jobs:
       - run: python -m pytest -m "not services"
       - run: python -m venv /tmp/openstatspec-release-smoke
       - run: /tmp/openstatspec-release-smoke/bin/python -m pip install ./openstatspec-pyspssio
-      - run: /tmp/openstatspec-release-smoke/bin/python -m pip install dist/openstatspec-*.whl
+      - run: /tmp/openstatspec-release-smoke/bin/python -m pip install dist/openstatspec/openstatspec-*.whl
       - run: /tmp/openstatspec-release-smoke/bin/openstatspec capabilities
       - name: Smoke-test specification wheel
         run: |
           python -m venv /tmp/openstatspec-specification-release-smoke
-          /tmp/openstatspec-specification-release-smoke/bin/python -m pip install dist/openstatspec_specification-*.whl
+          /tmp/openstatspec-specification-release-smoke/bin/python -m pip install dist/openstatspec-specification/openstatspec_specification-*.whl
           /tmp/openstatspec-specification-release-smoke/bin/python - <<'PY'
           from openstatspec_specification import DoltDeclarationSource
 
@@ -183,6 +192,13 @@ jobs:
         with:
           name: python-distributions
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      - name: Publish openstatspec to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
+          packages-dir: dist/openstatspec/
+          skip-existing: true
+      - name: Publish openstatspec-specification to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/openstatspec-specification/
           skip-existing: true
