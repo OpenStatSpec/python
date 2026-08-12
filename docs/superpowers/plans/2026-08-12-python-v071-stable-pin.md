@@ -46,7 +46,7 @@ Apply the same three values to each profile declaration assertion.
 Run:
 
 ```bash
-python -m pytest -q tests/test_cli.py::test_capability_matrix_is_public_and_cli_matches_engine_boundary tests/test_sql_profiles.py::test_profile_declarations_publish_specification_candidate_provenance
+python -m pytest -q tests/test_cli.py::test_capability_matrix_is_public_and_cli_matches_engine_boundary tests/test_sql_profiles.py::test_profile_declarations_publish_stable_specification_provenance
 ```
 
 Expected: both tests fail because production constants still expose the old release-candidate identity.

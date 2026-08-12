@@ -2,7 +2,7 @@
 
 ## Goal
 
-Publish the Python adapter's first patch release after specification `v0.7.0`
+Publish the Python adapter's first patch release after Python adapter `v0.7.0`
 with its capability declarations and conformance fixtures bound to the
 published OpenStatSpec specification `v0.3.0`.
 
