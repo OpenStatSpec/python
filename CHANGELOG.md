@@ -6,6 +6,14 @@ All notable changes to this reference implementation are documented here.
 
 _No unreleased changes._
 
+## 0.7.1 - 2026-08-12
+
+### Changed
+
+- Pinned capability declarations, conformance fixtures, and release validation
+  to the published OpenStatSpec specification `v0.3.0` at exact commit
+  `cd8f198c68b849eb8ed018a894670a0904c2181d`.
+
 ## 0.7.0 - 2026-08-11
 
 ### Added

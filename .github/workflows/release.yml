@@ -48,7 +48,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenStatSpec/specification
-          ref: f2fdf687d8cb32b944ca55a3e9e7215ffc603019
+          ref: cd8f198c68b849eb8ed018a894670a0904c2181d
           path: openstatspec-specification
       - name: Checkout specification package source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
