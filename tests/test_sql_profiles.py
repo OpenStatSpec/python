@@ -29,13 +29,13 @@ def test_profile_detection_tracks_supported_dialect_urls() -> None:
     assert profile_for_url("mariadb+mariadbconnector://user@host/database") is MYSQL
     assert profile_for_url("mysql+pymysql://user@host/dolt_database") is MYSQL
 
-def test_profile_declarations_publish_specification_candidate_provenance() -> None:
+def test_profile_declarations_publish_stable_specification_provenance() -> None:
     for declaration in capabilities.profile_declarations().values():
-        assert declaration["specification_status"] == "release_candidate"
-        assert declaration["specification_release"] is None
+        assert declaration["specification_status"] == "stable"
+        assert declaration["specification_release"] == "v0.3.0"
         assert (
             declaration["specification_commit"]
-            == "f2fdf687d8cb32b944ca55a3e9e7215ffc603019"
+            == "cd8f198c68b849eb8ed018a894670a0904c2181d"
         )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:

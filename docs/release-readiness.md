@@ -1,4 +1,4 @@
-# 0.7.0 release readiness
+# 0.7.1 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
@@ -114,12 +114,10 @@ capability claim, or implied support.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
-6. Confirm CI, release fixtures, and capabilities use the untagged OpenStatSpec
-   specification release candidate at exact commit
-   `f2fdf687d8cb32b944ca55a3e9e7215ffc603019`, publish
-   `specification_status=release_candidate`, and leave
-   `specification_release` null. If that exact commit receives a stable tag
-   before this package is tagged, update the identity and re-run every gate.
+6. Confirm CI, release fixtures, and capabilities use the published OpenStatSpec
+   specification `v0.3.0` at exact commit
+   `cd8f198c68b849eb8ed018a894670a0904c2181d`, publish
+   `specification_status=stable`, and set `specification_release` to `v0.3.0`.
 7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds
