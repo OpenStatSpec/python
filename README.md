@@ -96,17 +96,19 @@ SAV/ZSAV export for the semantics exposed by that engine. SQLite is the local
 reference path.
 PostgreSQL, MySQL, MariaDB, and Dolt are each covered by separate service-backed CI
 conformance checks. Dolt support is an independent core profile for the
-canonical stable range `>=2.2.2,<2.3.0`; earlier patches, other families,
-noncanonical versions, and unknown MySQL-wire products fail closed.
+exact write-supported versions 2.2.2 and 2.2.3; all other versions (including
+2.3.0), noncanonical versions, and unknown MySQL-wire products fail closed for writes.
 
 The supported family claims are broader than the deliberately exact CI
 evidence points: PostgreSQL 17.x/18.x is exercised at 17.10/18.4, MySQL
 8.4.x/9.7.x at 8.4.11/9.7.2, and MariaDB 11.4.x/11.8.x/12.3.x at
 11.4.12/11.8.8/12.3.2. Each service job checks the normalized live server
 version against its exact matrix entry before that run can count as evidence.
-Dolt claims the conservative 2.2.x range `>=2.2.2,<2.3.0`; its full service
-suite is exercised independently at exact versions 2.2.2 and 2.2.3 using
-immutable container-image digests.
+Dolt's default-write service checks run independently at exact versions 2.2.2
+and 2.2.3 using immutable container-image digests. Release/CI owns this evidence;
+normal callers need no declaration or evidence files. The optional explicit
+`DoltConformanceSource` override remains strict and does not fall back to the
+default policy if its declarations are missing, invalid, or mismatched.
 
 | Engine/profile | Runtime supported policy | Exact CI-tested versions |
 | --- | --- | --- |
@@ -114,7 +116,7 @@ immutable container-image digests.
 | PostgreSQL | 17.x and 18.x | 17.10 and 18.4 |
 | MySQL | 8.4.x and 9.7.x | 8.4.11 and 9.7.2 |
 | MariaDB | 11.4.x, 11.8.x, and 12.3.x | 11.4.12, 11.8.8, and 12.3.2 |
-| Dolt | 2.2.x with `>=2.2.2,<2.3.0` | 2.2.2 and 2.2.3 |
+| Dolt writes | Exactly 2.2.2 and 2.2.3 | 2.2.2 and 2.2.3 |
 
 Microsoft SQL Server (MSSQL) remains roadmap-only and is not a supported
 runtime profile; see the specification's [MSSQL roadmap](https://github.com/OpenStatSpec/specification/blob/main/docs/mssql-dialect-roadmap.md).
@@ -124,7 +126,7 @@ Use these explicit SQLAlchemy URLs:
 - SQLite: `sqlite:///dataset.sqlite`
 - PostgreSQL: `postgresql+psycopg://user:password@host/database`
 - MySQL/MariaDB: `mysql+pymysql://user:password@host/database`
-- Dolt `>=2.2.2,<2.3.0`: `mysql+pymysql://user:password@host/database` (detected by server identity)
+- Dolt 2.2.2 or 2.2.3: `mysql+pymysql://user:password@host/database` (detected by server identity)
 
 The Dolt core profile supports strict wide-table import, validation, and export;
 the separate Transformation Workflow is unsupported.
@@ -135,8 +137,12 @@ dictionary semantics cannot be reproduced, it stops until you pass the exact
 diagnostic code with `--allow-loss`. Diagnostics are returned to the caller, not
 persisted. Reads, validation, and SAV/ZSAV export never write to the database,
 including on failure. Export returns no `operation_id` and needs only read
-permissions; Dolt reads do not require a write-conformance declaration. Imports
-and transformations still require an exact matching Dolt write declaration.
+permissions; Dolt reads have no write-version gate. Imports and transformations
+use the packaged exact-version policy by default. Active driver/identity checks,
+limit preflight, and the clean expected branch/HEAD guard for in-place apply
+remain mandatory. Dolt's reported limits are adapter safety budgets, narrowed
+by the active packet limit, not proven native server ceilings; full boundary
+conformance is not claimed.
 
 The matrix is also available to Python callers as
 `openstatspec.capability_matrix()`. It distinguishes supported semantics from

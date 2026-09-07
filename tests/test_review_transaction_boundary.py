@@ -80,6 +80,19 @@ def _dolt_summary(**changes):
     return result
 
 
+def test_dolt_classifier_allows_owned_table_creation():
+    added = _dolt_summary(
+        from_table_name="", diff_type="added", schema_change=1,
+    )
+    for owned in (True, False):
+        state = wide._capture_dolt_state(
+            _DoltDiffConnection(added), profile_name="dolt",
+            audit_relations={"operation"} if owned else set(),
+        )
+        for evidence in state["unrelated_working_set"]["diff_summaries"].values():
+            assert evidence["rows"] == ([] if owned else [added])
+
+
 def test_dolt_classifier_allows_only_same_table_audit_data_changes():
     allowed = wide._capture_dolt_state(
         _DoltDiffConnection(_dolt_summary()),

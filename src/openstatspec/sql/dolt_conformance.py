@@ -1,4 +1,7 @@
-"""Adapter-owned validation for language-neutral Dolt declarations."""
+"""Optional strict validation for external, adapter-owned Dolt declarations.
+
+Default writes use the exact-version policy in capabilities, not this registry.
+"""
 
 from __future__ import annotations
 
@@ -280,7 +283,7 @@ class DoltConformanceSource:
 
     @classmethod
     def packaged(cls) -> "DoltConformanceSource":
-        """Return the empty built-in registry; no Dolt write claim is packaged."""
+        """Return the legacy empty registry, not the default write-version policy."""
         return cls()
 
     @classmethod

@@ -984,6 +984,9 @@ def _run_in_place_submission(
                     # catalog mutations roll back together before the write lock
                     # is released.
                     connection.exec_driver_sql("BEGIN")
+                if profile.name == "dolt":
+                    # Dolt may retain @@autocommit=1 despite PyMySQL's setting.
+                    connection.exec_driver_sql("BEGIN")
                 require_verified_catalog(connection)
                 if profile.name == "dolt":
                     if not expected_branch or not expected_head:

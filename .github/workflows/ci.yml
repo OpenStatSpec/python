@@ -143,7 +143,7 @@ jobs:
     steps: *sql-test-steps
 
   dolt-integration:
-    name: Dolt ${{ matrix.dolt }} read-only / fail-closed integration
+    name: Dolt ${{ matrix.dolt }} default-write integration
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

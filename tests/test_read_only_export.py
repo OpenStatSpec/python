@@ -213,6 +213,7 @@ def test_dolt_reads_do_not_enable_undeclared_writes(monkeypatch):
     url = "mysql+pymysql://reader@host/dataset"
     active = {
         "profile": "dolt", "raw_product_version": "2.3.0", "claimed_supported": False,
+        "server_version": "2.3.0",
     }
     monkeypatch.setattr(capabilities, "active_connection", lambda *_a, **_k: active)
     assert capabilities.read_profile(url)[0].name == "dolt"

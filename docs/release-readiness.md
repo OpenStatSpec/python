@@ -20,15 +20,17 @@ database contract.
 | PostgreSQL | `postgresql+psycopg://…` | 17.x and 18.x | 17.10 and 18.4 |
 | MySQL | `mysql+pymysql://…` | 8.4.x and 9.7.x | 8.4.11 and 9.7.2 |
 | MariaDB | `mysql+pymysql://…` | 11.4.x, 11.8.x, and 12.3.x | 11.4.12, 11.8.8, and 12.3.2 |
-| Dolt | `mysql+pymysql://…` | 2.2.x with `>=2.2.2,<2.3.0` | 2.2.2 and 2.2.3 |
+| Dolt writes | `mysql+pymysql://…` | Exactly 2.2.2 and 2.2.3 | 2.2.2 and 2.2.3 |
 
 Separate service matrices test the shared MySQL/MariaDB profile contract while
 retaining distinct active-server identities and version claims. Dolt is an
-independent core profile that accepts only canonical stable versions in
-`>=2.2.2,<2.3.0`; the optional Transformation Workflow remains SQLite-only. This does not
-claim coverage for every server configuration. The machine-readable capability
-declaration reports both the theoretical profile boundaries and effective
-limits observed from the active connection.
+independent core profile with a packaged exact-version write policy; normal
+callers supply no conformance files. An explicit external declaration source
+remains a strict override. Read-only validation/export has no write-version gate.
+The optional Transformation Workflow remains SQLite-only. This does not claim
+coverage for every server configuration or proven Dolt native limit ceilings.
+Dolt capabilities report adapter safety budgets and active packet constraints;
+full boundary conformance remains pending.
 Every server service job compares the normalized live product version with its
 exact matrix entry, so a moved or mismatched image cannot substantiate the CI
 declaration. SQLite's optional Transformation Workflow retains its narrower
@@ -102,6 +104,27 @@ implemented openstatspec.frontends.spss package. Stata and SAS remain empty
 source-tree placeholders and must expose no compiler, apply API, CLI choice,
 capability claim, or implied support.
 
+## Default Dolt write verification
+
+Local release verification used the exact 2.2.2 and 2.2.3 image digests in
+`.github/workflows/ci.yml`, isolated ports 13482/13483, and disposable `/tmp`
+database directories. With `PYTHONPATH=src:../pyspssio`,
+`OPENSTATSPEC_SPECIFICATION_DIR=/tmp/oss-php-spec-cd8f198`, and each matching
+`OPENSTATSPEC_DOLT_URL` / `OPENSTATSPEC_EXPECTED_DOLT_VERSION`:
+
+- `../python/.venv/bin/python -m pytest`: **366 passed, 49 skipped per pin**.
+- CI selection `-m 'services and not candidate_evidence'`: **7 passed,
+  41 skipped per pin**; other database services were not configured locally.
+- Dolt 2.3.0 on port 13387: read-only export and unknown-version write rejection
+  checks passed (**19 passed**) using disposable fixture databases/users.
+- `python -m compileall -q src tests` and `git diff --check` passed.
+
+Live failures exposed and now cover two previously dormant write blockers:
+owned table additions being misclassified as unrelated diffs, and Dolt retaining
+`@@autocommit=1` despite the driver's setting. Writes now explicitly begin their
+transaction. The candidate storage/identifier/column smoke probe also passed on
+both pins; it does **not** establish full value/row/statement limit conformance.
+
 ## Maintainer checks before tagging
 
 1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
@@ -110,7 +133,12 @@ capability claim, or implied support.
 2. Run `python -m pytest -m "not services"`.
 3. Confirm the GitHub Actions matrix is green for exact PostgreSQL 17.10/18.4,
    MySQL 8.4.11/9.7.2, MariaDB 11.4.12/11.8.8/12.3.2, and exact Dolt
-   2.2.2/2.2.3 service evidence from the immutable image pins in CI.
+   2.2.2/2.2.3 service evidence from the immutable image pins in CI. The Dolt
+   jobs must perform default import/validate/SAV+ZSAV export, in-place recode
+   and labels with unchanged dataset/table counts and HEAD, injected data,
+   catalog, and audit rollback checks, and failed-import cleanup. Release/CI
+   owns this evidence, not per-user runtime declaration files. Candidate limit
+   probes remain non-claiming and separate from these write gates.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.

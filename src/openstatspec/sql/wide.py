@@ -510,12 +510,19 @@ def _capture_dolt_state(
         "diff_summaries": {},
     }
 
-    def allowed_audit_data_diff(row: Mapping[str, Any]) -> bool:
+    def allowed_owned_diff(row: Mapping[str, Any]) -> bool:
         values = dict(row)
         from_name = str(values.get("from_table_name") or "")
         to_name = str(values.get("to_table_name") or "")
         data_change = str(values.get("data_change")).strip().lower()
         schema_change = str(values.get("schema_change")).strip().lower()
+        # Initialization/import may create their own tables without a Dolt
+        # commit. Do not classify those HEAD-to-WORKING additions as unrelated.
+        if (
+            not from_name and to_name in audit_relations
+            and str(values.get("diff_type") or "").strip().lower() == "added"
+        ):
+            return True
         return (
             from_name == to_name
             and from_name in audit_relations
@@ -545,7 +552,7 @@ def _capture_dolt_state(
         unrelated["diff_summaries"][label] = _dolt_evidence_block(
             (
                 row for row in rows
-                if not allowed_audit_data_diff(row)
+                if not allowed_owned_diff(row)
             ),
             expected_keys=expected_keys,
         )
@@ -619,6 +626,9 @@ def _bound_catalog_transaction(
             connection.rollback()
         try:
             with connection.begin():
+                if profile_name == "dolt":
+                    # Dolt may retain @@autocommit=1 despite PyMySQL's setting.
+                    connection.exec_driver_sql("BEGIN")
                 yield connection
                 after = _capture_dolt_state(
                     connection, profile_name=profile_name,
