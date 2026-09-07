@@ -1,4 +1,4 @@
-"""Real-service conformance checks plus Dolt fail-closed and candidate probes."""
+"""Real-service writes, round trips, failure boundaries, and candidate probes."""
 
 import os
 from uuid import uuid4
@@ -11,7 +11,7 @@ from sqlalchemy.exc import DBAPIError
 
 import openstatspec
 from openstatspec.core import UnsupportedOperationError
-from openstatspec.sql.dolt_conformance import DoltConformanceSource
+from openstatspec.sql import inplace_transform, wide
 from openstatspec.sql.normative import (
     catalog as normative_catalog,
     delete_dataset_representation,
@@ -42,12 +42,16 @@ def source_sav(tmp_path):
 
 @pytest.mark.parametrize(
     ("environment_name", "dataset_id"),
-    [("OPENSTATSPEC_POSTGRES_URL", "profile_pg"), ("OPENSTATSPEC_MYSQL_URL", "profile_mysql"), ("OPENSTATSPEC_MARIADB_URL", "profile_mariadb")],
+    [("OPENSTATSPEC_POSTGRES_URL", "profile_pg"), ("OPENSTATSPEC_MYSQL_URL", "profile_mysql"), ("OPENSTATSPEC_MARIADB_URL", "profile_mariadb"), ("OPENSTATSPEC_DOLT_URL", "profile_dolt")],
 )
 def test_live_profile_import_validate_and_export(environment_name, dataset_id, source_sav, tmp_path):
     database_url = os.environ.get(environment_name)
     if not database_url:
         pytest.skip(f"{environment_name} is not configured")
+    before = (
+        openstatspec.dolt_state_snapshot(database_url=database_url)["state"]
+        if environment_name == "OPENSTATSPEC_DOLT_URL" else None
+    )
     openstatspec.initialize_catalog(database_url=database_url)
     runtime_dataset_id = f"{dataset_id}_{uuid4().hex[:8]}"
     imported = openstatspec.import_sav(
@@ -74,11 +78,15 @@ def test_live_profile_import_validate_and_export(environment_name, dataset_id, s
     assert frame["name"].tolist() == ["Ada", ""]
     assert metadata["var_labels"] == {"age": "Age", "name": "Name"}
     assert metadata["var_value_labels"] == {"age": {34.0: "thirty-four"}}
+    if before is not None:
+        after = openstatspec.dolt_state_snapshot(database_url=database_url)["state"]
+        assert after["head"] == before["head"]
+        assert after["active_branch"] == before["active_branch"]
 
 
 @pytest.mark.parametrize(
     ("environment_name", "dataset_id"),
-    [("OPENSTATSPEC_POSTGRES_URL", "semantics_pg"), ("OPENSTATSPEC_MYSQL_URL", "semantics_mysql"), ("OPENSTATSPEC_MARIADB_URL", "semantics_mariadb")],
+    [("OPENSTATSPEC_POSTGRES_URL", "semantics_pg"), ("OPENSTATSPEC_MYSQL_URL", "semantics_mysql"), ("OPENSTATSPEC_MARIADB_URL", "semantics_mariadb"), ("OPENSTATSPEC_DOLT_URL", "semantics_dolt")],
 )
 @pytest.mark.parametrize("suffix", [".sav", ".zsav"])
 def test_live_profile_preserves_supported_sav_semantics(environment_name, dataset_id, suffix, tmp_path):
@@ -103,23 +111,18 @@ def test_live_profile_preserves_supported_sav_semantics(environment_name, datase
     )
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
 
-def test_live_dolt_is_read_only_and_rejects_writes_without_declarations(
+def test_live_unknown_dolt_is_read_only_and_rejects_default_writes(
     tmp_path,
 ) -> None:
-    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
+    database_url = os.environ.get("OPENSTATSPEC_UNSUPPORTED_DOLT_URL")
     if not database_url:
-        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
-
-    status = DoltConformanceSource.packaged().status()
-    assert status["status"] == "blocked_no_concrete_declarations"
-    assert status["declaration_count"] == 0
-    assert status["write_enabled"] is False
+        pytest.skip("OPENSTATSPEC_UNSUPPORTED_DOLT_URL is not configured")
 
     before = openstatspec.dolt_state_snapshot(database_url=database_url)
     assert before["read_only"] is True
     assert before["operational_write_enabled"] is False
 
-    rejection = "no concrete declarations; write rejected before mutation"
+    rejection = "not claimed supported"
     with pytest.raises(UnsupportedOperationError, match=rejection):
         openstatspec.initialize_catalog(database_url=database_url)
     after_initialize = openstatspec.dolt_state_snapshot(database_url=database_url)
@@ -136,6 +139,133 @@ def test_live_dolt_is_read_only_and_rejects_writes_without_declarations(
     assert after_import["working_set_binding"] == before["working_set_binding"]
     assert after_initialize["state"] == before["state"]
     assert after_import["state"] == before["state"]
+
+
+def test_live_dolt_default_in_place_atomicity(source_sav, tmp_path, monkeypatch):
+    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
+    if not database_url:
+        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+    imported = openstatspec.import_sav(
+        source_sav, database_url=database_url, dataset_id="apply_" + uuid4().hex[:8],
+    )
+    openstatspec.install_in_place_transformation_schema(database_url=database_url)
+    engine = create_engine(database_url)
+    # The caller, not the adapter, commits the imported baseline before apply.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CALL DOLT_ADD('.')")
+        connection.exec_driver_sql(
+            "CALL DOLT_COMMIT('-m', 'test baseline', '--author', 'Test <test@example.com>')"
+        )
+    before = openstatspec.dolt_state_snapshot(database_url=database_url)["state"]
+    assert before["status"]["rows"] == []
+    tables = inspect_database(engine).get_table_names()
+
+    def contents():
+        with engine.connect() as connection:
+            return {
+                table: tuple(connection.exec_driver_sql(
+                    "SELECT * FROM " + connection.dialect.identifier_preparer.quote(table)
+                )) for table in tables
+            }
+
+    original = contents()
+    schema = openstatspec.VariableSchema((
+        openstatspec.VariableDefinition("age", "numeric"),
+        openstatspec.VariableDefinition("name", "string", declared_string_width=12),
+    ))
+    plan = openstatspec.compile_spss_syntax(
+        "RECODE age (34 = 35). VARIABLE LABELS age 'Updated age'. "
+        "VALUE LABELS age 35 'thirty-five'.", schema,
+    ).plan
+    arguments = dict(
+        database_url=database_url, dataset_id=imported["dataset_id"],
+        plan=plan, actor="service-test", expected_branch=before["active_branch"],
+        expected_head=before["head"],
+    )
+    for key, value, code in (
+        ("expected_branch", "wrong-branch", "dolt_branch_mismatch"),
+        ("expected_head", "wrong-head", "dolt_head_mismatch"),
+        ("expected_head", None, "dolt_context_required"),
+    ):
+        with pytest.raises(openstatspec.TransformationError) as caught:
+            openstatspec.apply_transformation_plan_in_place(**{**arguments, key: value})
+        assert caught.value.code == code
+    create_plan = openstatspec.compile_spss_syntax(
+        "RECODE age (34 = 35) INTO new_age.", schema,
+    ).plan
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        openstatspec.apply_transformation_plan_in_place(**{**arguments, "plan": create_plan})
+    assert caught.value.code == "schema_change_not_atomic"
+    for boundary in ("data", "catalog", "audit"):
+        with monkeypatch.context() as patch:
+            def fail(phase):
+                if phase == boundary:
+                    raise RuntimeError("injected " + phase)
+            patch.setattr(inplace_transform, "_failure_boundary", fail)
+            with pytest.raises(RuntimeError, match="injected " + boundary):
+                openstatspec.apply_transformation_plan_in_place(**arguments)
+        assert contents() == original
+        assert inspect_database(engine).get_table_names() == tables
+        assert openstatspec.dolt_state_snapshot(database_url=database_url)["state"] == before
+
+    result = openstatspec.apply_transformation_plan_in_place(**arguments)
+    assert result["dataset_id"] == imported["dataset_id"]
+    assert result["physical_table_name"] == imported["data_table"]
+    assert result["dolt_commit_performed"] is False
+    assert inspect_database(engine).get_table_names() == tables
+    assert contents()["dataset"] == original["dataset"]
+    after = openstatspec.dolt_state_snapshot(database_url=database_url)["state"]
+    assert after["head"] == before["head"]
+    assert after["active_branch"] == before["active_branch"]
+    assert after["status"]["rows"]
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        openstatspec.apply_transformation_plan_in_place(**arguments)
+    assert caught.value.code == "dolt_working_set_dirty"
+    assert openstatspec.validate(database_url=database_url, dataset_id=imported["dataset_id"])["valid"]
+    destination = tmp_path / "recoded.sav"
+    openstatspec.export_sav(
+        database_url=database_url, dataset_id=imported["dataset_id"], destination=destination,
+    )
+    frame, metadata = pyspssio.read_sav(str(destination), include_user_missing=True)
+    assert frame["age"].iloc[0] == 35.0
+    assert pd.isna(frame["age"].iloc[1])
+    assert metadata["var_labels"]["age"] == "Updated age"
+    assert metadata["var_value_labels"]["age"] == {35.0: "thirty-five"}
+    assert openstatspec.dolt_state_snapshot(database_url=database_url)["state"] == after
+    engine.dispose()
+
+
+def test_live_dolt_default_import_failure_cleanup(source_sav, monkeypatch):
+    database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
+    if not database_url:
+        pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
+    openstatspec.initialize_catalog(database_url=database_url)
+    engine = create_engine(database_url)
+    tables = inspect_database(engine).get_table_names()
+    with engine.connect() as connection:
+        datasets = tuple(connection.exec_driver_sql("SELECT * FROM dataset"))
+    before = openstatspec.dolt_state_snapshot(database_url=database_url)["state"]
+    store = wide.store_normative_dataset
+
+    def fail(*args, **kwargs):
+        store(*args, **kwargs)
+        raise RuntimeError("injected import failure")
+
+    monkeypatch.setattr(wide, "store_normative_dataset", fail)
+    with pytest.raises(RuntimeError, match="injected import failure"):
+        openstatspec.import_sav(
+            source_sav, database_url=database_url, dataset_id="failed_" + uuid4().hex[:8],
+        )
+    assert inspect_database(engine).get_table_names() == tables
+    with engine.connect() as connection:
+        assert tuple(connection.exec_driver_sql("SELECT * FROM dataset")) == datasets
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM operation WHERE status = 'failed'"
+        ).scalar_one() >= 1
+    after = openstatspec.dolt_state_snapshot(database_url=database_url)["state"]
+    assert after["head"] == before["head"]
+    assert after["active_branch"] == before["active_branch"]
+    engine.dispose()
 
 
 @pytest.mark.candidate_evidence

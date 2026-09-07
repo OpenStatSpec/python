@@ -39,7 +39,7 @@ def test_directory_source_is_explicit_and_invalid_root_fails_closed(
 
 
 def test_directory_source_validates_adapter_owned_declaration_and_evidence(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     declaration_directory = tmp_path / "sql/dolt-adapter-declarations"
     evidence = declaration_directory / "evidence/result.json"
@@ -93,6 +93,27 @@ def test_directory_source_validates_adapter_owned_declaration_and_evidence(
     )
     loaded = DoltConformanceSource.from_directory(tmp_path).validated_declarations()
     assert loaded == (declaration,)
+    source = DoltConformanceSource.from_directory(tmp_path)
+    monkeypatch.setattr(capability_module, "SPECIFICATION_COMMIT", "a" * 40)
+    monkeypatch.setattr(
+        capability_module, "active_connection",
+        lambda *_args, **_kwargs: {
+            "profile": "dolt", "raw_product_version": "2.2.2",
+            "claimed_supported": True, "driver_eligible": True,
+            "observed": {"max_allowed_packet": 1_073_741_824},
+        },
+    )
+    profile, _ = capability_module.effective_profile(
+        "mysql+pymysql://example.invalid/catalog", dolt_conformance_source=source,
+    )
+    assert profile.max_source_variables == 1016
+    assert profile.max_statement_bytes == 1_000_000
+    assert capability_module.profile_declarations(
+        dolt_conformance_source=source,
+    )["dolt"]["claimed_server_versions"] == ["2.2.2"]
+    assert not capability_module.server_version_supported(
+        "dolt", "2.2.3", dolt_conformance_source=source,
+    )
 
 
 def test_specification_is_not_a_python_runtime_dependency() -> None:
@@ -107,11 +128,26 @@ def test_specification_is_not_a_python_runtime_dependency() -> None:
         for dependency in dependencies
     )
     declaration = capability_module.profile_declarations()["dolt"]
-    assert declaration["operational_write_enabled"] is False
-    assert declaration["write_conformance"]["write_enabled"] is False
-    assert declaration["write_conformance"]["status"] == "blocked_no_concrete_declarations"
-    assert declaration["claimed_server_versions"] == []
-    assert declaration["ci_tested_server_versions"] == []
+    assert declaration["operational_write_enabled"] is True
+    assert declaration["write_conformance"]["write_enabled"] is True
+    assert declaration["write_conformance"]["status"] == "packaged_exact_version_policy"
+    assert declaration["claimed_server_versions"] == ["2.2.2", "2.2.3"]
+    assert declaration["ci_tested_server_versions"] == ["2.2.2", "2.2.3"]
+
+
+def test_explicit_empty_source_overrides_supported_default(monkeypatch) -> None:
+    monkeypatch.setattr(
+        capability_module, "active_connection",
+        lambda *_args, **_kwargs: {
+            "profile": "dolt", "raw_product_version": "2.2.2",
+            "claimed_supported": True,
+        },
+    )
+    with pytest.raises(UnsupportedOperationError, match="no concrete declarations"):
+        capability_module.effective_profile(
+            "mysql+pymysql://example.invalid/catalog",
+            dolt_conformance_source=DoltConformanceSource.packaged(),
+        )
 
 
 def test_exact_match_binds_active_product_adapter_and_specification(
@@ -196,11 +232,6 @@ def test_every_sql_mutation_entrypoint_accepts_explicit_conformance_source() -> 
     mutation_entrypoints = (
         wide.initialize_wide_catalog,
         wide.create_wide_dataset,
-        wide.record_export_cleanup_failure,
-        wide.record_export_operation,
-        wide.finish_export_operation,
-        wide.fail_export_operation,
-        wide.record_export_backup_retained,
     )
     for entrypoint in mutation_entrypoints:
         parameter = inspect.signature(entrypoint).parameters[
@@ -236,7 +267,7 @@ def test_validate_wide_dataset_propagates_explicit_source(
         calls.append(kwargs["dolt_conformance_source"])
         raise UnsupportedOperationError("stop after propagation check")
 
-    monkeypatch.setattr(wide, "effective_profile", capture_effective_profile)
+    monkeypatch.setattr(wide, "read_profile", capture_effective_profile)
     monkeypatch.setattr(wide, "read_wide_dataset", stop_after_read_preflight)
     with pytest.raises(UnsupportedOperationError, match="propagation check"):
         wide.validate_wide_dataset(
@@ -343,40 +374,3 @@ def test_sav_export_propagates_explicit_source_to_read_gate(
             dolt_conformance_source=sentinel,
         )
     assert calls == [sentinel]
-
-
-def test_export_recovery_helpers_propagate_explicit_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    sentinel = object()
-    calls: list[tuple[str, object]] = []
-
-    def capture_cleanup(**kwargs: object) -> str:
-        calls.append(("cleanup", kwargs["dolt_conformance_source"]))
-        return "cleanup-operation"
-
-    def capture_failure(**kwargs: object) -> None:
-        calls.append(("failure", kwargs["dolt_conformance_source"]))
-
-    monkeypatch.setattr(
-        sav_module, "record_export_cleanup_failure", capture_cleanup,
-    )
-    monkeypatch.setattr(sav_module, "fail_export_operation", capture_failure)
-    destination = tmp_path / "destination.sav"
-    backup = tmp_path / "backup.sav"
-    staged = tmp_path / "staged.sav"
-    with pytest.raises(sav_module.ExportRecoveryError, match="cleanup_failed"):
-        sav_module._raise_export_cleanup_failed(
-            original_error=RuntimeError("synthetic export failure"),
-            cleanup_error=RuntimeError("synthetic cleanup failure"),
-            phase="synthetic", destination=destination, backup=backup,
-            staged=staged, had_previous=False, database_url="sqlite://",
-            dolt_conformance_source=sentinel,
-        )
-    sav_module._mark_export_failed_after_restore(
-        database_url="sqlite://", operation_id="synthetic-operation",
-        error=RuntimeError("synthetic export failure"), phase="synthetic",
-        destination=destination, backup=backup, had_previous=False,
-        dolt_conformance_source=sentinel,
-    )
-    assert calls == [("cleanup", sentinel), ("failure", sentinel)]

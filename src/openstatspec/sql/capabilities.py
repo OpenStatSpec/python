@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,20 +13,23 @@ from sqlalchemy.engine import make_url
 
 from .dolt_conformance import DoltConformanceSource, effective_limits as dolt_effective_limits
 from .normative import catalog
+from .database_urls import require_existing_database_url
 from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, MYSQL_WIRE_PROFILES, SqlProfile
 from .profiles import validate_connection_url
 from ..core import UnsupportedOperationError
 
 # Release/build automation binds the adapter to the exact language-neutral
 # specification revision used for normative fixtures and profile semantics.
-SPECIFICATION_COMMIT = "cd8f198c68b849eb8ed018a894670a0904c2181d"
-SPECIFICATION_STATUS = "stable"
-SPECIFICATION_RELEASE: str | None = "v0.3.0"
+SPECIFICATION_COMMIT = "864e84479f554b8ee250ffed44c4dfb963750d4a"
+SPECIFICATION_STATUS = "released"
+SPECIFICATION_RELEASE: str | None = "v0.5.0"
 
 DOLT_WRITE_CONFORMANCE = {
     "declaration_schema_id": "openstatspec-dolt-adapter-declaration-v1",
-    "write_enabled": False,
-    "status": "adapter_owned_concrete_declarations_required",
+    "write_enabled": True,
+    "status": "packaged_exact_version_policy",
+    "declaration_count": 0,
+    "declarations_available": False,
 }
 
 
@@ -82,7 +86,7 @@ def _dolt_driver_eligible(database_url: str) -> bool:
 def dolt_operational_write_enabled(
     active: Mapping[str, Any], *, declaration_matched: bool,
 ) -> bool:
-    """Require both exact declaration and claimed active driver for writes."""
+    """Require an exact write-policy match and the claimed active driver."""
     return declaration_matched and bool(active.get("driver_eligible", False))
 
 
@@ -91,7 +95,12 @@ def _dolt_write_enabled(
     *,
     active_product_version: str | None = None,
 ) -> bool:
-    conformance = _conformance_source(source)
+    if source is None:
+        return (
+            True if active_product_version is None
+            else active_product_version.strip() in SERVER_POLICIES["dolt"]["claimed"]
+        )
+    conformance = source
     if active_product_version is None:
         return bool(conformance.status()["write_enabled"])
     conformance.require_exact_match(
@@ -115,8 +124,8 @@ SERVER_POLICIES = {
         "ci": ["MariaDB 11.4.12", "MariaDB 11.8.8", "MariaDB 12.3.2"],
     },
     "dolt": {
-        "claimed": [],
-        "ci": [],
+        "claimed": ["2.2.2", "2.2.3"],
+        "ci": ["2.2.2", "2.2.3"],
     },
     "postgresql": {
         "claimed": ["PostgreSQL 17.x", "PostgreSQL 18.x"],
@@ -131,13 +140,15 @@ def profile_declarations(
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Declare every profile and, optionally, one active connection."""
-    source = _conformance_source(dolt_conformance_source)
+    if database_url:
+        require_existing_database_url(database_url)
+    source = dolt_conformance_source
     active = (
         active_connection(database_url, dolt_conformance_source=source)
         if database_url else None
     )
     dolt_declaration = None
-    if active and active["profile"] == "dolt":
+    if source is not None and active and active["profile"] == "dolt":
         try:
             dolt_declaration = source.require_exact_match(
                 active_product_version=active["raw_product_version"],
@@ -290,8 +301,25 @@ def effective_profile(
     *,
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> tuple[SqlProfile, dict[str, Any]]:
-    """Resolve and enforce the profile used by import preflight."""
-    source = _conformance_source(dolt_conformance_source)
+    """Enforce the write profile and exact Dolt policy or explicit declaration."""
+    return _effective_profile(database_url, dolt_conformance_source, for_write=True)
+
+
+def read_profile(
+    database_url: str,
+    *,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> tuple[SqlProfile, dict[str, Any]]:
+    """Identify a read connection without requiring evidence for Dolt writes."""
+    require_existing_database_url(database_url)
+    return _effective_profile(database_url, dolt_conformance_source, for_write=False)
+
+
+def _effective_profile(
+    database_url: str, dolt_conformance_source: DoltConformanceSource | None,
+    *, for_write: bool,
+) -> tuple[SqlProfile, dict[str, Any]]:
+    source = dolt_conformance_source
     configured = validate_connection_url(database_url)
     active = active_connection(database_url, dolt_conformance_source=source)
     if configured is not MYSQL and active["profile"] != configured.name:
@@ -305,8 +333,12 @@ def effective_profile(
         raise UnsupportedOperationError(
             "Dolt requires an explicit mysql+pymysql URL."
         )
+    if active["profile"] == "dolt" and not for_write:
+        # Existing data is validated against the adapter's data model, not a
+        # write-conformance envelope or INSERT statement/packet limits.
+        return replace(DOLT, max_source_variables=sys.maxsize), active
     dolt_declaration = None
-    if active["profile"] == "dolt":
+    if active["profile"] == "dolt" and source is not None:
         dolt_declaration = source.require_exact_match(
             active_product_version=active["raw_product_version"],
             specification_commit=_bound_specification_commit(),
@@ -372,13 +404,18 @@ def _profile(
     dolt_declaration: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     dolt_envelope = name == "dolt"
+    default_dolt = dolt_envelope and dolt_conformance_source is None
+    dolt_supported = bool(
+        default_dolt and active and active["profile"] == "dolt"
+        and server_version_supported("dolt", active["raw_product_version"])
+    )
     identifier = {
         "value": profile.identifier_limit,
         "unit": "characters" if name in {"mysql", "mariadb"} else "bytes",
         "source": (
             "MySQL/MariaDB native identifier limit" if name in {"mysql", "mariadb"}
             else "PostgreSQL NAMEDATALEN minus one native byte limit" if name == "postgresql"
-            else "OpenStatSpec Dolt adapter envelope pending pinned live boundary evidence"
+            else "OpenStatSpec Dolt adapter safety envelope (not a proven server ceiling)"
             if dolt_envelope
             else "OpenStatSpec profile boundary; SQLite has no fixed native identifier limit"
         ),
@@ -396,7 +433,7 @@ def _profile(
     if dolt_envelope:
         adapter_envelope = {
             **profile_limits,
-            "limit_basis": "proposed_adapter_envelope",
+            "limit_basis": "adapter_safety_envelope",
             "evidence_status": "pending_pinned_live_conformance",
         }
         theoretical = {
@@ -415,15 +452,16 @@ def _profile(
     effective = None
     status = "not_connected"
     if active and active["profile"] == name and (
-        not dolt_envelope or dolt_declaration is not None
+        not dolt_envelope or dolt_declaration is not None or dolt_supported
     ):
         effective = (
             dolt_effective_limits(dolt_declaration)
             if dolt_envelope and dolt_declaration is not None
+            else dict(adapter_envelope) if default_dolt
             else dict(theoretical)
         )
         default_source = (
-            "proposed adapter envelope pending pinned live conformance"
+            "adapter safety envelope; full boundary conformance not claimed"
             if dolt_envelope else "profile theoretical engine ceiling"
         )
         sources = {
@@ -462,7 +500,9 @@ def _profile(
             effective["maximum_value_bytes"] = min(
                 effective["maximum_value_bytes"], payload,
             )
-            effective["maximum_statement_bytes"] = payload
+            effective["maximum_statement_bytes"] = min(
+                effective["maximum_statement_bytes"] or payload, payload,
+            )
             sources["maximum_value_bytes"] = "active @@max_allowed_packet worst-case payload"
             sources["maximum_statement_bytes"] = "active @@max_allowed_packet worst-case payload"
             status = "active_connection_mixed"
@@ -474,20 +514,25 @@ def _profile(
     policy = SERVER_POLICIES[name]
     dolt_declarations = (
         _validated_dolt_declarations(dolt_conformance_source)
-        if dolt_envelope else ()
+        if dolt_envelope and not default_dolt else ()
     )
     dolt_claimed_versions = sorted({
         version
         for declaration in dolt_declarations
-        for version in declaration["claimed_product_versions"]
+        for version in declaration.get(
+            "claimed_product_versions", [declaration["active_product_version"]],
+        )
     })
     dolt_tested_versions = sorted({
         version
         for declaration in dolt_declarations
-        for version in declaration["tested_product_versions"]
+        for version in declaration.get(
+            "tested_product_versions", [declaration["active_product_version"]],
+        )
     })
     dolt_status = (
-        _conformance_source(dolt_conformance_source).status()
+        DOLT_WRITE_CONFORMANCE if default_dolt
+        else _conformance_source(dolt_conformance_source).status()
         if dolt_envelope else None
     )
     return {
@@ -500,10 +545,10 @@ def _profile(
         "specification_commit": SPECIFICATION_COMMIT,
         "driver": "psycopg" if name == "postgresql" else "PyMySQL" if name in MYSQL_WIRE_PROFILES else "sqlite3",
         "claimed_server_versions": (
-            dolt_claimed_versions if dolt_envelope else policy["claimed"]
+            dolt_claimed_versions if dolt_envelope and not default_dolt else policy["claimed"]
         ),
         "ci_tested_server_versions": (
-            dolt_tested_versions if dolt_envelope else policy["ci"]
+            dolt_tested_versions if dolt_envelope and not default_dolt else policy["ci"]
         ),
         "write_conformance": (
             {
@@ -523,7 +568,7 @@ def _profile(
         ),
         "operational_write_enabled": (
             dolt_operational_write_enabled(
-                active, declaration_matched=dolt_declaration is not None,
+                active, declaration_matched=dolt_declaration is not None or dolt_supported,
             )
             if dolt_envelope and active and active["profile"] == name
             else (
@@ -579,7 +624,6 @@ def server_version_supported(
         "postgresql": {(17,), (18,)},
         "mysql": {(8, 4), (9, 7)},
         "mariadb": {(11, 4), (11, 8), (12, 3)},
-        "dolt": {(2, 2, 2)},
     }[profile]
     width = len(next(iter(allowed)))
     return version[:width] in allowed

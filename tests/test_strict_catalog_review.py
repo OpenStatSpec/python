@@ -3,6 +3,8 @@
 import json
 import sqlite3
 
+from openstatspec import export_sav
+
 import pytest
 from sqlalchemy import MetaData, create_engine
 
@@ -87,11 +89,10 @@ def test_read_and_export_reject_obsolete_catalog_relations(tmp_path):
     with pytest.raises(UnsupportedOperationError, match="obsolete"):
         wide.read_wide_dataset(database_url=database, dataset_id="sample")
     with pytest.raises(UnsupportedOperationError, match="obsolete"):
-        wide.record_export_operation(
+        export_sav(
             database_url=database,
             dataset_id="sample",
-            destination="sample.sav",
-            allowed_fidelity_events=(),
+            destination=tmp_path / "sample.sav",
         )
 
 

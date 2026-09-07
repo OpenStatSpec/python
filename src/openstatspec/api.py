@@ -33,6 +33,8 @@ from .sql.inplace_transform import (
     install_in_place_transformation_schema as _install_in_place_schema,
 )
 from .transform import TransformationPlan
+from .sql.database_urls import require_existing_database_url
+from .sql.dolt_conformance import ADAPTER_VERSION
 from .sql.capabilities import (
     SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, SPECIFICATION_STATUS,
     active_connection, catalog_binding,
@@ -50,11 +52,15 @@ def capability_matrix(
     supported means that the adapter has a tested faithful path.
     unobservable means that pyspssio's public reader API cannot expose the
     source semantic. fail-closed-on-export means an imported/catalogued value
-    blocks export unless the documented audited loss route exists; a plain
+    blocks export unless the documented explicit loss opt-in exists; a plain
     fail-closed feature has no faithful writer route at all.
     """
+    if database_url:
+        require_existing_database_url(database_url)
     declaration = {
         "specification": "OpenStatSpec",
+        "adapter_version": ADAPTER_VERSION,
+        "database_io_policy": "openstatspec-database-io-v1",
         "specification_status": SPECIFICATION_STATUS,
         "specification_release": SPECIFICATION_RELEASE,
         "specification_commit": SPECIFICATION_COMMIT,
@@ -174,7 +180,7 @@ def export_sav(
     dolt_conformance_source: DoltConformanceSource | None = None,
     **options: Any,
 ) -> Mapping[str, Any]:
-    """Export one database-resident conforming dataset to SAV/ZSAV."""
+    """Export to SAV/ZSAV without database writes or an operation record."""
     return result(export_dataset(
         database_url=database_url, dataset_id=dataset_id,
         destination=destination,

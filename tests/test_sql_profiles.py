@@ -29,13 +29,13 @@ def test_profile_detection_tracks_supported_dialect_urls() -> None:
     assert profile_for_url("mariadb+mariadbconnector://user@host/database") is MYSQL
     assert profile_for_url("mysql+pymysql://user@host/dolt_database") is MYSQL
 
-def test_profile_declarations_publish_stable_specification_provenance() -> None:
+def test_profile_declarations_publish_released_specification_provenance() -> None:
     for declaration in capabilities.profile_declarations().values():
-        assert declaration["specification_status"] == "stable"
-        assert declaration["specification_release"] == "v0.3.0"
+        assert declaration["specification_status"] == "released"
+        assert declaration["specification_release"] == "v0.5.0"
         assert (
             declaration["specification_commit"]
-            == "cd8f198c68b849eb8ed018a894670a0904c2181d"
+            == "864e84479f554b8ee250ffed44c4dfb963750d4a"
         )
 
 def test_profile_preflight_fails_without_transforming_a_wide_dataset() -> None:
@@ -121,8 +121,8 @@ def test_claimed_server_version_policy_is_explicit(
         "2.2.03", "garbage",
     ],
 )
-def test_dolt_without_concrete_declaration_is_not_claimed(version: str) -> None:
-    assert server_version_supported("dolt", version) is False
+def test_dolt_default_policy_requires_a_supported_exact_version(version: str) -> None:
+    assert server_version_supported("dolt", version) is (version.strip() in {"2.2.2", "2.2.3"})
 
 
 @pytest.mark.services
@@ -148,15 +148,15 @@ def test_active_server_identity_matches_claimed_ci_profile(
 
 
 @pytest.mark.services
-def test_live_dolt_identity_is_observed_but_not_claimed_without_declarations() -> None:
+def test_live_dolt_identity_matches_default_write_policy() -> None:
     database_url = os.environ.get("OPENSTATSPEC_DOLT_URL")
     if not database_url:
         pytest.skip("OPENSTATSPEC_DOLT_URL is not configured")
 
     active = active_connection(database_url)
     assert active["profile"] == "dolt"
-    assert active["claimed_supported"] is False
-    assert active["matched_claim"] is None
+    assert active["claimed_supported"] is True
+    assert active["matched_claim"] == active["raw_product_version"]
 
 
 @pytest.mark.services
@@ -220,8 +220,8 @@ def test_server_policy_distinguishes_claimed_families_from_exact_ci_evidence() -
     assert declarations["postgresql"]["ci_tested_server_versions"] == [
         "PostgreSQL 17.10", "PostgreSQL 18.4",
     ]
-    assert declarations["dolt"]["claimed_server_versions"] == []
-    assert declarations["dolt"]["ci_tested_server_versions"] == []
+    assert declarations["dolt"]["claimed_server_versions"] == ["2.2.2", "2.2.3"]
+    assert declarations["dolt"]["ci_tested_server_versions"] == ["2.2.2", "2.2.3"]
 
 
 class _ProbeResult:
@@ -293,8 +293,8 @@ def test_dolt_identity_is_exact_and_publishes_wire_and_product_versions(monkeypa
     assert active["identity_source"] == (
         "SELECT @@version, @@version_comment, DOLT_VERSION(), ACTIVE_BRANCH()"
     )
-    assert active["claimed_supported"] is False
-    assert active["matched_claim"] is None
+    assert active["claimed_supported"] is True
+    assert active["matched_claim"] == "2.2.3"
     assert active["working_set_binding"]["active_branch"] == "main"
     assert connection.calls == [
         "select @@version", "select @@version_comment", "select DOLT_VERSION()",
@@ -388,29 +388,27 @@ def test_non_dolt_products_never_call_the_dolt_function(monkeypatch) -> None:
     assert "select DOLT_VERSION()" not in connection.calls
 
 
-def test_effective_profile_fails_closed_without_dolt_declarations(monkeypatch) -> None:
-    active = {
-        "profile": "dolt",
-        "raw_product_version": "2.2.3",
-    }
-    monkeypatch.setattr(
-        capabilities, "active_connection", lambda _url, **_kwargs: active,
-    )
+def test_effective_profile_uses_default_dolt_limits(monkeypatch) -> None:
+    _mock_mysql_probes(monkeypatch)
+    profile, active = effective_profile("mysql+pymysql://user@host/database")
+    assert active["claimed_supported"] is True
+    assert profile.name == "dolt"
+    assert profile.max_source_variables == DOLT.max_source_variables
+    assert profile.identifier_limit == DOLT.identifier_limit
+    assert profile.max_statement_bytes == (1_073_741_824 - 131_072) // 2
+    assert profile.max_text_value_bytes == profile.max_statement_bytes
 
-    with pytest.raises(UnsupportedOperationError, match="no concrete declarations"):
-        effective_profile("mysql+pymysql://user@host/database")
-
-def test_dolt_declaration_is_fail_closed_without_concrete_evidence() -> None:
+def test_dolt_default_policy_does_not_claim_proven_server_limits() -> None:
     declaration = capabilities.profile_declarations()["dolt"]
 
-    assert declaration["claimed_server_versions"] == []
-    assert declaration["ci_tested_server_versions"] == []
-    assert declaration["operational_write_enabled"] is False
+    assert declaration["claimed_server_versions"] == ["2.2.2", "2.2.3"]
+    assert declaration["ci_tested_server_versions"] == ["2.2.2", "2.2.3"]
+    assert declaration["operational_write_enabled"] is True
     assert declaration["effective_limits"] is None
     assert declaration["effective_limits_status"] == "not_connected"
     assert declaration["write_conformance"]["declaration_count"] == 0
-    assert declaration["write_conformance"]["write_enabled"] is False
-    assert declaration["adapter_envelope"]["limit_basis"] == "proposed_adapter_envelope"
+    assert declaration["write_conformance"]["write_enabled"] is True
+    assert declaration["adapter_envelope"]["limit_basis"] == "adapter_safety_envelope"
     assert declaration["theoretical_limits"]["limit_basis"] == (
         "server_limits_not_claimed"
     )
@@ -462,7 +460,7 @@ def test_validate_identity_failure_happens_before_catalog_access(monkeypatch) ->
     def fail_identity(_url, **_kwargs):
         raise UnsupportedOperationError("identity unavailable")
 
-    monkeypatch.setattr(wide, "effective_profile", fail_identity)
+    monkeypatch.setattr(wide, "read_profile", fail_identity)
     monkeypatch.setattr(
         wide, "create_engine",
         lambda _url: pytest.fail("database access continued after identity failure"),
@@ -480,10 +478,10 @@ def test_export_identity_failure_happens_before_read_or_destination(monkeypatch,
     def fail_identity(_url, **_kwargs):
         raise UnsupportedOperationError("identity unavailable")
 
-    monkeypatch.setattr(sav, "effective_profile", fail_identity)
+    monkeypatch.setattr(wide, "read_profile", fail_identity)
     monkeypatch.setattr(
-        sav, "read_wide_dataset",
-        lambda **_kwargs: pytest.fail("catalog read continued after identity failure"),
+        wide, "create_engine",
+        lambda _url: pytest.fail("catalog read continued after identity failure"),
     )
 
     with pytest.raises(UnsupportedOperationError, match="identity unavailable"):
@@ -553,7 +551,7 @@ def test_wide_string_column_uses_effective_dolt_storage() -> None:
 def test_capability_inspection_reports_unbound_dolt_as_disabled(monkeypatch) -> None:
     active = {
         "profile": "dolt",
-        "raw_product_version": "2.2.3",
+        "raw_product_version": "2.3.0",
         "observed": {"max_allowed_packet": 1_073_741_824},
     }
     monkeypatch.setattr(
@@ -581,6 +579,9 @@ def test_bound_catalog_transaction_allows_gated_dolt_audit(monkeypatch) -> None:
 
         def __exit__(self, *_args):
             return None
+
+        def exec_driver_sql(self, statement):
+            assert statement == "BEGIN"
 
         def rollback(self):
             self.rollback_called = True

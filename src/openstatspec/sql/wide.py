@@ -14,11 +14,11 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger, Column, Float, MetaData, Table, Text, create_engine, insert,
-    inspect, or_, select, update,
+    inspect, or_, select,
 )
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from ..core import UnsupportedOperationError
-from .capabilities import active_connection, dolt_operational_write_enabled, effective_profile
+from .capabilities import active_connection, dolt_operational_write_enabled, effective_profile, read_profile
 from .profiles import preflight, statement_payload_bytes, validate_connection_url
 from .normative import (
     CATALOG_CONTRACT_ID,
@@ -32,7 +32,7 @@ from .normative import (
     store_imported_dataset as store_normative_dataset,
 )
 from .catalog_verification import verify_catalog_relations
-from .database_urls import require_persistent_database_url
+from .database_urls import require_existing_database_url, require_persistent_database_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -510,12 +510,19 @@ def _capture_dolt_state(
         "diff_summaries": {},
     }
 
-    def allowed_audit_data_diff(row: Mapping[str, Any]) -> bool:
+    def allowed_owned_diff(row: Mapping[str, Any]) -> bool:
         values = dict(row)
         from_name = str(values.get("from_table_name") or "")
         to_name = str(values.get("to_table_name") or "")
         data_change = str(values.get("data_change")).strip().lower()
         schema_change = str(values.get("schema_change")).strip().lower()
+        # Initialization/import may create their own tables without a Dolt
+        # commit. Do not classify those HEAD-to-WORKING additions as unrelated.
+        if (
+            not from_name and to_name in audit_relations
+            and str(values.get("diff_type") or "").strip().lower() == "added"
+        ):
+            return True
         return (
             from_name == to_name
             and from_name in audit_relations
@@ -545,7 +552,7 @@ def _capture_dolt_state(
         unrelated["diff_summaries"][label] = _dolt_evidence_block(
             (
                 row for row in rows
-                if not allowed_audit_data_diff(row)
+                if not allowed_owned_diff(row)
             ),
             expected_keys=expected_keys,
         )
@@ -619,6 +626,9 @@ def _bound_catalog_transaction(
             connection.rollback()
         try:
             with connection.begin():
+                if profile_name == "dolt":
+                    # Dolt may retain @@autocommit=1 despite PyMySQL's setting.
+                    connection.exec_driver_sql("BEGIN")
                 yield connection
                 after = _capture_dolt_state(
                     connection, profile_name=profile_name,
@@ -638,6 +648,7 @@ def dolt_state_snapshot(
     *, database_url: str, dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
     """Return read-only branch, HEAD, status, and diff evidence for Dolt."""
+    require_existing_database_url(database_url)
     validate_connection_url(database_url)
     active = active_connection(
         database_url, dolt_conformance_source=dolt_conformance_source,
@@ -1039,8 +1050,9 @@ def read_wide_dataset(
     dolt_conformance_source: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Read an export descriptor from the normative catalog without mutation."""
+    require_existing_database_url(database_url)
     if profile is None:
-        profile, _active = effective_profile(
+        profile, _active = read_profile(
             database_url, dolt_conformance_source=dolt_conformance_source,
         )
     engine = create_engine(database_url)
@@ -1374,7 +1386,7 @@ def read_fidelity_events(
     dolt_conformance_source: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read fidelity diagnostics, optionally limited to one lifecycle direction."""
-    effective_profile(
+    read_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
     engine = create_engine(database_url)
@@ -1405,302 +1417,11 @@ def read_fidelity_events(
     return tuple(result)
 
 
-@contextmanager
-def _bound_export_audit_transaction(
-    *, database_url: str, dolt_conformance_source: Any | None, phase: str,
-):
-    """Open one verified transaction bound to the effective Dolt working set."""
-    validate_connection_url(database_url)
-    require_persistent_database_url(database_url)
-    profile, active = effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    engine = create_engine(database_url)
-    normative = normative_catalog(MetaData())
-    with _bound_catalog_transaction(
-        engine=engine, profile_name=profile.name, active=active,
-        audit_relations={normative.operation.name, normative.fidelity_event.name},
-        phase=phase,
-    ) as connection:
-        require_verified_catalog(connection)
-        yield connection, normative
-
-
-def record_export_operation(
-    *, database_url: str, dataset_id: str, destination: str,
-    allowed_fidelity_events: Iterable[Mapping[str, Any]],
-    operation_details: Mapping[str, Any] | None = None,
-    terminal: bool = True,
-    dolt_conformance_source: Any | None = None,
-) -> str:
-    """Persist a completed export only in the normative audit catalog."""
-    operation_details = dict(operation_details or {})
-    operation_id = str(uuid4())
-    events = tuple(allowed_fidelity_events)
-    with _bound_export_audit_transaction(
-        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
-        phase="export audit creation",
-    ) as (connection, normative):
-        _verify_normative_catalog(connection, normative)
-        dataset = _resolve_normative_dataset(connection, normative, dataset_id)
-        completed_at = datetime.now(UTC).replace(tzinfo=None)
-        status = "succeeded" if terminal else "started"
-        record_normative_operation(
-            connection, normative, operation_id=operation_id,
-            operation_kind="export", status=status, source_format=None,
-            started_at=completed_at, completed_at=completed_at if terminal else None,
-        )
-        record_normative_fidelity_events(
-            connection, normative, operation_id=operation_id,
-            dataset_id=str(dataset["dataset_id"]), direction="export",
-            events=(
-                *(
-                    {
-                        **event,
-                        "severity": event.get("severity", "warning"),
-                        "details": {
-                            **event.get("details", {}),
-                            "accepted_by_user": True,
-                        },
-                    }
-                    for event in events
-                ),
-                *(({
-                    "code": "operation-engine-identity",
-                    "detail": "Export engine identity recorded for audit.",
-                    "severity": "info",
-                    "source_item": destination,
-                    "details": operation_details,
-                },) if operation_details else ()),
-                {
-                    "code": "export-operation-dataset-binding",
-                    "detail": "Export operation dataset identity recorded for audit.",
-                    "severity": "info",
-                    "source_item": destination,
-                    "details": {},
-                },
-            ),
-        )
-    return operation_id
-
-
-def _export_operation_row(
-    connection: Any, normative: Any, operation_id: str,
-) -> Mapping[str, Any]:
-    row = connection.execute(
-        select(normative.operation).where(
-            normative.operation.c.operation_id == operation_id
-        )
-    ).mappings().one_or_none()
-    if row is None or row["operation_kind"] != "export":
-        raise UnsupportedOperationError("The export operation does not exist.")
-    return row
-
-
-def _export_operation_dataset_id(
-    connection: Any, normative: Any, operation_id: str,
-) -> str:
-    dataset_ids = set(connection.execute(
-        select(normative.fidelity_event.c.dataset_id)
-        .where(normative.fidelity_event.c.operation_id == operation_id)
-        .where(normative.fidelity_event.c.dataset_id.is_not(None))
-    ).scalars())
-    if len(dataset_ids) != 1:
-        raise UnsupportedOperationError(
-            "The export operation is not bound to exactly one dataset."
-        )
-    dataset_id = str(dataset_ids.pop())
-    if connection.execute(
-        select(normative.dataset.c.dataset_id).where(
-            normative.dataset.c.dataset_id == dataset_id
-        )
-    ).scalar_one_or_none() is None:
-        raise UnsupportedOperationError(
-            "The export operation dataset no longer exists."
-        )
-    return dataset_id
-
-
-def finish_export_operation(
-    *, database_url: str, operation_id: str,
-    dolt_conformance_source: Any | None = None,
-) -> None:
-    """Mark a started normative export operation as succeeded."""
-    with _bound_export_audit_transaction(
-        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
-        phase="export audit finalization",
-    ) as (connection, normative):
-        _verify_normative_catalog(connection, normative)
-        row = _export_operation_row(connection, normative, operation_id)
-        if row["status"] != "started":
-            raise UnsupportedOperationError(
-                "Only a started export operation can be finalized."
-            )
-        finish_normative_operation(
-            connection, normative, operation_id=operation_id, status="succeeded",
-        )
-
-
-def read_export_operation_state(
-    *, database_url: str, operation_id: str,
-    dolt_conformance_source: Any | None = None,
-) -> dict[str, Any]:
-    """Read the singular normative export-operation state."""
-    effective_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    normative = normative_catalog(MetaData())
-    with create_engine(database_url).connect() as connection:
-        require_verified_catalog(connection)
-        row = _export_operation_row(connection, normative, operation_id)
-    classification = {
-        "started": "running",
-        "succeeded": "succeeded",
-        "failed": "failed",
-    }.get(str(row["status"]), "ambiguous")
-    return {
-        "operation_id": operation_id,
-        "normative": {
-            "operation_kind": row["operation_kind"],
-            "status": row["status"],
-        },
-        "classification": classification,
-    }
-
-
-def fail_export_operation(
-    *, database_url: str, operation_id: str,
-    failure_details: Mapping[str, Any],
-    dolt_conformance_source: Any | None = None,
-) -> None:
-    """Close a started normative export after filesystem compensation."""
-    event = {
-        "code": "export_failed",
-        "detail": "Export publication or finalization failed after audit start.",
-        "severity": "error",
-        "details": dict(failure_details),
-    }
-    with _bound_export_audit_transaction(
-        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
-        phase="export audit failure",
-    ) as (connection, normative):
-        _verify_normative_catalog(connection, normative)
-        row = _export_operation_row(connection, normative, operation_id)
-        if row["status"] != "started":
-            raise UnsupportedOperationError(
-                "Only a started export operation can be failed."
-            )
-        dataset_id = _export_operation_dataset_id(
-            connection, normative, operation_id,
-        )
-        finish_normative_operation(
-            connection, normative, operation_id=operation_id, status="failed",
-        )
-        record_normative_fidelity_events(
-            connection, normative, operation_id=operation_id,
-            dataset_id=dataset_id, direction="export", events=(event,),
-        )
-
-
-def record_export_backup_retained(
-    *, database_url: str, operation_id: str, destination: str, backup: str,
-    cleanup_error: Exception,
-    dolt_conformance_source: Any | None = None,
-) -> None:
-    """Append a warning to a successfully finalized normative export."""
-    with _bound_export_audit_transaction(
-        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
-        phase="export backup-retention audit",
-    ) as (connection, normative):
-        _verify_normative_catalog(connection, normative)
-        row = _export_operation_row(connection, normative, operation_id)
-        if row["status"] != "succeeded":
-            raise UnsupportedOperationError(
-                "A retained backup warning requires a succeeded export."
-            )
-        dataset_id = _export_operation_dataset_id(
-            connection, normative, operation_id,
-        )
-        record_normative_fidelity_events(
-            connection, normative, operation_id=operation_id,
-            dataset_id=dataset_id, direction="export", events=({
-                "code": "backup_retained",
-                "detail": "A successful export retained its durable prior-file backup.",
-                "severity": "warning",
-                "source_item": destination,
-                "details": {
-                    "durable_backup": backup,
-                    "cleanup_error_type": type(cleanup_error).__name__,
-                },
-            },),
-        )
-
-
-def record_export_cleanup_failure(
-    *, database_url: str, destination: str, original_error: Exception,
-    cleanup_error: Exception,
-    residual_object_inventory: Mapping[str, Any],
-    deterministic_recovery_evidence: Mapping[str, Any],
-    operation_id: str | None = None,
-    dolt_conformance_source: Any | None = None,
-) -> str:
-    """Persist terminal cleanup failure in the normative audit catalog."""
-    operation_id = operation_id or str(uuid4())
-    event = {
-        "code": "cleanup_failed",
-        "detail": "Export destination recovery failed; out-of-band review is required.",
-        "severity": "error",
-        "source_item": destination,
-        "details": {
-            "original_error_type": type(original_error).__name__,
-            "cleanup_error_type": type(cleanup_error).__name__,
-            "residual_object_inventory": dict(residual_object_inventory),
-            "deterministic_recovery_evidence": dict(
-                deterministic_recovery_evidence
-            ),
-        },
-    }
-    with _bound_export_audit_transaction(
-        database_url=database_url, dolt_conformance_source=dolt_conformance_source,
-        phase="export cleanup-failure audit",
-    ) as (connection, normative):
-        _verify_normative_catalog(connection, normative)
-        row = connection.execute(
-            select(normative.operation).where(
-                normative.operation.c.operation_id == operation_id
-            )
-        ).mappings().one_or_none()
-        dataset_id = None
-        if row is None:
-            failed_at = datetime.now(UTC).replace(tzinfo=None)
-            record_normative_operation(
-                connection, normative, operation_id=operation_id,
-                operation_kind="export", status="failed", source_format=None,
-                started_at=failed_at, completed_at=failed_at,
-            )
-        else:
-            if row["operation_kind"] != "export" or row["status"] != "started":
-                raise UnsupportedOperationError(
-                    "Existing export operation cannot transition to cleanup failure."
-                )
-            dataset_id = _export_operation_dataset_id(
-                connection, normative, operation_id,
-            )
-            finish_normative_operation(
-                connection, normative, operation_id=operation_id, status="failed",
-            )
-        record_normative_fidelity_events(
-            connection, normative, operation_id=operation_id,
-            dataset_id=dataset_id, direction="export", events=(event,),
-        )
-    return operation_id
-
-
 def validate_wide_dataset(
     *, database_url: str, dataset_id: str,
     dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
-    profile, _active = effective_profile(
+    profile, _active = read_profile(
         database_url, dolt_conformance_source=dolt_conformance_source,
     )
     dataset, variables, rows = read_wide_dataset(
@@ -1750,4 +1471,3 @@ def validate_wide_dataset(
     if [row["__case_ordinal"] for row in rows] != list(range(1, len(rows) + 1)):
         raise ValueError("Case ordinals are not contiguous source order.")
     return {"dataset_id": dataset["dataset_id"], "valid": True, "case_count": len(rows), "variable_count": len(variables)}
-

@@ -6,6 +6,30 @@ All notable changes to this reference implementation are documented here.
 
 _No unreleased changes._
 
+## 0.8.0 - 2026-09-07
+
+### Changed
+
+- Pin released specification `v0.5.0` at exact commit
+  `864e84479f554b8ee250ffed44c4dfb963750d4a`, with normative status `released`.
+  Capabilities identify adapter version 0.8.0 and explicitly select SAV/ZSAV 1.0
+  with `database_io_policy=openstatspec-database-io-v1`.
+- Reads, inspection, validation, and SAV/ZSAV export no longer write database
+  operation/fidelity audit records, including on failure. Export diagnostics
+  and loss consent remain operation-scoped; export results omit `operation_id`.
+- Default Dolt writes use the packaged tested exact-version policy for 2.2.2
+  and 2.2.3 without user-supplied evidence files. Unknown/untested versions
+  remain blocked before mutation; explicit external overrides remain strict.
+  Safety budgets are not claimed as proven native server limits.
+- Dolt reads no longer require write-version declarations or the write
+  variable-count ceiling. Missing SQLite files are rejected without creation.
+- Exact Dolt 2.2.2/2.2.3 CI explicitly runs SELECT-only export success/failure
+  tests using a separate fixture-admin account; normal service permissions
+  and adapter permissions are unchanged. Wheel smoke installs resolve the
+  required engine from PyPI rather than a source checkout.
+
+No optional Transformation Workflow 0.3 implementation is claimed.
+
 ## 0.7.1 - 2026-08-12
 
 ### Changed

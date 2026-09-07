@@ -2490,13 +2490,19 @@ def reconcile_physical_removals(
     return {"reconciled": len(results), "results": results}
 
 def validate_derived_dataset(*, database_url: str, derived_dataset_id: str) -> dict[str, Any]:
-    """Validate profile ownership, physical shape, row ordinals, and run lineage."""
+    """Validate without creating or migrating catalog state."""
+    from .catalog_api import _assert_workflow
+    from .database_urls import require_existing_database_url
+
+    require_existing_database_url(database_url)
     derived_id = _uuid(derived_dataset_id, "derived_dataset_id")
     profile = validate_connection_url(database_url)
     engine = _workflow_engine(database_url, profile.name)
     tables = workflow_catalog(MetaData())
-    with engine.begin() as connection:
-        create_workflow_catalog(connection, tables)
+    with engine.connect() as connection:
+        _assert_core_identity(connection, core_catalog(MetaData()))
+        _assert_workflow(connection, tables)
+        _validate_workflow_schema(connection, tables)
         dataset = connection.execute(
             select(tables.derived_dataset)
             .where(tables.derived_dataset.c.derived_dataset_id == derived_id)
