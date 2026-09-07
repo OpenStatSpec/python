@@ -40,24 +40,11 @@ def test_persisted_import_fidelity_events_require_consent_after_reopen(tmp_path)
     exported = openstatspec.export_sav(database_url=database, dataset_id="persisted", destination=approved, allow_loss=_REQUIRED_ENGINE_LOSS)
     assert approved.exists()
     assert connection.execute(
-        "select operation_kind, status from operation where operation_id = ?", (exported["operation_id"],)
-    ).fetchone() == ("export", "succeeded")
+        "select count(*) from operation where operation_kind = 'export'"
+    ).fetchone() == (0,)
     assert {diagnostic.code for diagnostic in exported.diagnostics} == set(_REQUIRED_ENGINE_LOSS)
 
 
-def test_loss_allowed_export_persists_accepted_diagnostics(tmp_path) -> None:
-    database_path = tmp_path / "accepted-loss.sqlite"
-    database = f"sqlite:///{database_path}"
-    source = tmp_path / "source.sav"
-    destination = tmp_path / "accepted.sav"
-    pyspssio.write_sav(str(source), pd.DataFrame({"answer": [1.0]}))
-    openstatspec.import_sav(source, database_url=database, dataset_id="accepted")
-    result = openstatspec.export_sav(database_url=database, dataset_id="accepted", destination=destination, allow_loss=_REQUIRED_ENGINE_LOSS)
-
-    connection = sqlite3.connect(database_path)
-    rows = connection.execute("select direction, severity, event_code, detail_json from fidelity_event where operation_id = ? and severity != 'info' order by event_code", (result["operation_id"],)).fetchall()
-    assert [(row[0], row[1], row[2]) for row in rows] == [("export", "warning", code) for code in _REQUIRED_ENGINE_LOSS]
-    assert all('"accepted_by_user": true' in row[3] for row in rows)
 
 
 def test_non_utf8_source_encoding_is_explicit_export_loss(tmp_path) -> None:

@@ -196,11 +196,6 @@ def test_every_sql_mutation_entrypoint_accepts_explicit_conformance_source() -> 
     mutation_entrypoints = (
         wide.initialize_wide_catalog,
         wide.create_wide_dataset,
-        wide.record_export_cleanup_failure,
-        wide.record_export_operation,
-        wide.finish_export_operation,
-        wide.fail_export_operation,
-        wide.record_export_backup_retained,
     )
     for entrypoint in mutation_entrypoints:
         parameter = inspect.signature(entrypoint).parameters[
@@ -236,7 +231,7 @@ def test_validate_wide_dataset_propagates_explicit_source(
         calls.append(kwargs["dolt_conformance_source"])
         raise UnsupportedOperationError("stop after propagation check")
 
-    monkeypatch.setattr(wide, "effective_profile", capture_effective_profile)
+    monkeypatch.setattr(wide, "read_profile", capture_effective_profile)
     monkeypatch.setattr(wide, "read_wide_dataset", stop_after_read_preflight)
     with pytest.raises(UnsupportedOperationError, match="propagation check"):
         wide.validate_wide_dataset(
@@ -343,40 +338,3 @@ def test_sav_export_propagates_explicit_source_to_read_gate(
             dolt_conformance_source=sentinel,
         )
     assert calls == [sentinel]
-
-
-def test_export_recovery_helpers_propagate_explicit_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    sentinel = object()
-    calls: list[tuple[str, object]] = []
-
-    def capture_cleanup(**kwargs: object) -> str:
-        calls.append(("cleanup", kwargs["dolt_conformance_source"]))
-        return "cleanup-operation"
-
-    def capture_failure(**kwargs: object) -> None:
-        calls.append(("failure", kwargs["dolt_conformance_source"]))
-
-    monkeypatch.setattr(
-        sav_module, "record_export_cleanup_failure", capture_cleanup,
-    )
-    monkeypatch.setattr(sav_module, "fail_export_operation", capture_failure)
-    destination = tmp_path / "destination.sav"
-    backup = tmp_path / "backup.sav"
-    staged = tmp_path / "staged.sav"
-    with pytest.raises(sav_module.ExportRecoveryError, match="cleanup_failed"):
-        sav_module._raise_export_cleanup_failed(
-            original_error=RuntimeError("synthetic export failure"),
-            cleanup_error=RuntimeError("synthetic cleanup failure"),
-            phase="synthetic", destination=destination, backup=backup,
-            staged=staged, had_previous=False, database_url="sqlite://",
-            dolt_conformance_source=sentinel,
-        )
-    sav_module._mark_export_failed_after_restore(
-        database_url="sqlite://", operation_id="synthetic-operation",
-        error=RuntimeError("synthetic export failure"), phase="synthetic",
-        destination=destination, backup=backup, had_previous=False,
-        dolt_conformance_source=sentinel,
-    )
-    assert calls == [("cleanup", sentinel), ("failure", sentinel)]

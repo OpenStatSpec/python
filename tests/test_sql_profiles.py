@@ -462,7 +462,7 @@ def test_validate_identity_failure_happens_before_catalog_access(monkeypatch) ->
     def fail_identity(_url, **_kwargs):
         raise UnsupportedOperationError("identity unavailable")
 
-    monkeypatch.setattr(wide, "effective_profile", fail_identity)
+    monkeypatch.setattr(wide, "read_profile", fail_identity)
     monkeypatch.setattr(
         wide, "create_engine",
         lambda _url: pytest.fail("database access continued after identity failure"),
@@ -480,10 +480,10 @@ def test_export_identity_failure_happens_before_read_or_destination(monkeypatch,
     def fail_identity(_url, **_kwargs):
         raise UnsupportedOperationError("identity unavailable")
 
-    monkeypatch.setattr(sav, "effective_profile", fail_identity)
+    monkeypatch.setattr(wide, "read_profile", fail_identity)
     monkeypatch.setattr(
-        sav, "read_wide_dataset",
-        lambda **_kwargs: pytest.fail("catalog read continued after identity failure"),
+        wide, "create_engine",
+        lambda _url: pytest.fail("catalog read continued after identity failure"),
     )
 
     with pytest.raises(UnsupportedOperationError, match="identity unavailable"):

@@ -5,7 +5,7 @@ from uuid import UUID
 import openstatspec
 import pytest
 
-from openstatspec.sql.wide import create_wide_dataset, record_export_operation
+from openstatspec.sql.wide import create_wide_dataset
 from openstatspec.sql.normative import catalog as normative_catalog, create as create_normative
 from sqlalchemy import MetaData, create_engine
 from sqlalchemy.dialects.mysql import dialect as mysql_dialect
@@ -154,19 +154,3 @@ def test_import_writes_complete_normative_catalog(tmp_path):
     assert event[:5] == (dataset[0], "import", "warning", "fixture-warning", "answer")
     assert json.loads(event[5]) == {"message": "Synthetic diagnostic", "test": True}
     assert event[6]
-
-    export_id = record_export_operation(
-        database_url=database_url, dataset_id="wave_1", destination="out.sav",
-        allowed_fidelity_events=[{
-            "code": "export-warning", "detail": "Accepted", "source_item": "comment",
-        }],
-    )
-    assert connection.execute(
-        "select operation_kind, status from operation where operation_id = ?", (export_id,),
-    ).fetchone() == ("export", "succeeded")
-    export_event = connection.execute(
-        "select dataset_id, direction, event_code, source_item, detail_json "
-        "from fidelity_event where operation_id = ?", (export_id,),
-    ).fetchone()
-    assert export_event[:4] == (dataset[0], "export", "export-warning", "comment")
-    assert json.loads(export_event[4])["accepted_by_user"] is True

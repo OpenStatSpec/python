@@ -290,7 +290,23 @@ def effective_profile(
     *,
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> tuple[SqlProfile, dict[str, Any]]:
-    """Resolve and enforce the profile used by import preflight."""
+    """Resolve and enforce the write profile, including exact Dolt conformance."""
+    return _effective_profile(database_url, dolt_conformance_source, for_write=True)
+
+
+def read_profile(
+    database_url: str,
+    *,
+    dolt_conformance_source: DoltConformanceSource | None = None,
+) -> tuple[SqlProfile, dict[str, Any]]:
+    """Identify a read connection without requiring evidence for Dolt writes."""
+    return _effective_profile(database_url, dolt_conformance_source, for_write=False)
+
+
+def _effective_profile(
+    database_url: str, dolt_conformance_source: DoltConformanceSource | None,
+    *, for_write: bool,
+) -> tuple[SqlProfile, dict[str, Any]]:
     source = _conformance_source(dolt_conformance_source)
     configured = validate_connection_url(database_url)
     active = active_connection(database_url, dolt_conformance_source=source)
@@ -305,6 +321,10 @@ def effective_profile(
         raise UnsupportedOperationError(
             "Dolt requires an explicit mysql+pymysql URL."
         )
+    if active["profile"] == "dolt" and not for_write:
+        # Existing data is validated against the adapter's data model, not a
+        # write-conformance envelope or INSERT statement/packet limits.
+        return DOLT, active
     dolt_declaration = None
     if active["profile"] == "dolt":
         dolt_declaration = source.require_exact_match(

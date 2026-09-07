@@ -50,7 +50,7 @@ def capability_matrix(
     supported means that the adapter has a tested faithful path.
     unobservable means that pyspssio's public reader API cannot expose the
     source semantic. fail-closed-on-export means an imported/catalogued value
-    blocks export unless the documented audited loss route exists; a plain
+    blocks export unless the documented explicit loss opt-in exists; a plain
     fail-closed feature has no faithful writer route at all.
     """
     declaration = {
@@ -174,7 +174,7 @@ def export_sav(
     dolt_conformance_source: DoltConformanceSource | None = None,
     **options: Any,
 ) -> Mapping[str, Any]:
-    """Export one database-resident conforming dataset to SAV/ZSAV."""
+    """Export to SAV/ZSAV without database writes or an operation record."""
     return result(export_dataset(
         database_url=database_url, dataset_id=dataset_id,
         destination=destination,

@@ -8,10 +8,6 @@ from openstatspec.sql import wide
 from openstatspec.sql.wide import (
     _bounded_batches,
     create_wide_dataset,
-    finish_export_operation,
-    read_export_operation_state,
-    record_export_cleanup_failure,
-    record_export_operation,
 )
 
 
@@ -153,56 +149,4 @@ def test_duplicate_import_preserves_existing_dataset(tmp_path):
         "select dataset_name, source_case_count from dataset"
     ).fetchall() == [("sample", 1)]
     assert connection.execute("select name from data_sample").fetchall() == [("ok",)]
-    connection.close()
-
-
-def test_normative_export_operation_transitions_to_success(tmp_path):
-    path = tmp_path / "export.sqlite"
-    database = f"sqlite:///{path}"
-    openstatspec.initialize_catalog(database_url=database)
-    _create_dataset(database)
-
-    operation_id = record_export_operation(
-        database_url=database,
-        dataset_id="sample",
-        destination="output.sav",
-        allowed_fidelity_events=(),
-        terminal=False,
-    )
-    assert read_export_operation_state(
-        database_url=database, operation_id=operation_id,
-    )["classification"] == "running"
-
-    finish_export_operation(
-        database_url=database, operation_id=operation_id,
-    )
-    assert read_export_operation_state(
-        database_url=database, operation_id=operation_id,
-    )["classification"] == "succeeded"
-
-
-def test_cleanup_failure_is_recorded_without_compatibility_catalog(tmp_path):
-    path = tmp_path / "cleanup.sqlite"
-    database = f"sqlite:///{path}"
-    openstatspec.initialize_catalog(database_url=database)
-
-    operation_id = record_export_cleanup_failure(
-        database_url=database,
-        destination="output.sav",
-        original_error=RuntimeError("export failed"),
-        cleanup_error=RuntimeError("restore failed"),
-        residual_object_inventory={"backup": True},
-        deterministic_recovery_evidence={"procedure_id": "test"},
-    )
-
-    connection = sqlite3.connect(path)
-    assert connection.execute(
-        "select status from operation where operation_id = ?",
-        (operation_id,),
-    ).fetchone() == ("failed",)
-    assert connection.execute(
-        "select event_code from fidelity_event where operation_id = ?",
-        (operation_id,),
-    ).fetchone() == ("cleanup_failed",)
-    assert "dataset_catalog" not in _table_names(path)
     connection.close()

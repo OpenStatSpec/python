@@ -132,8 +132,11 @@ the separate Transformation Workflow is unsupported.
 Run `openstatspec capabilities` before an integration to inspect the
 machine-readable feature matrix. Export is deliberately strict: if known
 dictionary semantics cannot be reproduced, it stops until you pass the exact
-diagnostic code with `--allow-loss`. This avoids silent loss while making an
-intentional lossy export auditable.
+diagnostic code with `--allow-loss`. Diagnostics are returned to the caller, not
+persisted. Reads, validation, and SAV/ZSAV export never write to the database,
+including on failure. Export returns no `operation_id` and needs only read
+permissions; Dolt reads do not require a write-conformance declaration. Imports
+and transformations still require an exact matching Dolt write declaration.
 
 The matrix is also available to Python callers as
 `openstatspec.capability_matrix()`. It distinguishes supported semantics from
