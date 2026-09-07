@@ -34,6 +34,7 @@ from .sql.inplace_transform import (
 )
 from .transform import TransformationPlan
 from .sql.database_urls import require_existing_database_url
+from .sql.dolt_conformance import ADAPTER_VERSION
 from .sql.capabilities import (
     SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, SPECIFICATION_STATUS,
     active_connection, catalog_binding,
@@ -58,6 +59,7 @@ def capability_matrix(
         require_existing_database_url(database_url)
     declaration = {
         "specification": "OpenStatSpec",
+        "adapter_version": ADAPTER_VERSION,
         "database_io_policy": "openstatspec-database-io-v1",
         "specification_status": SPECIFICATION_STATUS,
         "specification_release": SPECIFICATION_RELEASE,

@@ -1,7 +1,14 @@
-# 0.7.1 release readiness
+# 0.8.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
+
+The release selects SAV/ZSAV 1.0 with the optional Database I/O Execution
+Policy `openstatspec-database-io-v1`. Reads and exports, including failures,
+write no database audit records; export results omit `operation_id` and return
+diagnostics to the caller. Reads must not create missing SQLite files or apply
+Dolt write-variable-count ceilings. This release does not claim implementation
+of the optional Transformation Workflow 0.3 profile.
 
 ## Supported workflow
 
@@ -104,7 +111,7 @@ implemented openstatspec.frontends.spss package. Stata and SAS remain empty
 source-tree placeholders and must expose no compiler, apply API, CLI choice,
 capability claim, or implied support.
 
-## Default Dolt write verification
+## Prior default Dolt write verification (before the 0.8.0 pin)
 
 Local release verification used the exact 2.2.2 and 2.2.3 image digests in
 `.github/workflows/ci.yml`, isolated ports 13482/13483, and disposable `/tmp`
@@ -125,6 +132,30 @@ owned table additions being misclassified as unrelated diffs, and Dolt retaining
 transaction. The candidate storage/identifier/column smoke probe also passed on
 both pins; it does **not** establish full value/row/statement limit conformance.
 
+## 0.8.0 local verification
+
+Using `../python/.venv/bin/python`, `PYTHONPATH=src:../pyspssio`, and
+`OPENSTATSPEC_SPECIFICATION_DIR=/tmp/oss-python-spec-v050-5dSTna` (an archive
+of exact `864e84479f554b8ee250ffed44c4dfb963750d4a`):
+
+- `python -m pytest -ra`: **381 passed, 49 skipped**, with
+  `OPENSTATSPEC_TEST_DOLT_ADMIN_URL=mysql+pymysql://root@127.0.0.1:13387/`
+  exercising live Dolt 2.3.0 through disposable SELECT-only users.
+- Both immutable CI images, exact Dolt 2.2.2/2.2.3, bootstrapped with the
+  unchanged service user and separate global fixture admin on ports 13582/13583:
+  `python -m pytest -m 'services and not candidate_evidence'`: **7 passed,
+  41 skipped, 382 deselected per pin**; explicit
+  `python -m pytest tests/test_read_only_export.py`: **33 passed per pin**.
+- `python -m compileall -q src tests`, `git diff --check`, wheel/sdist build,
+  and `python -m twine check /tmp/oss-python-v080-dist/*` passed.
+- A clean wheel install resolved the required engine from PyPI. Isolated
+  imports came only from the smoke environment's `site-packages`; installed
+  capabilities reported adapter 0.8.0, the selected policy, released v0.5.0
+  provenance, and exactly 2.2.2/2.2.3 for default Dolt writes.
+
+Other database services were not configured locally. This is local evidence,
+not a claim that the updated remote CI or release publication has completed.
+
 ## Maintainer checks before tagging
 
 1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
@@ -139,13 +170,22 @@ both pins; it does **not** establish full value/row/statement limit conformance.
    catalog, and audit rollback checks, and failed-import cleanup. Release/CI
    owns this evidence, not per-user runtime declaration files. Candidate limit
    probes remain non-claiming and separate from these write gates.
+   Each Dolt job must also run `python -m pytest tests/test_read_only_export.py`
+   explicitly, outside the `services` marker filter. Bootstrap a separate
+   `openstatspec_test_admin` on the isolated CI server with global database/user
+   creation and grant privileges, and set `OPENSTATSPEC_TEST_DOLT_ADMIN_URL`.
+   The fixture creates its own database and SELECT-only reader and removes
+   both afterward; the normal service user remains unchanged.
 4. Build with `python -m build` and install the generated wheel in a clean
-   environment.
+   environment, resolving `openstatspec-pyspssio==0.5.1.post2` from PyPI.
+   Run the installed CLI outside the source checkout with `PYTHONPATH` unset;
+   verify adapter version `0.8.0` and the selected database I/O policy.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
 6. Confirm CI, release fixtures, and capabilities use the published OpenStatSpec
-   specification `v0.3.0` at exact commit
-   `cd8f198c68b849eb8ed018a894670a0904c2181d`, publish
-   `specification_status=stable`, and set `specification_release` to `v0.3.0`.
+   specification `v0.5.0` at exact commit
+   `864e84479f554b8ee250ffed44c4dfb963750d4a`, publish
+   `specification_status=released`, and set `specification_release` to `v0.5.0`.
+   Use an exact checkout via `OPENSTATSPEC_SPECIFICATION_DIR` for local tests.
 7. Review this document, the README, and CHANGELOG for accurate scope.
 
 The tag-triggered release workflow repeats the non-service test suite, builds

@@ -20,9 +20,9 @@ from ..core import UnsupportedOperationError
 
 # Release/build automation binds the adapter to the exact language-neutral
 # specification revision used for normative fixtures and profile semantics.
-SPECIFICATION_COMMIT = "cd8f198c68b849eb8ed018a894670a0904c2181d"
-SPECIFICATION_STATUS = "stable"
-SPECIFICATION_RELEASE: str | None = "v0.3.0"
+SPECIFICATION_COMMIT = "864e84479f554b8ee250ffed44c4dfb963750d4a"
+SPECIFICATION_STATUS = "released"
+SPECIFICATION_RELEASE: str | None = "v0.5.0"
 
 DOLT_WRITE_CONFORMANCE = {
     "declaration_schema_id": "openstatspec-dolt-adapter-declaration-v1",

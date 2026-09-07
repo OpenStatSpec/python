@@ -42,9 +42,11 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
-    assert matrix["specification_status"] == "stable"
-    assert matrix["specification_release"] == "v0.3.0"
-    assert matrix["specification_commit"] == "cd8f198c68b849eb8ed018a894670a0904c2181d"
+    assert matrix["adapter_version"] == "0.8.0"
+    assert matrix["database_io_policy"] == "openstatspec-database-io-v1"
+    assert matrix["specification_status"] == "released"
+    assert matrix["specification_release"] == "v0.5.0"
+    assert matrix["specification_commit"] == "864e84479f554b8ee250ffed44c4dfb963750d4a"
     assert matrix["directions"] == ["import", "export", "semantic_round_trip"]
     assert matrix["active_connection"] is None
     assert matrix["engine"]["package"] == "openstatspec-pyspssio"
@@ -82,6 +84,7 @@ def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> 
 
 def test_capability_matrix_reports_active_sqlite_limits(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'capabilities.sqlite'}"
+    sqlite3.connect(tmp_path / "capabilities.sqlite").close()
     matrix = openstatspec.capability_matrix(database_url=database_url)
     active = matrix["active_connection"]
     assert active["profile"] == "sqlite"

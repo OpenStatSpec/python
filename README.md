@@ -4,6 +4,10 @@ The reference Python implementation of the OpenStatSpec specification.
 
 This package implements the specification; it does not define or extend it.
 The normative model lives in the `OpenStatSpec/specification` repository.
+Python 0.8.0 pins released specification `v0.5.0` at
+`864e84479f554b8ee250ffed44c4dfb963750d4a` and selects SAV/ZSAV 1.0 with
+`database_io_policy=openstatspec-database-io-v1`. This does not claim
+implementation of the optional Transformation Workflow 0.3 profile.
 
 ## Boundaries
 
@@ -137,7 +141,8 @@ dictionary semantics cannot be reproduced, it stops until you pass the exact
 diagnostic code with `--allow-loss`. Diagnostics are returned to the caller, not
 persisted. Reads, validation, and SAV/ZSAV export never write to the database,
 including on failure. Export returns no `operation_id` and needs only read
-permissions; Dolt reads have no write-version gate. Imports and transformations
+permissions; Dolt reads have no write-version or write-variable-count gate.
+Read operations reject missing SQLite files without creating them. Imports and transformations
 use the packaged exact-version policy by default. Active driver/identity checks,
 limit preflight, and the clean expected branch/HEAD guard for in-place apply
 remain mandatory. Dolt's reported limits are adapter safety budgets, narrowed
