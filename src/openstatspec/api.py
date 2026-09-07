@@ -33,6 +33,7 @@ from .sql.inplace_transform import (
     install_in_place_transformation_schema as _install_in_place_schema,
 )
 from .transform import TransformationPlan
+from .sql.database_urls import require_existing_database_url
 from .sql.capabilities import (
     SPECIFICATION_COMMIT, SPECIFICATION_RELEASE, SPECIFICATION_STATUS,
     active_connection, catalog_binding,
@@ -53,8 +54,11 @@ def capability_matrix(
     blocks export unless the documented explicit loss opt-in exists; a plain
     fail-closed feature has no faithful writer route at all.
     """
+    if database_url:
+        require_existing_database_url(database_url)
     declaration = {
         "specification": "OpenStatSpec",
+        "database_io_policy": "openstatspec-database-io-v1",
         "specification_status": SPECIFICATION_STATUS,
         "specification_release": SPECIFICATION_RELEASE,
         "specification_commit": SPECIFICATION_COMMIT,

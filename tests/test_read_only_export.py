@@ -135,10 +135,6 @@ def read_catalog(seeded_catalog):
 def test_export_and_reads_leave_no_database_trace(read_catalog, tmp_path, suffix):
     url, snapshot, source = read_catalog
     before = snapshot()
-    if make_url(url).get_backend_name() == "mysql":
-        # This is the real server identity and the empty packaged registry.
-        with pytest.raises(UnsupportedOperationError):
-            wide.initialize_wide_catalog(database_url=url)
     output = tmp_path / ("export" + suffix)
     result = openstatspec.export_sav(database_url=url, dataset_id="sample", destination=output)
     assert "operation_id" not in result
@@ -216,7 +212,11 @@ def test_dolt_reads_do_not_enable_undeclared_writes(monkeypatch):
         "server_version": "2.3.0",
     }
     monkeypatch.setattr(capabilities, "active_connection", lambda *_a, **_k: active)
-    assert capabilities.read_profile(url)[0].name == "dolt"
+    profile = capabilities.read_profile(url)[0]
+    assert profile.name == "dolt"
+    # A table imported under a larger explicit write envelope stays readable.
+    from openstatspec.sql.profiles import preflight
+    preflight(profile, 1_016)
     with pytest.raises(UnsupportedOperationError):
         capabilities.effective_profile(url)
     with pytest.raises(UnsupportedOperationError):
@@ -226,6 +226,30 @@ def test_dolt_reads_do_not_enable_undeclared_writes(monkeypatch):
             database_url=url, dataset_id="blocked", source_name="source.sav",
             source_format="SAV", variables=[], rows=[],
         )
+
+
+@pytest.mark.parametrize("operation", ["export", "validate", "capabilities", "list", "get", "derived", "dolt_state"])
+@pytest.mark.parametrize("uri", [False, True])
+def test_reads_do_not_create_a_missing_sqlite_file(tmp_path, operation, uri):
+    path = tmp_path / "absent.sqlite"
+    url = f"sqlite:///file:{path}?uri=true" if uri else f"sqlite:///{path}"
+    calls = {
+        "export": lambda: openstatspec.export_sav(database_url=url, dataset_id="sample", destination=tmp_path / "out.sav"),
+        "validate": lambda: openstatspec.validate(database_url=url, dataset_id="sample"),
+        "capabilities": lambda: openstatspec.capabilities(url),
+        "list": lambda: openstatspec.list_datasets(database_url=url),
+        "get": lambda: openstatspec.get_dataset(database_url=url, dataset_id=str(uuid4()), kind="core"),
+        "derived": lambda: openstatspec.validate_derived(database_url=url, derived_dataset_id=str(uuid4())),
+        "dolt_state": lambda: openstatspec.dolt_state_snapshot(database_url=url),
+    }
+    with pytest.raises(UnsupportedOperationError, match="existing SQLite"):
+        calls[operation]()
+    assert not path.exists()
+    assert not (tmp_path / "out.sav").exists()
+
+
+def test_database_io_policy_is_explicit():
+    assert openstatspec.capabilities()["database_io_policy"] == "openstatspec-database-io-v1"
 
 
 def test_derived_validation_does_not_initialize_catalog(tmp_path):

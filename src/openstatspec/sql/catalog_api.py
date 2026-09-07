@@ -10,6 +10,7 @@ from .normative import (
     CATALOG_CONTRACT_ID, CATALOG_SCHEMA_VERSION, catalog as core_catalog,
 )
 from .profiles import validate_connection_url
+from .database_urls import require_existing_database_url
 from .workflow import (
     PROFILE_ID, PROFILE_SCHEMA_VERSION, TransformationError, workflow_catalog,
 )
@@ -55,6 +56,7 @@ def _assert_workflow(connection: Any, tables: Any) -> None:
 
 def catalog_datasets(*, database_url: str, kind: str | None = None) -> dict[str, Any]:
     """List source and/or derived datasets without mutating either catalog."""
+    require_existing_database_url(database_url)
     if kind not in {None, "core", "derived"}:
         raise ValueError("kind must be core, derived, or None.")
     engine = create_engine(database_url)
@@ -96,6 +98,7 @@ def catalog_datasets(*, database_url: str, kind: str | None = None) -> dict[str,
 
 def catalog_dataset(*, database_url: str, dataset_id: str, kind: str) -> dict[str, Any]:
     """Return one public catalog record, variables, weight, and derived lineage."""
+    require_existing_database_url(database_url)
     dataset_id = _uuid(dataset_id)
     if kind not in {"core", "derived"}:
         raise ValueError("kind must be core or derived.")

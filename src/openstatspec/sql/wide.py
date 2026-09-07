@@ -32,7 +32,7 @@ from .normative import (
     store_imported_dataset as store_normative_dataset,
 )
 from .catalog_verification import verify_catalog_relations
-from .database_urls import require_persistent_database_url
+from .database_urls import require_existing_database_url, require_persistent_database_url
 
 _IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -648,6 +648,7 @@ def dolt_state_snapshot(
     *, database_url: str, dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
     """Return read-only branch, HEAD, status, and diff evidence for Dolt."""
+    require_existing_database_url(database_url)
     validate_connection_url(database_url)
     active = active_connection(
         database_url, dolt_conformance_source=dolt_conformance_source,
@@ -1049,6 +1050,7 @@ def read_wide_dataset(
     dolt_conformance_source: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Read an export descriptor from the normative catalog without mutation."""
+    require_existing_database_url(database_url)
     if profile is None:
         profile, _active = read_profile(
             database_url, dolt_conformance_source=dolt_conformance_source,

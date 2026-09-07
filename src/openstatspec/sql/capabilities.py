@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,6 +13,7 @@ from sqlalchemy.engine import make_url
 
 from .dolt_conformance import DoltConformanceSource, effective_limits as dolt_effective_limits
 from .normative import catalog
+from .database_urls import require_existing_database_url
 from .profiles import DOLT, MYSQL, POSTGRESQL, SQLITE, MYSQL_WIRE_PROFILES, SqlProfile
 from .profiles import validate_connection_url
 from ..core import UnsupportedOperationError
@@ -138,6 +140,8 @@ def profile_declarations(
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Declare every profile and, optionally, one active connection."""
+    if database_url:
+        require_existing_database_url(database_url)
     source = dolt_conformance_source
     active = (
         active_connection(database_url, dolt_conformance_source=source)
@@ -307,6 +311,7 @@ def read_profile(
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> tuple[SqlProfile, dict[str, Any]]:
     """Identify a read connection without requiring evidence for Dolt writes."""
+    require_existing_database_url(database_url)
     return _effective_profile(database_url, dolt_conformance_source, for_write=False)
 
 
@@ -331,7 +336,7 @@ def _effective_profile(
     if active["profile"] == "dolt" and not for_write:
         # Existing data is validated against the adapter's data model, not a
         # write-conformance envelope or INSERT statement/packet limits.
-        return DOLT, active
+        return replace(DOLT, max_source_variables=sys.maxsize), active
     dolt_declaration = None
     if active["profile"] == "dolt" and source is not None:
         dolt_declaration = source.require_exact_match(

@@ -2492,7 +2492,9 @@ def reconcile_physical_removals(
 def validate_derived_dataset(*, database_url: str, derived_dataset_id: str) -> dict[str, Any]:
     """Validate without creating or migrating catalog state."""
     from .catalog_api import _assert_workflow
+    from .database_urls import require_existing_database_url
 
+    require_existing_database_url(database_url)
     derived_id = _uuid(derived_dataset_id, "derived_dataset_id")
     profile = validate_connection_url(database_url)
     engine = _workflow_engine(database_url, profile.name)
