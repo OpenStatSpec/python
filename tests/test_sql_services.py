@@ -1,12 +1,15 @@
 """Real-service writes, round trips, failure boundaries, and candidate probes."""
 
+import json
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pandas as pd
 import pyspssio
 import pytest
-from sqlalchemy import MetaData, create_engine, inspect as inspect_database, text
+from sqlalchemy import MetaData, Table, create_engine, event, inspect as inspect_database, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 
 import openstatspec
@@ -17,6 +20,7 @@ from openstatspec.sql.normative import (
     delete_dataset_representation,
 )
 from openstatspec.sql.wide import create_wide_dataset
+from openstatspec.spss import sav
 from conformance import compare_sav_semantics, write_supported_semantics_fixture
 
 
@@ -110,6 +114,153 @@ def test_live_profile_preserves_supported_sav_semantics(environment_name, datase
         destination=destination, allow_loss=_COMPAT_NAME_LOSS,
     )
     assert compare_sav_semantics(source, destination) == {"equivalent": True, "differences": []}
+
+@pytest.mark.parametrize("environment_name", [
+    "OPENSTATSPEC_POSTGRES_URL", "OPENSTATSPEC_MYSQL_URL",
+    "OPENSTATSPEC_MARIADB_URL", "OPENSTATSPEC_DOLT_URL",
+])
+def test_live_export_uses_one_snapshot(environment_name, source_sav, tmp_path, monkeypatch, record_property):
+    database_url = os.environ.get(environment_name)
+    if not database_url:
+        pytest.skip(f"{environment_name} is not configured")
+    imported = openstatspec.import_sav(
+        source_sav, database_url=database_url, dataset_id="snapshot_" + uuid4().hex,
+    )
+    engine = create_engine(database_url)
+    tables = normative_catalog(MetaData())
+    readers, isolations, native_transactions = [], [], []
+    committed = False
+
+    def weaker_default(connection):
+        if connection.engine is not engine:
+            # Test-only DBAPI setup, before the reader can request its isolation.
+            # SQLAlchemy's MySQL setter itself emits SET SESSION ... and COMMIT
+            # outside cursor events; the event SQL allowlist must not allow SET.
+            connection.dialect.set_isolation_level(
+                connection.connection.driver_connection, "READ COMMITTED",
+            )
+            assert connection.get_isolation_level() == "READ COMMITTED"
+
+    def only_reads(connection, _cursor, statement, _parameters, _context, _many):
+        if connection.engine is engine:
+            return
+        sql = " ".join(statement.split()).upper()
+        assert sql == "BEGIN" or sql.split()[0] in {"SELECT", "SHOW", "DESCRIBE"}, statement
+
+    def owned_contents():
+        with engine.connect() as connection:
+            return (
+                tuple(connection.execute(select(physical).order_by(physical.c.__case_ordinal))),
+                tuple(connection.execute(select(tables.variable).where(
+                    tables.variable.c.dataset_id == imported["dataset_id"],
+                ).order_by(tables.variable.c.source_ordinal))),
+                tuple(connection.execute(select(tables.value_label).where(
+                    tables.value_label.c.value_label_set_id.in_(select(
+                        tables.value_label_set.c.value_label_set_id,
+                    ).where(tables.value_label_set.c.dataset_id == imported["dataset_id"])),
+                ).order_by(tables.value_label.c.value_label_set_id, tables.value_label.c.ordinal))),
+                tuple(connection.execute(select(tables.fidelity_event).where(
+                    tables.fidelity_event.c.dataset_id == imported["dataset_id"],
+                ).order_by(tables.fidelity_event.c.fidelity_event_id))),
+            )
+
+    after_writer = None
+
+    def interleave(connection, _cursor, statement, _parameters, _context, _many):
+        nonlocal committed, after_writer
+        if connection.engine is engine:  # never recurse through the writer
+            return
+        sql = " ".join(statement.split())
+        if "FROM catalog_identity" in sql:
+            readers.append(connection)
+            raw = connection.connection.driver_connection
+            isolations.append(connection.dialect.get_isolation_level(raw))
+            native_transactions.append(
+                raw.info.transaction_status != 0
+                if connection.dialect.name == "postgresql" else bool(raw.server_status & 1)
+            )
+        if committed or "FROM variable " not in sql or "ORDER BY variable.source_ordinal" not in sql:
+            return
+        with engine.begin() as writer:
+            if writer.dialect.name in {"mysql", "mariadb"}:
+                writer.exec_driver_sql("BEGIN")  # Dolt may retain DBAPI autocommit=1.
+            writer.execute(physical.update().where(physical.c.__case_ordinal == 1).values(age=35))
+            writer.execute(tables.variable.update().where(
+                tables.variable.c.dataset_id == imported["dataset_id"],
+                tables.variable.c.source_name == "age",
+            ).values(variable_label="New age"))
+            writer.execute(tables.value_label.update().where(
+                tables.value_label.c.value_label_set_id.in_(select(
+                    tables.value_label_set.c.value_label_set_id,
+                ).where(tables.value_label_set.c.dataset_id == imported["dataset_id"])),
+            ).values(label="New code"))
+            writer.execute(tables.fidelity_event.insert().values(
+                fidelity_event_id=str(uuid4()), operation_id=imported["operation_id"],
+                dataset_id=imported["dataset_id"], direction="import", severity="warning",
+                event_code="snapshot-loss", detail_json="{}", created_at=datetime.now(timezone.utc),
+            ))
+        committed = True
+        assert not connection.closed
+        after_writer = owned_contents()
+
+    real_writer = sav._write_with_dictionary_bridge
+
+    def write_after_read(*args, **kwargs):
+        assert readers and all(connection.closed for connection in readers)
+        return real_writer(*args, **kwargs)
+
+    try:
+        physical = Table(imported["data_table"], MetaData(), autoload_with=engine)
+        with engine.connect() as connection:
+            record_property("server_version", connection.exec_driver_sql("SELECT VERSION()").scalar_one())
+        monkeypatch.setattr(sav, "_write_with_dictionary_bridge", write_after_read)
+        event.listen(Engine, "engine_connect", weaker_default)
+        event.listen(Engine, "before_cursor_execute", only_reads)
+        event.listen(Engine, "after_cursor_execute", interleave)
+        try:
+            destination = tmp_path / "snapshot.sav"
+            result = openstatspec.export_sav(
+                database_url=database_url, dataset_id=imported["dataset_id"], destination=destination,
+            )
+        finally:
+            event.remove(Engine, "after_cursor_execute", interleave)
+            event.remove(Engine, "before_cursor_execute", only_reads)
+            event.remove(Engine, "engine_connect", weaker_default)
+            record_property("catalog_isolations", isolations)
+            record_property("catalog_native_transactions", native_transactions)
+            record_property("writer_committed", committed)
+        assert committed
+        assert not result.diagnostics
+        expected, expected_meta = pyspssio.read_sav(str(source_sav), include_user_missing=True)
+        actual, actual_meta = pyspssio.read_sav(str(destination), include_user_missing=True)
+        pd.testing.assert_frame_equal(actual, expected)
+        for key in ("var_labels", "var_value_labels"):
+            assert actual_meta[key] == expected_meta[key]
+        assert isolations and set(isolations) == {"REPEATABLE READ"}
+        assert all(native_transactions), "first catalog read must be in a native transaction"
+        assert all(connection.closed for connection in readers)
+        _, variables, rows = wide.read_wide_dataset(
+            database_url=database_url, dataset_id=imported["dataset_id"],
+        )
+        assert rows[0]["age"] == 35
+        assert variables[0]["label"] == "New age"
+        assert json.loads(variables[0]["value_labels"])["34.0"] == "New code"
+        with pytest.raises(UnsupportedOperationError, match="snapshot-loss"):
+            openstatspec.export_sav(
+                database_url=database_url, dataset_id=imported["dataset_id"], destination=destination,
+            )
+        assert owned_contents() == after_writer
+    finally:
+        # Never reset a service/catalog or touch another dataset's objects.
+        with engine.begin() as connection:
+            delete_dataset_representation(connection, tables, imported["dataset_id"])
+            quote = connection.dialect.identifier_preparer.quote
+            connection.exec_driver_sql(f"DROP TABLE {quote(imported['data_table'])}")
+            connection.execute(tables.operation.delete().where(
+                tables.operation.c.operation_id == imported["operation_id"],
+            ))
+        engine.dispose()
+
 
 def test_live_unknown_dolt_is_read_only_and_rejects_default_writes(
     tmp_path,
