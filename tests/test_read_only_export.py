@@ -5,6 +5,7 @@ OPENSTATSPEC_TEST_DOLT_ADMIN_URL=mysql+pymysql://root@127.0.0.1:PORT/ \
     python -m pytest tests/test_read_only_export.py
 The fixture creates and removes its own database and SELECT-only user.
 """
+import json
 import os
 import sqlite3
 from uuid import uuid4
@@ -43,6 +44,9 @@ def seeded_catalog(request, tmp_path):
     with source_engine.connect() as connection:
         dataset = connection.execute(select(logical.dataset)).mappings().one()
     if request.param == "sqlite":
+        with sqlite3.connect(path) as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
+
         def snapshot():
             with sqlite3.connect(path) as connection:
                 return tuple(connection.iterdump())
@@ -119,7 +123,8 @@ def read_catalog(seeded_catalog):
     forbidden = []
 
     def check(_connection, _cursor, statement, _parameters, _context, _many):
-        if statement.lstrip().split()[0].upper() not in {"SELECT", "SHOW", "PRAGMA", "DESCRIBE"}:
+        normalized = " ".join(statement.split()).upper()
+        if normalized != "BEGIN" and normalized.split()[0] not in {"SELECT", "SHOW", "PRAGMA", "DESCRIBE"}:
             forbidden.append(statement)
             raise AssertionError("Read operation attempted a non-read SQL statement")
 
@@ -151,7 +156,7 @@ def test_export_and_reads_leave_no_database_trace(read_catalog, tmp_path, suffix
     assert not list(tmp_path.glob(".*.staging.*"))
 
 
-@pytest.mark.parametrize("failure", ["loss", "writer", "publish", "restore", "staging", "backup"])
+@pytest.mark.parametrize("failure", ["read", "loss", "writer", "publish", "restore", "staging", "backup"])
 def test_failed_export_never_writes_database(read_catalog, tmp_path, monkeypatch, failure):
     url, snapshot, _source = read_catalog
     before = snapshot()
@@ -161,7 +166,16 @@ def test_failed_export_never_writes_database(read_catalog, tmp_path, monkeypatch
     def fail(*_args, **_kwargs):
         raise OSError("injected failure")
 
-    if failure == "loss":
+    readers = []
+
+    def fail_read(connection, _cursor, statement, _parameters, _context, _many):
+        if "FROM variable " in " ".join(statement.split()):
+            readers.append(connection)
+            raise OSError("injected read failure")
+
+    if failure == "read":
+        event.listen(Engine, "after_cursor_execute", fail_read)
+    elif failure == "loss":
         monkeypatch.setattr(sav, "_export_loss_report", lambda *_a, **_k: (
             {"code": "test-loss", "detail": "Requires consent", "details": {}},
         ))
@@ -188,8 +202,14 @@ def test_failed_export_never_writes_database(read_catalog, tmp_path, monkeypatch
             return unlink(self, *args, **kwargs)
 
         monkeypatch.setattr(type(output), "unlink", fail_backup)
-    with pytest.raises((OSError, UnsupportedOperationError)):
-        openstatspec.export_sav(database_url=url, dataset_id="sample", destination=output)
+    try:
+        with pytest.raises((OSError, UnsupportedOperationError), match="injected read failure" if failure == "read" else None):
+            openstatspec.export_sav(database_url=url, dataset_id="sample", destination=output)
+    finally:
+        if failure == "read":
+            event.remove(Engine, "after_cursor_execute", fail_read)
+    if failure == "read":
+        assert readers and all(connection.closed for connection in readers)
     assert snapshot() == before
     if failure in {"restore", "backup"}:
         # If filesystem recovery itself fails, preserve the previous bytes in
@@ -203,6 +223,117 @@ def test_failed_export_never_writes_database(read_catalog, tmp_path, monkeypatch
         )
         assert {d.code for d in result.diagnostics} == {"test-loss"}
         assert snapshot() == before
+
+
+@pytest.mark.parametrize("seeded_catalog", ["sqlite"], indirect=True)
+@pytest.mark.parametrize("operation", ["descriptor", "export"])
+def test_reads_use_one_snapshot(read_catalog, tmp_path, monkeypatch, operation):
+    url, snapshot, source = read_catalog
+    path = make_url(url).database
+    readers = []
+    catalog_transactions = []
+    committed = False
+
+    def observe_catalog(connection, _cursor, statement, _parameters, _context, _many):
+        if "catalog_identity" in statement and connection not in readers:
+            readers.append(connection)
+            catalog_transactions.append(connection.connection.driver_connection.in_transaction)
+
+    def interleave(connection, _cursor, statement, _parameters, _context, _many):
+        nonlocal committed
+        sql = " ".join(statement.split())
+        if committed or "FROM variable " not in sql or "ORDER BY variable.source_ordinal" not in sql:
+            return
+        assert not connection.closed
+        # Raw connection deliberately bypasses SQLAlchemy's query-only listener.
+        with sqlite3.connect(path, timeout=1) as writer:
+            table, dataset_id, operation_id = writer.execute(
+                "SELECT physical_table_name, dataset_id, (SELECT operation_id FROM operation) FROM dataset"
+            ).fetchone()
+            writer.execute(f'UPDATE "{table}" SET answer = 3 WHERE __case_ordinal = 1')
+            writer.execute("UPDATE variable SET variable_label = 'New answer' WHERE source_name = 'answer'")
+            writer.execute("UPDATE value_label SET label = 'New code' WHERE numeric_code = 1")
+            writer.execute("UPDATE dataset SET dataset_label = 'New dataset'")
+            writer.execute(
+                "INSERT INTO fidelity_event VALUES (?, ?, ?, 'import', 'warning', 'snapshot-loss', NULL, '{}', CURRENT_TIMESTAMP)",
+                (str(uuid4()), operation_id, dataset_id),
+            )
+        committed = True
+        assert not connection.closed  # writer committed without waiting for reader release
+
+    real_writer = sav._write_with_dictionary_bridge
+
+    def write_after_read(*args, **kwargs):
+        assert readers and all(connection.closed for connection in readers)
+        return real_writer(*args, **kwargs)
+
+    monkeypatch.setattr(sav, "_write_with_dictionary_bridge", write_after_read)
+    event.listen(Engine, "before_cursor_execute", observe_catalog)
+    event.listen(Engine, "after_cursor_execute", interleave)
+    try:
+        if operation == "descriptor":
+            dataset, variables, rows = wide.read_wide_dataset(database_url=url, dataset_id="sample")
+            assert rows[0]["answer"] == 1
+            assert variables[0]["label"] == "Answer"
+            assert json.loads(variables[0]["value_labels"])["1.0"] == "Yes"
+            assert dataset["file_label"] == ""
+        else:
+            output = tmp_path / "snapshot.sav"
+            result = openstatspec.export_sav(database_url=url, dataset_id="sample", destination=output)
+            assert not result.diagnostics
+            expected, expected_meta = pyspssio.read_sav(str(source), include_user_missing=True)
+            actual, actual_meta = pyspssio.read_sav(str(output), include_user_missing=True)
+            pd.testing.assert_frame_equal(actual, expected)
+            for key in ("var_labels", "var_value_labels", "file_label"):
+                assert actual_meta[key] == expected_meta[key]
+    finally:
+        event.remove(Engine, "after_cursor_execute", interleave)
+        event.remove(Engine, "before_cursor_execute", observe_catalog)
+    assert committed
+    assert catalog_transactions and all(catalog_transactions), "first catalog read needs native BEGIN"
+    assert all(connection.closed for connection in readers)
+    after_writer = snapshot()
+    dataset, variables, rows = wide.read_wide_dataset(database_url=url, dataset_id="sample")
+    assert rows[0]["answer"] == 3
+    assert variables[0]["label"] == "New answer"
+    assert json.loads(variables[0]["value_labels"])["1.0"] == "New code"
+    assert dataset["file_label"] == "New dataset"
+    if operation == "export":
+        with pytest.raises(UnsupportedOperationError, match="snapshot-loss"):
+            openstatspec.export_sav(database_url=url, dataset_id="sample", destination=output)
+        result = openstatspec.export_sav(
+            database_url=url, dataset_id="sample", destination=output, allow_loss=["snapshot-loss"],
+        )
+        assert {d.code for d in result.diagnostics} == {"snapshot-loss"}
+    assert snapshot() == after_writer
+
+
+@pytest.mark.parametrize("seeded_catalog", ["sqlite"], indirect=True)
+def test_validation_reflects_the_same_schema_snapshot(read_catalog):
+    url, snapshot, _source = read_catalog
+    with sqlite3.connect(make_url(url).database) as connection:
+        table = connection.execute("SELECT physical_table_name FROM dataset").fetchone()[0]
+    readers = []
+
+    def rename_after_values(connection, _cursor, statement, _parameters, _context, _many):
+        if readers or f"FROM {table} " not in " ".join(statement.split()):
+            return
+        readers.append(connection)
+        with sqlite3.connect(make_url(url).database, timeout=1) as writer:
+            writer.execute("BEGIN")
+            writer.execute(f'ALTER TABLE "{table}" RENAME COLUMN answer TO renamed_answer')
+            writer.execute("UPDATE variable SET physical_name = 'renamed_answer' WHERE source_name = 'answer'")
+        assert not connection.closed
+
+    event.listen(Engine, "after_cursor_execute", rename_after_values)
+    try:
+        assert openstatspec.validate(database_url=url, dataset_id="sample")["valid"]
+    finally:
+        event.remove(Engine, "after_cursor_execute", rename_after_values)
+    assert readers and all(connection.closed for connection in readers)
+    after_writer = snapshot()
+    assert openstatspec.validate(database_url=url, dataset_id="sample")["valid"]
+    assert snapshot() == after_writer
 
 
 def test_dolt_reads_do_not_enable_undeclared_writes(monkeypatch):

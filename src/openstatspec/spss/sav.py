@@ -54,8 +54,9 @@ from ..sql.dolt_conformance import DoltConformanceSource
 from ..sql.wide import (
     create_wide_dataset,
     physical_name,
-    read_fidelity_events,
-    read_wide_dataset,
+    _read_fidelity_events,
+    _read_snapshot,
+    _read_wide_dataset,
     validate_spss_catalog,
 )
 
@@ -556,19 +557,20 @@ def export_sav_dataset(
     destination_path = Path(destination)
     if destination_path.suffix.lower() not in {".sav", ".zsav"}:
         raise UnsupportedOperationError("Export destinations must use the .sav or .zsav extension.")
-    dataset, variables, rows = read_wide_dataset(
-        database_url=database_url, dataset_id=dataset_id,
+    with _read_snapshot(
+        database_url=database_url,
         dolt_conformance_source=dolt_conformance_source,
-    )
+    ) as (connection, profile):
+        dataset, variables, rows = _read_wide_dataset(
+            connection, dataset_id=dataset_id, profile=profile,
+        )
+        persisted_events = _read_fidelity_events(
+            connection, dataset_id=dataset["dataset_id"], direction="import",
+        )
     validate_spss_catalog(
         variables,
         case_weight_variable=dataset.get("case_weight_variable"),
         multiple_response_sets=dataset.get("multiple_response_sets"),
-    )
-    persisted_events = read_fidelity_events(
-        database_url=database_url, dataset_id=dataset_id,
-        direction="import",
-        dolt_conformance_source=dolt_conformance_source,
     )
     if legacy_locale is not None:
         persisted_events = tuple(
