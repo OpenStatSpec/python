@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -632,12 +634,25 @@ def test_temporary_target_type_is_not_taken_from_same_name_recreation(catalog) -
 def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     url, path, dataset_id, table_name = catalog
     plan = _plan("RECODE score (1 = 0).")
-    result = openstatspec.apply_spss_in_place(
-        database_url=url,
-        dataset_id=dataset_id,
-        source_text="RECODE score (1 = 0).",
-        actor="test-agent",
+    expected_json = (
+        '{"contract":"openstatspec-transformation-plan-v0.1","input_alias":"parent",'
+        '"operations":[{"op":"recode","rules":[{"match":{"kind":"values","values":'
+        '[{"bits":"3ff0000000000000","type":"binary64"}]},"result":{"kind":"literal",'
+        '"value":{"bits":"0000000000000000","type":"binary64"}}}],"source":"score",'
+        '"target":"score","target_mode":"replace","unmatched":{"kind":"copy"}}]}'
     )
+    expected_hash = "c1a0025028816c7b424312612af4e0a95d00da6b1bcff25e9b742e4be25dbb42"
+    source_hash = "7e86162055308158fa2cf1781eae7d997c07bb870fc66becdabdfdd00580dc7b"
+    with patch.object(
+        openstatspec.TransformationPlan, "canonical_bytes", autospec=True,
+        side_effect=openstatspec.TransformationPlan.canonical_bytes,
+    ) as encodes, patch("hashlib.sha256", wraps=hashlib.sha256) as hashes:
+        result = openstatspec.apply_spss_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            source_text="RECODE score (1 = 0).\r\n",
+            actor="test-agent",
+        )
     assert result["dolt_branch"] is None
     assert result["dolt_commit_performed"] is False
     assert result["plan_hash"] == plan.sha256()
@@ -651,6 +666,18 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
         "spss_syntax",
         "openstatspec-spss-syntax-frontend-v0.2",
     )
+    assert (result["dataset_id"], result["physical_table_name"]) == (dataset_id, table_name)
+    assert (result["plan_hash"], result["source_hash"]) == (expected_hash, source_hash)
+    with sqlite3.connect(path) as connection:
+        audit_json, audit_hash, audit_source = connection.execute(
+            "SELECT canonical_plan_json, plan_hash, source_hash FROM transformation_apply"
+        ).fetchone()
+    assert (audit_json.encode("utf-8"), audit_hash, audit_source) == (
+        expected_json.encode("utf-8"), expected_hash, source_hash,
+    )
+    assert (encodes.call_count, sum(
+        call.args == (expected_json.encode("utf-8"),) for call in hashes.call_args_list
+    )) == (1, 1), "public SPSS apply must encode/hash the canonical plan once"
 
 
 def test_schema_commands_record_the_v03_frontend_contract(catalog) -> None:
@@ -679,12 +706,24 @@ def test_public_generic_plan_apply_accepts_object_and_mapping(
     url, path, dataset_id, table_name = catalog
     plan = _plan("RECODE score (1 = 7).")
     supplied = plan.as_dict() if as_mapping else plan
-    result = openstatspec.apply_transformation_plan_in_place(
-        database_url=url,
-        dataset_id=dataset_id,
-        plan=supplied,
-        actor="test-agent",
+    expected_json = (
+        '{"contract":"openstatspec-transformation-plan-v0.1","input_alias":"parent",'
+        '"operations":[{"op":"recode","rules":[{"match":{"kind":"values","values":'
+        '[{"bits":"3ff0000000000000","type":"binary64"}]},"result":{"kind":"literal",'
+        '"value":{"bits":"401c000000000000","type":"binary64"}}}],"source":"score",'
+        '"target":"score","target_mode":"replace","unmatched":{"kind":"copy"}}]}'
     )
+    expected_hash = "089de9933b97157e9cb8b595d6f00afc11044907ca69e4ab747f6d0aac0bf60f"
+    with patch.object(
+        openstatspec.TransformationPlan, "canonical_bytes", autospec=True,
+        side_effect=openstatspec.TransformationPlan.canonical_bytes,
+    ) as encodes, patch("hashlib.sha256", wraps=hashlib.sha256) as hashes:
+        result = openstatspec.apply_transformation_plan_in_place(
+            database_url=url,
+            dataset_id=dataset_id,
+            plan=supplied,
+            actor="test-agent",
+        )
     assert result["dataset_id"] == dataset_id
     assert result["physical_table_name"] == table_name
     assert result["source_kind"] == "canonical_plan"
@@ -702,6 +741,15 @@ def test_public_generic_plan_apply_accepts_object_and_mapping(
         None,
         plan.sha256(),
     )
+    audit_json, audit_hash = connection.execute(
+        "SELECT canonical_plan_json, plan_hash FROM transformation_apply"
+    ).fetchone()
+    assert (audit_json.encode("utf-8"), audit_hash, result["plan_hash"]) == (
+        expected_json.encode("utf-8"), expected_hash, expected_hash,
+    )
+    assert (encodes.call_count, sum(
+        call.args == (expected_json.encode("utf-8"),) for call in hashes.call_args_list
+    )) == (1, 1), "public canonical apply must encode/hash the plan once"
 
 
 def test_generic_string_width_is_rejected_before_ddl(
