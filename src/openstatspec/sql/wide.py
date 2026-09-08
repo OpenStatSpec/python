@@ -1045,131 +1045,158 @@ def create_wide_dataset(
 
 
 
-def read_wide_dataset(
-    *, database_url: str, dataset_id: str, profile: Any | None = None,
+@contextmanager
+def _read_snapshot(
+    *, database_url: str, profile: Any | None = None,
     dolt_conformance_source: Any | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Read an export descriptor from the normative catalog without mutation."""
+):
+    """Own one verified native read snapshot, rolling back on every exit."""
     require_existing_database_url(database_url)
     if profile is None:
         profile, _active = read_profile(
             database_url, dolt_conformance_source=dolt_conformance_source,
         )
     engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            if profile.name in {"postgresql", "mysql", "mariadb", "dolt"}:
+                connection = connection.execution_options(isolation_level="REPEATABLE READ")
+            if profile.name in {"sqlite", "dolt"}:
+                # sqlite3 SELECTs and Dolt's retained autocommit need native BEGIN.
+                connection.exec_driver_sql("BEGIN")
+            require_verified_catalog(connection)
+            yield connection, profile
+    finally:
+        engine.dispose()
+
+
+def read_wide_dataset(
+    *, database_url: str, dataset_id: str, profile: Any | None = None,
+    dolt_conformance_source: Any | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read an export descriptor from the normative catalog without mutation."""
+    with _read_snapshot(
+        database_url=database_url, profile=profile,
+        dolt_conformance_source=dolt_conformance_source,
+    ) as (connection, profile):
+        return _read_wide_dataset(connection, dataset_id=dataset_id, profile=profile)
+
+
+def _read_wide_dataset(
+    connection: Any, *, dataset_id: str, profile: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     normative = normative_catalog(MetaData())
-    with engine.connect() as connection:
-        require_verified_catalog(connection)
-        dataset_row = _resolve_normative_dataset(connection, normative, dataset_id)
-        core_id = str(dataset_row["dataset_id"])
-        data_table = Table(
-            str(dataset_row["physical_table_name"]), MetaData(),
-            schema=dataset_row["physical_table_schema"],
-            autoload_with=connection,
+    dataset_row = _resolve_normative_dataset(connection, normative, dataset_id)
+    core_id = str(dataset_row["dataset_id"])
+    data_table = Table(
+        str(dataset_row["physical_table_name"]), MetaData(),
+        schema=dataset_row["physical_table_schema"],
+        autoload_with=connection,
+    )
+    source_variables = connection.execute(
+        select(normative.variable)
+        .where(normative.variable.c.dataset_id == core_id)
+        .order_by(normative.variable.c.source_ordinal)
+    ).mappings().all()
+    variables = [_export_variable(row) for row in source_variables]
+    variables_by_id = {
+        str(row["variable_id"]): variable
+        for row, variable in zip(source_variables, variables, strict=True)
+    }
+    variable_ids = tuple(variables_by_id)
+    rows = [dict(row) for row in connection.execute(
+        select(data_table).order_by(data_table.c.__case_ordinal)
+    ).mappings()]
+    rows = _canonicalize_database_numeric_rows(rows, variables)
+    documents = connection.execute(
+        select(normative.document)
+        .where(normative.document.c.dataset_id == core_id)
+        .order_by(normative.document.c.source_ordinal)
+    ).mappings().all()
+    dataset_attributes = connection.execute(
+        select(normative.dataset_attribute)
+        .where(normative.dataset_attribute.c.dataset_id == core_id)
+        .order_by(
+            normative.dataset_attribute.c.attribute_name,
+            normative.dataset_attribute.c.array_ordinal,
         )
-        source_variables = connection.execute(
-            select(normative.variable)
-            .where(normative.variable.c.dataset_id == core_id)
-            .order_by(normative.variable.c.source_ordinal)
-        ).mappings().all()
-        variables = [_export_variable(row) for row in source_variables]
-        variables_by_id = {
-            str(row["variable_id"]): variable
-            for row, variable in zip(source_variables, variables, strict=True)
-        }
-        variable_ids = tuple(variables_by_id)
-        rows = [dict(row) for row in connection.execute(
-            select(data_table).order_by(data_table.c.__case_ordinal)
-        ).mappings()]
-        rows = _canonicalize_database_numeric_rows(rows, variables)
-        documents = connection.execute(
-            select(normative.document)
-            .where(normative.document.c.dataset_id == core_id)
-            .order_by(normative.document.c.source_ordinal)
-        ).mappings().all()
-        dataset_attributes = connection.execute(
-            select(normative.dataset_attribute)
-            .where(normative.dataset_attribute.c.dataset_id == core_id)
-            .order_by(
-                normative.dataset_attribute.c.attribute_name,
-                normative.dataset_attribute.c.array_ordinal,
-            )
-        ).mappings().all()
-        variable_attributes = connection.execute(
-            select(normative.variable_attribute)
-            .where(normative.variable_attribute.c.variable_id.in_(variable_ids))
-            .order_by(
-                normative.variable_attribute.c.variable_id,
-                normative.variable_attribute.c.attribute_name,
-                normative.variable_attribute.c.array_ordinal,
-            )
-        ).mappings().all()
-        labels = connection.execute(
-            select(
-                normative.variable_value_label_set.c.variable_id,
-                normative.value_label,
-            )
-            .join(
-                normative.value_label,
-                normative.value_label.c.value_label_set_id
-                == normative.variable_value_label_set.c.value_label_set_id,
-            )
-            .where(
-                normative.variable_value_label_set.c.variable_id.in_(variable_ids)
-            )
-            .order_by(
-                normative.variable_value_label_set.c.variable_id,
-                normative.value_label.c.ordinal,
-            )
-        ).mappings().all()
-        missing_rules = connection.execute(
-            select(normative.missing_rule)
-            .where(normative.missing_rule.c.variable_id.in_(variable_ids))
-            .order_by(
-                normative.missing_rule.c.variable_id,
-                normative.missing_rule.c.ordinal,
-            )
-        ).mappings().all()
-        variable_sets = connection.execute(
-            select(normative.variable_set)
-            .where(normative.variable_set.c.dataset_id == core_id)
-            .order_by(normative.variable_set.c.source_ordinal)
-        ).mappings().all()
-        variable_set_ids = tuple(
-            str(row["variable_set_id"]) for row in variable_sets
+    ).mappings().all()
+    variable_attributes = connection.execute(
+        select(normative.variable_attribute)
+        .where(normative.variable_attribute.c.variable_id.in_(variable_ids))
+        .order_by(
+            normative.variable_attribute.c.variable_id,
+            normative.variable_attribute.c.attribute_name,
+            normative.variable_attribute.c.array_ordinal,
         )
-        variable_set_members = connection.execute(
-            select(normative.variable_set_member)
-            .where(normative.variable_set_member.c.variable_set_id.in_(variable_set_ids))
-            .order_by(
-                normative.variable_set_member.c.variable_set_id,
-                normative.variable_set_member.c.source_ordinal,
-            )
-        ).mappings().all()
-        response_sets = connection.execute(
-            select(normative.multiple_response_set)
-            .where(normative.multiple_response_set.c.dataset_id == core_id)
-            .order_by(normative.multiple_response_set.c.source_ordinal)
-        ).mappings().all()
-        response_set_ids = tuple(
-            str(row["multiple_response_set_id"]) for row in response_sets
+    ).mappings().all()
+    labels = connection.execute(
+        select(
+            normative.variable_value_label_set.c.variable_id,
+            normative.value_label,
         )
-        response_members = connection.execute(
-            select(normative.multiple_response_member)
-            .where(
-                normative.multiple_response_member.c.multiple_response_set_id.in_(
-                    response_set_ids
-                )
+        .join(
+            normative.value_label,
+            normative.value_label.c.value_label_set_id
+            == normative.variable_value_label_set.c.value_label_set_id,
+        )
+        .where(
+            normative.variable_value_label_set.c.variable_id.in_(variable_ids)
+        )
+        .order_by(
+            normative.variable_value_label_set.c.variable_id,
+            normative.value_label.c.ordinal,
+        )
+    ).mappings().all()
+    missing_rules = connection.execute(
+        select(normative.missing_rule)
+        .where(normative.missing_rule.c.variable_id.in_(variable_ids))
+        .order_by(
+            normative.missing_rule.c.variable_id,
+            normative.missing_rule.c.ordinal,
+        )
+    ).mappings().all()
+    variable_sets = connection.execute(
+        select(normative.variable_set)
+        .where(normative.variable_set.c.dataset_id == core_id)
+        .order_by(normative.variable_set.c.source_ordinal)
+    ).mappings().all()
+    variable_set_ids = tuple(
+        str(row["variable_set_id"]) for row in variable_sets
+    )
+    variable_set_members = connection.execute(
+        select(normative.variable_set_member)
+        .where(normative.variable_set_member.c.variable_set_id.in_(variable_set_ids))
+        .order_by(
+            normative.variable_set_member.c.variable_set_id,
+            normative.variable_set_member.c.source_ordinal,
+        )
+    ).mappings().all()
+    response_sets = connection.execute(
+        select(normative.multiple_response_set)
+        .where(normative.multiple_response_set.c.dataset_id == core_id)
+        .order_by(normative.multiple_response_set.c.source_ordinal)
+    ).mappings().all()
+    response_set_ids = tuple(
+        str(row["multiple_response_set_id"]) for row in response_sets
+    )
+    response_members = connection.execute(
+        select(normative.multiple_response_member)
+        .where(
+            normative.multiple_response_member.c.multiple_response_set_id.in_(
+                response_set_ids
             )
-            .order_by(
-                normative.multiple_response_member.c.multiple_response_set_id,
-                normative.multiple_response_member.c.source_ordinal,
-            )
-        ).mappings().all()
-        weight_id = connection.execute(
-            select(normative.dataset_weight_variable.c.variable_id).where(
-                normative.dataset_weight_variable.c.dataset_id == core_id
-            )
-        ).scalar_one_or_none()
+        )
+        .order_by(
+            normative.multiple_response_member.c.multiple_response_set_id,
+            normative.multiple_response_member.c.source_ordinal,
+        )
+    ).mappings().all()
+    weight_id = connection.execute(
+        select(normative.dataset_weight_variable.c.variable_id).where(
+            normative.dataset_weight_variable.c.dataset_id == core_id
+        )
+    ).scalar_one_or_none()
 
     dataset = {
         "dataset_id": core_id,
@@ -1386,26 +1413,33 @@ def read_fidelity_events(
     dolt_conformance_source: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read fidelity diagnostics, optionally limited to one lifecycle direction."""
-    read_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    engine = create_engine(database_url)
-    normative = normative_catalog(MetaData())
-    with engine.connect() as connection:
-        require_verified_catalog(connection)
+    with _read_snapshot(
+        database_url=database_url,
+        dolt_conformance_source=dolt_conformance_source,
+    ) as (connection, _profile):
+        normative = normative_catalog(MetaData())
         dataset = _resolve_normative_dataset(connection, normative, dataset_id)
-        statement = (
-            select(normative.fidelity_event)
-            .where(normative.fidelity_event.c.dataset_id == dataset["dataset_id"])
-            .where(normative.fidelity_event.c.severity != "info")
+        return _read_fidelity_events(
+            connection, dataset_id=str(dataset["dataset_id"]), direction=direction,
         )
-        if direction is not None:
-            statement = statement.where(
-                normative.fidelity_event.c.direction == direction
-            )
-        events = connection.execute(statement.order_by(
-            normative.fidelity_event.c.event_code
-        )).mappings().all()
+
+
+def _read_fidelity_events(
+    connection: Any, *, dataset_id: str, direction: str | None = None,
+) -> tuple[dict[str, Any], ...]:
+    normative = normative_catalog(MetaData())
+    statement = (
+        select(normative.fidelity_event)
+        .where(normative.fidelity_event.c.dataset_id == dataset_id)
+        .where(normative.fidelity_event.c.severity != "info")
+    )
+    if direction is not None:
+        statement = statement.where(
+            normative.fidelity_event.c.direction == direction
+        )
+    events = connection.execute(statement.order_by(
+        normative.fidelity_event.c.event_code
+    )).mappings().all()
     result = []
     for item in events:
         details = json.loads(item["detail_json"] or "{}")
@@ -1421,13 +1455,18 @@ def validate_wide_dataset(
     *, database_url: str, dataset_id: str,
     dolt_conformance_source: Any | None = None,
 ) -> dict[str, Any]:
-    profile, _active = read_profile(
-        database_url, dolt_conformance_source=dolt_conformance_source,
-    )
-    dataset, variables, rows = read_wide_dataset(
-        database_url=database_url, dataset_id=dataset_id, profile=profile,
+    with _read_snapshot(
+        database_url=database_url,
         dolt_conformance_source=dolt_conformance_source,
-    )
+    ) as (connection, profile):
+        dataset, variables, rows = _read_wide_dataset(
+            connection, dataset_id=dataset_id, profile=profile,
+        )
+        reflected_table = Table(
+            dataset["data_table"], MetaData(),
+            schema=dataset["physical_table_schema"],
+            autoload_with=connection,
+        )
     preflight(
         profile, variables, rows=rows, require_canonical_mapping=False,
     )
@@ -1439,12 +1478,6 @@ def validate_wide_dataset(
     if not variables:
         raise ValueError("A conforming dataset needs at least one source variable.")
     expected_columns = {"__case_ordinal", *(item["physical_name"] for item in variables)}
-    engine = create_engine(database_url)
-    reflected_table = Table(
-        dataset["data_table"], MetaData(),
-        schema=dataset["physical_table_schema"],
-        autoload_with=engine,
-    )
     reflected_columns = {column.name: column for column in reflected_table.columns}
     actual_columns = set(reflected_columns)
     if actual_columns != expected_columns:

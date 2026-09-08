@@ -255,27 +255,20 @@ def test_validate_wide_dataset_propagates_explicit_source(
 ) -> None:
     sentinel = object()
     calls: list[object] = []
-    profile_calls: list[object] = []
 
-    def capture_effective_profile(
+    def stop_after_read_preflight(
         _database_url: str, *, dolt_conformance_source: object,
-    ) -> tuple[object, dict[str, object]]:
-        profile_calls.append(dolt_conformance_source)
-        return object(), {}
-
-    def stop_after_read_preflight(**kwargs: object) -> tuple[object, object, object]:
-        calls.append(kwargs["dolt_conformance_source"])
+    ) -> None:
+        calls.append(dolt_conformance_source)
         raise UnsupportedOperationError("stop after propagation check")
 
-    monkeypatch.setattr(wide, "read_profile", capture_effective_profile)
-    monkeypatch.setattr(wide, "read_wide_dataset", stop_after_read_preflight)
+    monkeypatch.setattr(wide, "read_profile", stop_after_read_preflight)
     with pytest.raises(UnsupportedOperationError, match="propagation check"):
         wide.validate_wide_dataset(
             database_url="mysql+pymysql://example.invalid/catalog",
             dataset_id="synthetic",
             dolt_conformance_source=sentinel,
         )
-    assert profile_calls == [sentinel]
     assert calls == [sentinel]
 
 
@@ -362,11 +355,13 @@ def test_sav_export_propagates_explicit_source_to_read_gate(
     sentinel = object()
     calls: list[object] = []
 
-    def stop_after_read(**kwargs: object) -> tuple[object, object, object]:
-        calls.append(kwargs["dolt_conformance_source"])
+    def stop_after_read(
+        _database_url: str, *, dolt_conformance_source: object,
+    ) -> None:
+        calls.append(dolt_conformance_source)
         raise UnsupportedOperationError("stop after SAV read propagation")
 
-    monkeypatch.setattr(sav_module, "read_wide_dataset", stop_after_read)
+    monkeypatch.setattr(wide, "read_profile", stop_after_read)
     with pytest.raises(UnsupportedOperationError, match="SAV read propagation"):
         sav_module.export_sav_dataset(
             database_url="sqlite://", dataset_id="synthetic",
