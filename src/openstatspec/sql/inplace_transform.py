@@ -11,7 +11,7 @@ from uuid import uuid4
 from sqlalchemy import (
     Column, DateTime, Float, Integer, MetaData, String, Table, Text, and_, case,
     create_engine, delete, inspect, insert, literal, null, select, text, update,
-    or_,
+    or_, event as sqlalchemy_event,
 )
 
 from ..transform import (
@@ -29,7 +29,7 @@ from .dolt_conformance import DoltConformanceSource
 from .normative import catalog as core_catalog
 from .profiles import SqlProfile, preflight
 from .wide import physical_name, require_verified_catalog
-from .workflow import TransformationError
+from .workflow import TransformationError, workflow_catalog
 
 
 APPLY_CONTRACT = "openstatspec-in-place-transformation-v0.2"
@@ -278,15 +278,21 @@ def _replace_value_labels(
         )
     ).scalar_one_or_none()
     if old_set is not None:
-        connection.execute(delete(core.value_label).where(
-            core.value_label.c.value_label_set_id == old_set
-        ))
         connection.execute(delete(core.variable_value_label_set).where(
             core.variable_value_label_set.c.variable_id == variable_id
         ))
-        connection.execute(delete(core.value_label_set).where(
-            core.value_label_set.c.value_label_set_id == old_set
-        ))
+        still_used = connection.execute(
+            select(core.variable_value_label_set.c.variable_id).where(
+                core.variable_value_label_set.c.value_label_set_id == old_set
+            )
+        ).first()
+        if still_used is None:
+            connection.execute(delete(core.value_label).where(
+                core.value_label.c.value_label_set_id == old_set
+            ))
+            connection.execute(delete(core.value_label_set).where(
+                core.value_label_set.c.value_label_set_id == old_set
+            ))
     label_set_id = str(uuid4())
     connection.execute(insert(core.value_label_set).values(
         value_label_set_id=label_set_id,
@@ -476,6 +482,26 @@ def _apply_plan_on_connection(
     table_name = _physical_table_name(dataset)
     plan = submission.plan
     bound = bind_transformation_plan(plan, schema)
+    deleted_names = {
+        operation.variable.casefold() for operation in plan.operations
+        if isinstance(operation, DeleteVariableOperation)
+    }
+    original_deletions = {
+        str(row["variable_id"]): str(row["source_name"]) for row in variables
+        if str(row["source_name"]).casefold() in deleted_names
+    }
+    if original_deletions and inspect(connection).has_table("derived_variable_lineage"):
+        lineage = workflow_catalog(MetaData()).derived_variable_lineage
+        blocked_id = connection.execute(
+            select(lineage.c.core_variable_id).where(
+                lineage.c.core_variable_id.in_(original_deletions)
+            ).limit(1)
+        ).scalar_one_or_none()
+        if blocked_id is not None:
+            raise TransformationError(
+                "variable_has_dependents",
+                f"Variable {original_deletions[blocked_id]!r} is referenced by published lineage.",
+            )
     output_used_physical = {"__case_ordinal"}
     output_variables = [
         {
@@ -972,6 +998,17 @@ def _run_in_place_submission(
         sqlite_version = (*sqlite_version_parts, 0, 0)[:3]
         allow_delete_variable = sqlite_version >= (3, 35, 0)
     engine = create_engine(database_url)
+    if profile.name == "sqlite":
+        @sqlalchemy_event.listens_for(engine, "connect")
+        def enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys = ON")
+                if cursor.execute("PRAGMA foreign_keys").fetchone() != (1,):
+                    raise RuntimeError("SQLite foreign-key enforcement could not be enabled.")
+            finally:
+                cursor.close()
+
     journal: dict[str, Any] = {}
     branch: str | None = None
     head: str | None = None
