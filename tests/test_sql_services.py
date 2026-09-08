@@ -128,7 +128,7 @@ def test_live_export_uses_one_snapshot(environment_name, source_sav, tmp_path, m
     )
     engine = create_engine(database_url)
     tables = normative_catalog(MetaData())
-    readers, isolations, native_transactions = [], [], []
+    readers, isolations, transaction_checks = [], [], []
     committed = False
 
     def weaker_default(connection):
@@ -175,10 +175,17 @@ def test_live_export_uses_one_snapshot(environment_name, source_sav, tmp_path, m
             readers.append(connection)
             raw = connection.connection.driver_connection
             isolations.append(connection.dialect.get_isolation_level(raw))
-            native_transactions.append(
-                raw.info.transaction_status != 0
-                if connection.dialect.name == "postgresql" else bool(raw.server_status & 1)
-            )
+            if connection.dialect.name == "postgresql":
+                transaction_checks.append(("native_transaction_active", raw.info.transaction_status != 0))
+            elif environment_name == "OPENSTATSPEC_DOLT_URL":
+                # Dolt's explicit BEGIN supplies an OK packet with a valid IN_TRANS bit.
+                transaction_checks.append(("begin_in_trans", bool(raw.server_status & 1)))
+            else:
+                # PyMySQL updates server_status from OK, not SELECT EOF packets:
+                # IN_TRANS may still describe the isolation setter's COMMIT.
+                # Autocommit off implies a native txn at this real table SELECT;
+                # the interleaving below proves snapshot safety, not a measured bit.
+                transaction_checks.append(("autocommit_disabled", not raw.get_autocommit()))
         if committed or "FROM variable " not in sql or "ORDER BY variable.source_ordinal" not in sql:
             return
         with engine.begin() as writer:
@@ -227,7 +234,7 @@ def test_live_export_uses_one_snapshot(environment_name, source_sav, tmp_path, m
             event.remove(Engine, "before_cursor_execute", only_reads)
             event.remove(Engine, "engine_connect", weaker_default)
             record_property("catalog_isolations", isolations)
-            record_property("catalog_native_transactions", native_transactions)
+            record_property("catalog_transaction_checks", transaction_checks)
             record_property("writer_committed", committed)
         assert committed
         assert not result.diagnostics
@@ -237,7 +244,7 @@ def test_live_export_uses_one_snapshot(environment_name, source_sav, tmp_path, m
         for key in ("var_labels", "var_value_labels"):
             assert actual_meta[key] == expected_meta[key]
         assert isolations and set(isolations) == {"REPEATABLE READ"}
-        assert all(native_transactions), "first catalog read must be in a native transaction"
+        assert transaction_checks and all(passed for _, passed in transaction_checks), transaction_checks
         assert all(connection.closed for connection in readers)
         _, variables, rows = wide.read_wide_dataset(
             database_url=database_url, dataset_id=imported["dataset_id"],
