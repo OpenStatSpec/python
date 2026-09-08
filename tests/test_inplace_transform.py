@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 import openstatspec
 import openstatspec.sql.inplace_transform as inplace_transform
@@ -83,6 +85,205 @@ def catalog(tmp_path):
         "SELECT dataset_id, physical_table_name FROM dataset"
     ).fetchone()
     return url, path, dataset_id, table_name
+
+
+def _publish_score(catalog):
+    url, _path, dataset_id, _table_name = catalog
+    openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id,
+        source_text="COMPUTE other = score.", actor="test-setup",
+    )
+    return openstatspec.derive_sql_dataset(
+        database_url=url, parent_dataset_id=dataset_id,
+        query_sql="SELECT score FROM parent ORDER BY score ASC NULLS LAST",
+        columns=[{
+            "name": "score", "storage_kind": "numeric", "source": "score",
+            "expression_role": "identity",
+        }],
+        transformation_name="published_score",
+    )
+
+
+@pytest.mark.parametrize("surface", ["canonical", "spss"])
+def test_shared_value_labels_preserve_sibling_until_last_owner(catalog, surface):
+    url, path, dataset_id, table_name = catalog
+    openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id,
+        source_text="COMPUTE other = score. VALUE LABELS score 1 'Original'.",
+        actor="test-setup",
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        old_set = connection.execute(
+            "SELECT value_label_set_id FROM variable_value_label_set"
+        ).fetchone()[0]
+        other_id = connection.execute(
+            "SELECT variable_id FROM variable WHERE source_name = 'other'"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO variable_value_label_set VALUES (?, ?)",
+            (other_id, old_set),
+        )
+        original_set = connection.execute("SELECT * FROM value_label_set").fetchall()
+        original_labels = connection.execute("SELECT * FROM value_label").fetchall()
+    schema = openstatspec.VariableSchema(tuple(
+        openstatspec.VariableDefinition(name, "numeric")
+        for name in ("score", "other")
+    ))
+    for name in ("score", "other"):
+        syntax = f"VALUE LABELS {name} 2 'Replacement'."
+        if surface == "canonical":
+            result = openstatspec.apply_transformation_plan_in_place(
+                database_url=url, dataset_id=dataset_id, actor="test-agent",
+                plan=openstatspec.compile_spss_syntax(syntax, schema).plan,
+            )
+        else:
+            result = openstatspec.apply_spss_in_place(
+                database_url=url, dataset_id=dataset_id, actor="test-agent",
+                source_text=syntax,
+            )
+        assert (result["dataset_id"], result["physical_table_name"]) == (
+            dataset_id, table_name,
+        )
+        _, variables, _rows = read_wide_dataset(database_url=url, dataset_id=dataset_id)
+        assert {v["source_name"]: json.loads(v["value_labels"]) for v in variables} == {
+            "score": {"2.0": "Replacement"},
+            "other": {"1.0": "Original"} if name == "score" else {"2.0": "Replacement"},
+        }
+        with sqlite3.connect(path) as connection:
+            assert connection.execute(
+                f'SELECT __case_ordinal, score, other FROM "{table_name}" '
+                "ORDER BY __case_ordinal"
+            ).fetchall() == [(1, 1.0, 1.0), (2, 2.0, 2.0), (3, 3.0, 3.0)]
+            assert connection.execute(
+                "SELECT dataset_id, physical_table_name FROM dataset"
+            ).fetchall() == [(dataset_id, table_name)]
+            assert connection.execute(
+                "SELECT status FROM transformation_apply WHERE apply_id = ?",
+                (result["apply_id"],),
+            ).fetchone() == ("succeeded",)
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert connection.execute(
+                "SELECT * FROM value_label_set WHERE value_label_set_id = ?", (old_set,),
+            ).fetchall() == (original_set if name == "score" else [])
+            assert connection.execute(
+                "SELECT * FROM value_label WHERE value_label_set_id = ?", (old_set,),
+            ).fetchall() == (original_labels if name == "score" else [])
+            assert connection.execute(
+                "SELECT * FROM variable_value_label_set WHERE value_label_set_id = ?",
+                (old_set,),
+            ).fetchall() == ([(other_id, old_set)] if name == "score" else [])
+
+
+@pytest.mark.parametrize("surface", ["canonical", "spss"])
+@pytest.mark.parametrize("recreate", [False, True], ids=["delete", "recreate"])
+def test_published_lineage_blocks_original_deletion_before_mutation(
+    catalog, monkeypatch, surface, recreate,
+):
+    url, path, dataset_id, _table_name = catalog
+    _publish_score(catalog)
+    with sqlite3.connect(path) as connection:
+        before = tuple(connection.iterdump())
+    reached = []
+    monkeypatch.setattr(inplace_transform, "_failure_boundary", reached.append)
+    syntax = (
+        "COMPUTE temporary = score. VARIABLE LABELS score 'Must not change'. "
+        "DELETE VARIABLES ScOrE."
+    )
+    if recreate:
+        syntax += " COMPUTE score = temporary."
+    with pytest.raises(openstatspec.TransformationError) as caught:
+        if surface == "canonical":
+            openstatspec.apply_transformation_plan_in_place(
+                database_url=url, dataset_id=dataset_id, actor="test-agent",
+                plan=_plan(syntax),
+            )
+        else:
+            openstatspec.apply_spss_in_place(
+                database_url=url, dataset_id=dataset_id, actor="test-agent",
+                source_text=syntax,
+            )
+    assert caught.value.code == "variable_has_dependents"
+    assert "score" in str(caught.value).casefold()
+    assert reached == []
+    with sqlite3.connect(path) as connection:
+        assert tuple(connection.iterdump()) == before
+
+
+def test_lineage_allows_local_deletes_and_unreferenced_original_recreation(catalog):
+    url, path, dataset_id, table_name = catalog
+    published = _publish_score(catalog)
+    with sqlite3.connect(path) as connection:
+        original_ids = dict(connection.execute(
+            "SELECT source_name, variable_id FROM variable"
+        ))
+        lineage = connection.execute("SELECT * FROM derived_variable_lineage").fetchall()
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+    result = openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id, actor="test-agent",
+        source_text=(
+            "COMPUTE tmp = score. DELETE VARIABLES tmp. "
+            "RECODE score (2 = 9) (ELSE = COPY) INTO band. DELETE VARIABLES band. "
+            "STRING note (A4). DELETE VARIABLES note. "
+            "DELETE VARIABLES other. "
+            "RECODE score (2 = 9) (ELSE = COPY) INTO other."
+        ),
+    )
+    assert (result["dataset_id"], result["physical_table_name"]) == (dataset_id, table_name)
+    with sqlite3.connect(path) as connection:
+        variables = connection.execute(
+            "SELECT source_name, variable_id, physical_name, source_ordinal "
+            "FROM variable ORDER BY source_ordinal"
+        ).fetchall()
+        assert variables[0] == ("score", original_ids["score"], "score", 1)
+        assert len(variables) == 2
+        assert variables[1][0] == "other"
+        assert variables[1][1] not in original_ids.values()
+        assert variables[1][3] == 6
+        assert connection.execute(
+            f'SELECT __case_ordinal, score, "{variables[1][2]}" FROM "{table_name}" '
+            "ORDER BY __case_ordinal"
+        ).fetchall() == [(1, 1.0, 1.0), (2, 2.0, 9.0), (3, 3.0, 3.0)]
+        assert [row[1] for row in connection.execute(
+            f'PRAGMA table_info("{table_name}")'
+        )] == ["__case_ordinal", "score", variables[1][2]]
+        assert connection.execute(
+            "SELECT dataset_id, physical_table_name FROM dataset"
+        ).fetchall() == [(dataset_id, table_name)]
+        assert connection.execute("SELECT * FROM derived_variable_lineage").fetchall() == lineage
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall() == tables
+    assert openstatspec.validate_derived(
+        database_url=url, derived_dataset_id=published["derived_dataset_id"],
+    )["valid"] is True
+
+
+def test_native_foreign_key_failure_rolls_back_schema_data_metadata_and_audit(catalog):
+    url, path, dataset_id, _table_name = catalog
+    openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id,
+        source_text="VARIABLE LABELS score 'Before probe'.", actor="test-setup",
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TRIGGER invalid_variable_reference AFTER UPDATE OF variable_label "
+            "ON variable BEGIN INSERT INTO missing_rule "
+            "(missing_rule_id, variable_id, ordinal, rule_kind, code_kind, numeric_value) "
+            "VALUES ('fk-probe', 'nonexistent-variable', 1, 'discrete', 'numeric', 99); END"
+        )
+        before = tuple(connection.iterdump())
+    with pytest.raises(IntegrityError, match="FOREIGN KEY constraint failed") as caught:
+        openstatspec.apply_transformation_plan_in_place(
+            database_url=url, dataset_id=dataset_id, actor="test-agent",
+            plan=_plan("COMPUTE temporary = score. VARIABLE LABELS score 'Trigger probe'."),
+        )
+    assert isinstance(caught.value.orig, sqlite3.IntegrityError)
+    with sqlite3.connect(path) as connection:
+        assert tuple(connection.iterdump()) == before
 
 
 def test_plan_applies_to_same_dataset_and_physical_table_without_copy(
