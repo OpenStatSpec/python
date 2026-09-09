@@ -182,7 +182,7 @@ checkout, without configured database services:
 This is local candidate evidence, not final release-commit service CI or
 publication evidence. No v0.8.1 tag or registry upload was made by these checks.
 
-## Maintainer checks before tagging
+## Maintainer release checklist
 
 1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
    first and confirm that a clean environment can download it from PyPI. The
