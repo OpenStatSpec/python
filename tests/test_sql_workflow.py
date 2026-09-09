@@ -250,6 +250,56 @@ def test_parameterized_view_is_rejected(catalog):
     assert caught.value.code == "output_mode_not_supported"
 
 
+def test_register_core_does_not_hash_case_rows(catalog, monkeypatch):
+    url, _path, parent_id = catalog
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("core registration should not hash case rows")
+
+    monkeypatch.setattr(workflow, "_relation_snapshot_hash", fail_if_called)
+    registered = openstatspec.register_sql_transformation(
+        database_url=url, parent_dataset_id=parent_id,
+        query_sql="SELECT score, grp FROM parent ORDER BY score ASC NULLS LAST",
+        columns=_columns(), transformation_name="schema_only_registration",
+    )
+
+    assert registered["version_number"] == 1
+
+
+def test_register_core_rejects_missing_physical_relation(catalog):
+    url, path, parent_id = catalog
+    with sqlite3.connect(path) as connection:
+        connection.execute('DROP TABLE "data_source"')
+
+    with pytest.raises(OperationalError):
+        openstatspec.register_sql_transformation(
+            database_url=url, parent_dataset_id=parent_id,
+            query_sql="SELECT score, grp FROM parent ORDER BY score ASC NULLS LAST",
+            columns=_columns(), transformation_name="missing_relation_registration",
+        )
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'transformation_version'"
+        ).fetchone() is None
+
+
+def test_register_core_rejects_missing_physical_column(catalog):
+    url, path, parent_id = catalog
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            'ALTER TABLE "data_source" RENAME COLUMN "score" TO "missing_score"'
+        )
+
+    with pytest.raises(OperationalError):
+        openstatspec.register_sql_transformation(
+            database_url=url, parent_dataset_id=parent_id,
+            query_sql="SELECT score, grp FROM parent ORDER BY score ASC NULLS LAST",
+            columns=_columns(), transformation_name="missing_column_registration",
+        )
+
+
 def test_failed_run_is_audited_without_derived_or_physical_output(catalog):
     url, path, parent_id = catalog
     registered = openstatspec.register_sql_transformation(

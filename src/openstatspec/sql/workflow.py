@@ -1170,18 +1170,31 @@ def _validate_declared_semantics(
     return row_semantics
 
 
+def _relation_snapshot_statement(
+    connection: Any, *, relation_schema: str | None, relation_name: str,
+    variables: Sequence[Mapping[str, Any]], ordinal_name: str,
+    validate_only: bool = False,
+) -> Any:
+    quote = connection.dialect.identifier_preparer.quote
+    relation = _quote_relation(connection, relation_schema, relation_name)
+    alias = quote("__oss_snapshot_relation")
+    projection = ", ".join(
+        f"{alias}.{quote(str(item['physical_name']))}" for item in variables
+    )
+    ordinal = f"{alias}.{quote(ordinal_name)}"
+    suffix = " WHERE 1 = 0" if validate_only else f" ORDER BY {ordinal}"
+    return text(f"SELECT {ordinal}, {projection} FROM {relation} AS {alias}{suffix}")
+
+
 def _relation_snapshot_hash(
     connection: Any, *, relation_schema: str | None, relation_name: str,
     variables: Sequence[Mapping[str, Any]], ordinal_name: str,
     schema_hash: str,
 ) -> str:
     """Hash the normative typed relation-snapshot envelope without buffering."""
-    quote = connection.dialect.identifier_preparer.quote
-    relation = _quote_relation(connection, relation_schema, relation_name)
-    projection = ", ".join(quote(str(item["physical_name"])) for item in variables)
-    statement = text(
-        f"SELECT {quote(ordinal_name)}, {projection} FROM {relation} "
-        f"ORDER BY {quote(ordinal_name)}"
+    statement = _relation_snapshot_statement(
+        connection, relation_schema=relation_schema, relation_name=relation_name,
+        variables=variables, ordinal_name=ordinal_name,
     )
 
     def typed(value: Any, kind: str) -> dict[str, str]:
@@ -1217,7 +1230,10 @@ def _relation_snapshot_hash(
     return digest.hexdigest()
 
 
-def _parent_snapshot(connection: Any, parent_kind: str, parent_dataset_id: str) -> dict[str, Any]:
+def _parent_snapshot(
+    connection: Any, parent_kind: str, parent_dataset_id: str,
+    *, include_relation_hash: bool = True,
+) -> dict[str, Any]:
     parent_dataset_id = _uuid(parent_dataset_id, "parent_dataset_id")
     core = core_catalog(MetaData())
     workflow = workflow_catalog(MetaData())
@@ -1282,14 +1298,19 @@ def _parent_snapshot(connection: Any, parent_kind: str, parent_dataset_id: str) 
             for row in converted
         ]))
     )
-    dataset_hash = (
-        verified_derived_hash
-        if parent_kind == "derived"
-        else _relation_snapshot_hash(
+    if parent_kind == "derived":
+        dataset_hash = verified_derived_hash
+    elif include_relation_hash:
+        dataset_hash = _relation_snapshot_hash(
             connection, relation_schema=relation_schema, relation_name=relation_name,
             variables=converted, ordinal_name="__case_ordinal", schema_hash=schema_hash,
         )
-    )
+    else:
+        connection.execute(_relation_snapshot_statement(
+            connection, relation_schema=relation_schema, relation_name=relation_name,
+            variables=converted, ordinal_name="__case_ordinal", validate_only=True,
+        )).first()
+        dataset_hash = None
     weight_source_name = next((
         row["source_name"] for row in converted
         if row["variable_id"] == weight_variable_id
@@ -1417,7 +1438,10 @@ def register_transformation(
     tables = workflow_catalog(MetaData())
     with engine.begin() as connection:
         _assert_sqlite_server_version(connection, server_version_constraint)
-        parent = _parent_snapshot(connection, parent_kind, parent_dataset_id)
+        parent = _parent_snapshot(
+            connection, parent_kind, parent_dataset_id,
+            include_relation_hash=False,
+        )
         parent_columns = {item["source_name"] for item in parent["variables"]}
         declared_sources = {
             lineage["parent_column"]
