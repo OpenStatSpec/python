@@ -5,6 +5,7 @@ OPENSTATSPEC_TEST_DOLT_ADMIN_URL=mysql+pymysql://root@127.0.0.1:PORT/ \
     python -m pytest tests/test_read_only_export.py
 The fixture creates and removes its own database and SELECT-only user.
 """
+from collections.abc import Mapping
 import json
 import os
 import sqlite3
@@ -30,8 +31,14 @@ def seeded_catalog(request, tmp_path):
     if request.param == "dolt" and not admin_url:
         pytest.skip("Live Dolt requires OPENSTATSPEC_TEST_DOLT_ADMIN_URL")
     source = tmp_path / "source.sav"
+    frame = pd.DataFrame({"answer": [1.0, 2.0], "name": ["one", "two"]})
+    if request.param in {"sqlite-mixed", "sqlite-empty"}:
+        frame = pd.DataFrame({
+            "answer": [1.0000000000000002, None, -2.5, 0.0],
+            "name": ["Õun", "", "東京", "last"],
+        })
     pyspssio.write_sav(
-        str(source), pd.DataFrame({"answer": [1.0, 2.0], "name": ["one", "two"]}),
+        str(source), frame,
         var_labels={"answer": "Answer"},
         var_value_labels={"answer": {1.0: "Yes", 2.0: "No"}},
         var_missing_values={"answer": {"values": [2.0]}},
@@ -43,7 +50,13 @@ def seeded_catalog(request, tmp_path):
     logical = catalog(MetaData())
     with source_engine.connect() as connection:
         dataset = connection.execute(select(logical.dataset)).mappings().one()
-    if request.param == "sqlite":
+    if request.param == "sqlite-empty":
+        _, variables, _ = wide.read_wide_dataset(database_url=url, dataset_id="sample")
+        wide.create_wide_dataset(
+            database_url=url, dataset_id="empty", source_name="source.sav",
+            source_format="SAV", variables=variables, rows=[], source_encoding="UTF-8",
+        )
+    if request.param.startswith("sqlite"):
         with sqlite3.connect(path) as connection:
             connection.execute("PRAGMA journal_mode = WAL")
 
@@ -154,6 +167,66 @@ def test_export_and_reads_leave_no_database_trace(read_catalog, tmp_path, suffix
     assert snapshot() == before
     assert not list(tmp_path.glob(".*.previous"))
     assert not list(tmp_path.glob(".*.staging.*"))
+
+
+@pytest.mark.parametrize("seeded_catalog,dataset_id", [
+    ("sqlite-mixed", "sample"), ("sqlite-empty", "empty"),
+], indirect=["seeded_catalog"])
+@pytest.mark.parametrize("operation", ["descriptor", "validate", "export"])
+def test_public_reads_copy_each_case_once(read_catalog, tmp_path, monkeypatch, dataset_id, operation):
+    url, snapshot, source = read_catalog
+    expected_rows = [] if dataset_id == "empty" else [
+        {"__case_ordinal": 1, "answer": 1.0000000000000002, "name": "Õun"},
+        {"__case_ordinal": 2, "answer": None, "name": ""},
+        {"__case_ordinal": 3, "answer": -2.5, "name": "東京"},
+        {"__case_ordinal": 4, "answer": 0.0, "name": "last"},
+    ]
+    before = snapshot()
+    output = tmp_path / "copies.sav"
+    copies = 0
+
+    def counted_dict(*args, **kwargs):
+        nonlocal copies
+        if args and isinstance(args[0], Mapping) and "__case_ordinal" in args[0]:
+            copies += 1
+        return dict(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wide, "dict", counted_dict, raising=False)
+        if operation == "descriptor":
+            dataset, variables, rows = wide.read_wide_dataset(database_url=url, dataset_id=dataset_id)
+        elif operation == "validate":
+            result = openstatspec.validate(database_url=url, dataset_id=dataset_id)
+        else:
+            result = openstatspec.export_sav(database_url=url, dataset_id=dataset_id, destination=output)
+
+    if operation == "descriptor":
+        assert isinstance(rows, list) and all(type(row) is dict for row in rows)
+        assert rows == expected_rows
+        assert dataset["case_count"] == len(expected_rows)
+        assert [(v["source_name"], v["physical_name"]) for v in variables] == [
+            ("answer", "answer"), ("name", "name"),
+        ]
+        assert variables[0]["label"] == "Answer"
+        assert json.loads(variables[0]["value_labels"]) == {"1.0": "Yes", "2.0": "No"}
+    else:
+        assert not result.diagnostics
+        if operation == "validate":
+            assert result["valid"]
+            assert result["case_count"] == len(expected_rows)
+            assert result["variable_count"] == 2
+        else:
+            assert "operation_id" not in result
+            expected, expected_meta = pyspssio.read_sav(str(source), include_user_missing=True)
+            actual, actual_meta = pyspssio.read_sav(str(output), include_user_missing=True)
+            if not expected_rows:
+                # pyspssio decodes an empty string column as object, not StringDtype.
+                expected = expected.iloc[:0].astype({"name": object})
+            pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+            for key in ("var_labels", "var_value_labels", "var_missing_values", "var_formats", "var_measure_levels"):
+                assert actual_meta[key] == expected_meta[key]
+    assert snapshot() == before
+    assert copies == len(expected_rows), "one case dictionary per fetched row, not two"
 
 
 @pytest.mark.parametrize("failure", ["read", "loss", "writer", "publish", "restore", "staging", "backup"])
