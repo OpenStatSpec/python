@@ -2053,72 +2053,48 @@ def execute_transformation(
             preflight(profile, variables)
             row_count = 0
             phase = "staging"
-            if output_mode == "materialized":
-                relation = Table(
-                    staging_name, MetaData(),
-                    Column("__row_ordinal", BigInteger, primary_key=True, nullable=False),
-                    *(Column(
-                        item["physical_name"],
-                        binary64_type() if item["storage_kind"] == "numeric" else Text(),
-                        nullable=item["is_nullable"],
-                    ) for item in schema),
+            relation = Table(
+                staging_name, MetaData(),
+                Column("__row_ordinal", BigInteger, primary_key=True, nullable=False),
+                *(Column(
+                    item["physical_name"],
+                    binary64_type() if item["storage_kind"] == "numeric" else Text(),
+                    nullable=item["is_nullable"],
+                ) for item in schema),
+            )
+            relation.create(connection)
+            with _sqlite_read_authorizer(connection, parent_reads):
+                query_result = connection.exec_driver_sql(
+                    full_query, values,
+                    execution_options={"stream_results": True},
                 )
-                relation.create(connection)
-                with _sqlite_read_authorizer(connection, parent_reads):
-                    query_result = connection.exec_driver_sql(
-                        full_query, values,
-                        execution_options={"stream_results": True},
-                    )
-                while True:
-                    chunk = query_result.fetchmany(1000)
-                    if not chunk:
-                        break
-                    rows = []
-                    for raw in chunk:
-                        row_count += 1
-                        output = {"__row_ordinal": row_count}
-                        for item, value in zip(schema, tuple(raw)):
-                            if value is not None:
-                                value = float(value) if item["storage_kind"] == "numeric" else str(value)
-                            output[item["physical_name"]] = value
-                        rows.append(output)
-                    connection.execute(insert(relation), rows)
-                relation_query = (
-                    f"SELECT {', '.join(quote(item['physical_name']) for item in schema)} "
-                    f"FROM {quote(staging_name)}"
-                )
-                _validate_order_key(
-                    connection, relation_query, order_descriptors, {}, {("main", staging_name)}
-                )
-                connection.exec_driver_sql(
-                    f"ALTER TABLE {quote(staging_name)} RENAME TO {quote(relation_name)}"
-                )
-                _create_derived_triggers(
-                    connection, derived_id, relation_name
-                )
-            else:
-                projected = ", ".join(
-                    f"q.{quote(item['name'])} AS {quote(item['physical_name'])}"
-                    for item in schema
-                )
-                window_order = ", ".join(
-                    (
-                        f"q.{quote(item['expression'])}"
-                        + (f" COLLATE {item['collation']}" if item["collation"] else "")
-                        + f" {item['direction'].upper()} NULLS {item['nulls'].upper()}"
-                    )
-                    for item in order_descriptors
-                )
-                view_sql = (
-                    f"CREATE VIEW {quote(relation_name)} AS "
-                    f"SELECT ROW_NUMBER() OVER (ORDER BY {window_order}) "
-                    f"AS {quote('__row_ordinal')}, {projected} "
-                    f"FROM ({full_query}) q"
-                )
-                connection.exec_driver_sql(view_sql)
-                row_count = int(connection.execute(
-                    text(f"SELECT COUNT(*) FROM {quote(relation_name)}")
-                ).scalar_one())
+            while True:
+                chunk = query_result.fetchmany(1000)
+                if not chunk:
+                    break
+                rows = []
+                for raw in chunk:
+                    row_count += 1
+                    output = {"__row_ordinal": row_count}
+                    for item, value in zip(schema, tuple(raw)):
+                        if value is not None:
+                            value = float(value) if item["storage_kind"] == "numeric" else str(value)
+                        output[item["physical_name"]] = value
+                    rows.append(output)
+                connection.execute(insert(relation), rows)
+            relation_query = (
+                f"SELECT {', '.join(quote(item['physical_name']) for item in schema)} "
+                f"FROM {quote(staging_name)}"
+            )
+            _validate_order_key(
+                connection, relation_query, order_descriptors, {}, {("main", staging_name)}
+            )
+            connection.exec_driver_sql(
+                f"ALTER TABLE {quote(staging_name)} RENAME TO {quote(relation_name)}"
+            )
+            _create_derived_triggers(
+                connection, derived_id, relation_name
+            )
             phase = "publication_validation"
             content_hash = _relation_snapshot_hash(
                 connection, relation_schema=None, relation_name=relation_name,
