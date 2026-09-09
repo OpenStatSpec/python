@@ -879,10 +879,8 @@ def create_wide_dataset(
             for item in variables
         ),
     )
-    materialized = [
-        {"__case_ordinal": ordinal, **row}
-        for ordinal, row in enumerate(source_rows, start=1)
-    ]
+    for ordinal, row in enumerate(source_rows, start=1):
+        row.setdefault("__case_ordinal", ordinal)
     docs_rows = document_rows(normative_dataset_id, documents)
     labels_rows = value_label_rows(normative_dataset_id, variables)
     missing_rows = missing_rule_rows(normative_dataset_id, variables)
@@ -940,7 +938,7 @@ def create_wide_dataset(
                 connection, normative, dataset_name=dataset_id,
                 source_format=source_format, physical_table_name=data_table.name,
                 dataset_label=file_label, source_encoding=source_encoding,
-                source_hash=source_sha256, source_case_count=len(materialized),
+                source_hash=source_sha256, source_case_count=len(source_rows),
                 imported_at=imported_at or None, variables=variables,
                 documents=docs_rows, value_labels=labels_rows,
                 missing_rules=missing_rows, attributes=attributes_rows,
@@ -963,9 +961,9 @@ def create_wide_dataset(
                     },) if operation_details else ()),
                 ),
             )
-            if materialized:
+            if source_rows:
                 for batch in _bounded_batches(
-                    materialized, variables, profile.max_statement_bytes,
+                    source_rows, variables, profile.max_statement_bytes,
                 ):
                     connection.execute(insert(data_table), batch)
             finish_normative_operation(
@@ -1038,7 +1036,7 @@ def create_wide_dataset(
         "dataset_id": normative_dataset_id,
         "dataset_name": dataset_id,
         "data_table": data_table.name,
-        "case_count": len(materialized),
+        "case_count": len(source_rows),
         "operation_id": operation_id,
     }
 

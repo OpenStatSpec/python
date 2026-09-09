@@ -1,12 +1,129 @@
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import replace
+from decimal import Decimal
+import struct
 
 import pytest
 
 import openstatspec.sql.wide as wide
 from openstatspec.sql.profiles import DOLT, MYSQL, SQLITE, TargetCapabilityExceededError
 from openstatspec.sql.wide import create_wide_dataset
+
+
+def _reuse_variables() -> list[dict[str, object]]:
+    return [
+        {
+            "ordinal": 1, "source_name": "score", "physical_name": "score",
+            "storage_kind": "numeric", "string_width": None, "label": "Score",
+            "format": "F8.2", "measure": "scale", "alignment": "right",
+            "display_width": 8, "value_labels": "{}", "missing_ranges": "[]",
+        },
+        {
+            "ordinal": 2, "source_name": "label", "physical_name": "label",
+            "storage_kind": "string", "string_width": 16, "label": "Label",
+            "format": "A16", "measure": "nominal", "alignment": "left",
+            "display_width": 16, "value_labels": "{}", "missing_ranges": "[]",
+        },
+    ]
+
+
+def test_import_reuses_canonical_rows_after_preflight(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "reuse.sqlite"
+    database = f"sqlite:///{database_path}"
+    input_rows = [
+        {"score": Decimal("1.25"), "label": "  Ä "},
+        {"score": None, "label": ""},
+        {"score": 0.1, "label": "trailing  "},
+    ]
+    original_rows = [dict(row) for row in input_rows]
+    canonical_rows = None
+    batches = []
+    real_canonicalize = wide._canonicalize_database_numeric_rows
+    real_batches = wide._bounded_batches
+
+    def capture_canonicalize(rows, variables):
+        nonlocal canonical_rows
+        canonical_rows = real_canonicalize(rows, variables)
+        return canonical_rows
+
+    def capture_batches(rows, variables, maximum_statement_bytes):
+        assert rows is canonical_rows
+        assert all(actual is expected for actual, expected in zip(rows, canonical_rows, strict=True))
+        for batch in real_batches(rows, variables, maximum_statement_bytes):
+            batches.append(batch)
+            yield batch
+
+    monkeypatch.setattr(
+        wide, "_canonicalize_database_numeric_rows", capture_canonicalize,
+    )
+    monkeypatch.setattr(wide, "_bounded_batches", capture_batches)
+    monkeypatch.setattr(
+        wide, "effective_profile",
+        lambda _url: (replace(SQLITE, max_statement_bytes=80), {}),
+    )
+
+    result = create_wide_dataset(
+        database_url=database, dataset_id="reuse", source_name="fixture.sav",
+        source_format="SAV", rows=(row for row in input_rows),
+        variables=_reuse_variables(),
+    )
+
+    assert input_rows == original_rows
+    assert result["case_count"] == len(input_rows)
+    assert len(batches) == len(input_rows)
+    connection = sqlite3.connect(database_path)
+    try:
+        rows = connection.execute(
+            "select __case_ordinal, score, label from data_reuse "
+            "order by __case_ordinal"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [row[0] for row in rows] == [1, 2, 3]
+    assert rows[0][1] == 1.25 and rows[0][2] == "  Ä "
+    assert rows[1][1] is None and rows[1][2] == ""
+    assert struct.pack(">d", rows[2][1]) == struct.pack(">d", 0.1)
+    assert rows[2][2] == "trailing  "
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        (
+            [
+                {"score": 0.1, "label": "ten", "__case_ordinal": 10},
+                {"score": 2.0, "label": "two", "__case_ordinal": 2},
+            ],
+            [(2, 2.0, "two"), (10, 0.1, "ten")],
+        ),
+        ([], []),
+    ],
+)
+def test_import_preserves_supplied_ordinals_and_empty_input(
+    tmp_path, rows, expected,
+) -> None:
+    database_path = tmp_path / "ordinals.sqlite"
+    result = create_wide_dataset(
+        database_url=f"sqlite:///{database_path}", dataset_id="ordinals",
+        source_name="fixture.sav", source_format="SAV", rows=rows,
+        variables=_reuse_variables(),
+    )
+
+    connection = sqlite3.connect(database_path)
+    try:
+        actual = connection.execute(
+            "select __case_ordinal, score, label from data_ordinals "
+            "order by __case_ordinal"
+        ).fetchall()
+        case_count = connection.execute(
+            "select source_case_count from dataset where dataset_id = ?",
+            (result["dataset_id"],),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert actual == expected
+    assert case_count == len(rows)
 
 
 def test_invalid_string_row_leaves_no_dataset_or_data_table(tmp_path) -> None:
