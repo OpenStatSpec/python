@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -471,6 +473,7 @@ def _apply_plan_on_connection(
     dolt_branch: str | None,
     dolt_head: str | None,
     mutation_journal: dict[str, Any] | None = None,
+    encoded_plan: tuple[bytes, str] | None = None,
 ) -> dict[str, Any]:
     before_identity = _target_identity_state(connection, dataset_id, lock_dataset=True)
     if before_identity[3] != 1:
@@ -792,6 +795,10 @@ def _apply_plan_on_connection(
     started = _now()
     if mutation_journal is not None:
         mutation_journal["apply_id"] = apply_id
+    if encoded_plan is None:
+        plan_bytes = plan.canonical_bytes()
+        encoded_plan = plan_bytes, hashlib.sha256(plan_bytes).hexdigest()
+    plan_bytes, plan_hash = encoded_plan
     connection.execute(insert(audit).values(
         apply_id=apply_id,
         contract_id=APPLY_CONTRACT,
@@ -802,8 +809,8 @@ def _apply_plan_on_connection(
         source_kind=submission.source_kind,
         source_hash=submission.source_hash,
         frontend_contract=submission.frontend_contract,
-        plan_hash=plan.sha256(),
-        canonical_plan_json=plan.canonical_json(),
+        plan_hash=plan_hash,
+        canonical_plan_json=plan_bytes.decode("utf-8"),
         actor=actor,
         status="succeeded",
         dolt_branch=dolt_branch,
@@ -837,7 +844,7 @@ def _apply_plan_on_connection(
         "source_kind": submission.source_kind,
         "source_hash": submission.source_hash,
         "frontend_contract": submission.frontend_contract,
-        "plan_hash": plan.sha256(),
+        "plan_hash": plan_hash,
         "dolt_branch": dolt_branch,
         "dolt_head_before": dolt_head,
         "dolt_head_after": dolt_head,
@@ -978,6 +985,7 @@ def _run_in_place_submission(
     dataset_id: str,
     actor: str,
     prepare: Callable[[Any, str], InPlacePlanSubmission],
+    encoded_plan: tuple[bytes, str] | None = None,
     expected_branch: str | None = None,
     expected_head: str | None = None,
     dolt_conformance_source: DoltConformanceSource | None = None,
@@ -1062,6 +1070,7 @@ def _run_in_place_submission(
                     dolt_branch=branch,
                     dolt_head=head,
                     mutation_journal=journal,
+                    encoded_plan=encoded_plan,
                 )
                 if profile.name == "dolt":
                     after_branch, after_head, dirty_after = _dolt_state(connection)
@@ -1116,7 +1125,8 @@ def apply_transformation_plan_in_place(
         if isinstance(plan, TransformationPlan)
         else transformation_plan_from_dict(plan)
     )
-    plan_hash = normalized.sha256()
+    plan_bytes = normalized.canonical_bytes()
+    plan_hash = hashlib.sha256(plan_bytes).hexdigest()
     submission = InPlacePlanSubmission(
         plan=normalized,
         source_kind="canonical_plan",
@@ -1127,6 +1137,7 @@ def apply_transformation_plan_in_place(
         dataset_id=dataset_id,
         actor=actor,
         prepare=lambda _connection, _dataset_id: submission,
+        encoded_plan=(plan_bytes, plan_hash),
         expected_branch=expected_branch,
         expected_head=expected_head,
         dolt_conformance_source=dolt_conformance_source,

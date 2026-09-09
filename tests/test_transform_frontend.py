@@ -14,7 +14,10 @@ from openstatspec.frontends.spss import (
     spss_source_hash,
 )
 from openstatspec.transform import (
+    AssignOperation,
     CreateVariableOperation,
+    ExecuteOperation,
+    Operand,
     DeleteVariableOperation,
     RecodeMatch,
     RecodeOperation,
@@ -678,6 +681,112 @@ def test_recode_copy_preserves_source_declared_width() -> None:
 
     bound = _compile("RECODE note ('yes' = COPY).", schema)
     assert bound.output_schema == schema
+
+
+@pytest.mark.parametrize("workload", ["execute", "labels"])
+def test_generic_binding_10k_has_linear_bookkeeping(workload) -> None:
+    size = 10_000
+    budget = 10 * (size + size)
+    probes = 0
+
+    class Name(str):
+        def casefold(self):
+            nonlocal probes
+            probes += 1
+            assert probes <= budget, f"variable-name casefold probes: {probes} > {budget}"
+            return super().casefold()
+
+    class Operations(tuple):
+        def __getitem__(self, key):
+            nonlocal probes
+            if isinstance(key, slice):
+                probes += len(range(*key.indices(len(self))))
+                assert probes <= budget, f"operation suffix entries: {probes} > {budget}"
+            return super().__getitem__(key)
+
+    schema = _schema(*(VariableDefinition(Name(f"V{i}"), "numeric") for i in range(size)))
+    operations = (
+        Operations((ExecuteOperation(),) * size) if workload == "execute"
+        else tuple(SetVariableLabelOperation(f"v{i}", "L") for i in range(size))
+    )
+    plan = TransformationPlan(operations)
+    probes = 0  # Count only the public bind, not input construction.
+    bound = bind_transformation_plan(plan, schema)
+    assert bound.plan == plan
+    assert bound.output_schema == _schema(*(
+        VariableDefinition(f"V{i}", "numeric", variable_label="L" if workload == "labels" else None)
+        for i in range(size)
+    ))
+
+
+@pytest.mark.parametrize("create", [
+    CreateVariableOperation("replacement", "numeric"),
+    AssignOperation("replacement", "create", Operand("literal", value=TypedValue.binary64(1))),
+], ids=["explicit", "assign"])
+def test_generic_distant_create_preserves_first_error_and_empty_schema_exception(create) -> None:
+    schema = _schema(VariableDefinition("Only", "numeric"))
+    prefix = (DeleteVariableOperation("oNLY"),) + (ExecuteOperation(),) * 100
+    plan = TransformationPlan(prefix + (create,), contract="openstatspec-transformation-plan-v0.3")
+    assert bind_transformation_plan(plan, schema).output_schema == _schema(
+        VariableDefinition("replacement", "numeric"),
+    )
+    plan = TransformationPlan(
+        prefix + (create, SetVariableLabelOperation("missing", "L"), create),
+        contract=plan.contract,
+    )
+    with pytest.raises(TransformationFrontendError) as caught:
+        bind_transformation_plan(plan, schema)
+    assert caught.value.as_dict() == {
+        "code": "unknown_variable",
+        "detail": "Variable 'missing' is not present in the current schema.",
+        "details": {"variable": "missing"},
+    }
+
+
+@pytest.mark.parametrize("later", [(), (RecodeOperation(
+    source="missing", target="replacement", target_mode="create",
+    rules=(RecodeRule(RecodeMatch("values", (TypedValue.binary64(1),)),
+                      RecodeResult("literal", TypedValue.binary64(0))),),
+    unmatched=RecodeResult("copy"),
+),)], ids=["no-create", "recode-create"])
+def test_generic_last_delete_precedes_later_lookup_error(later) -> None:
+    plan = TransformationPlan(
+        (DeleteVariableOperation("oNLY"), SetVariableLabelOperation("missing", "L"))
+        + (ExecuteOperation(),) * 100 + later,
+        contract="openstatspec-transformation-plan-v0.3",
+    )
+    with pytest.raises(TransformationFrontendError) as caught:
+        bind_transformation_plan(plan, _schema(VariableDefinition("Only", "numeric")))
+    assert caught.value.as_dict() == {
+        "code": "cannot_delete_last_variable",
+        "detail": "A dataset must retain at least one variable.",
+        "details": {"variable": "Only"},
+    }
+
+
+def test_generic_delete_recreate_appends_with_new_spelling_and_metadata() -> None:
+    plan = TransformationPlan((
+        DeleteVariableOperation("oNLY"),
+        CreateVariableOperation("ONLY", "string", 3),
+        SetVariableLabelOperation("only", "New"),
+    ), contract="openstatspec-transformation-plan-v0.3")
+    bound = bind_transformation_plan(plan, _schema(
+        VariableDefinition("Only", "numeric", variable_label="Old"),
+        VariableDefinition("Keep", "numeric"),
+    ))
+    assert bound.output_schema == _schema(
+        VariableDefinition("Keep", "numeric"),
+        VariableDefinition("ONLY", "string", variable_label="New", declared_string_width=3),
+    )
+
+
+def test_literal_unicode_canonical_plan_vector() -> None:
+    plan = TransformationPlan((SetVariableLabelOperation("Only", "Täpselt"),), input_alias="survey")
+    assert plan.canonical_bytes() == (
+        '{"contract":"openstatspec-transformation-plan-v0.2","input_alias":"survey",'
+        '"operations":[{"label":"Täpselt","op":"set_variable_label","variable":"Only"}]}'
+    ).encode("utf-8")
+    assert plan.sha256() == "2ab3bf3c6dd2c21ce0fed076d43c49d93b6cc38e3e38529a18b7563286af9e03"
 
 
 def test_generic_plan_binding_validates_sequential_schema_state() -> None:

@@ -40,20 +40,16 @@ def _expected_type(storage_kind: StorageKind) -> ValueType:
 
 
 def _resolve(
-    variables: list[VariableDefinition], name: str
-) -> tuple[int, VariableDefinition]:
-    matches = [
-        (index, variable)
-        for index, variable in enumerate(variables)
-        if variable.name.casefold() == name.casefold()
-    ]
-    if len(matches) != 1:
+    variables: dict[str, VariableDefinition], name: str
+) -> tuple[str, VariableDefinition]:
+    key = name.casefold()
+    if key not in variables:
         raise frontend_error(
             "unknown_variable",
             f"Variable {name!r} is not present in the current schema.",
             variable=name,
         )
-    return matches[0]
+    return key, variables[key]
 
 
 def _validate_match(match: RecodeMatch, source: VariableDefinition) -> None:
@@ -133,7 +129,7 @@ def _validate_recode_string_width(
 
 
 def _bind_recode(
-    operation: RecodeOperation, variables: list[VariableDefinition]
+    operation: RecodeOperation, variables: dict[str, VariableDefinition]
 ) -> None:
     _, source = _resolve(variables, operation.source)
     if operation.target_mode == "create":
@@ -143,10 +139,8 @@ def _bind_recode(
                 f"Target name {operation.target!r} is reserved.",
                 target=operation.target,
             )
-        if any(
-            variable.name.casefold() == operation.target.casefold()
-            for variable in variables
-        ):
+        target_key = operation.target.casefold()
+        if target_key in variables:
             raise frontend_error(
                 "target_already_exists",
                 f"Target name {operation.target!r} already exists.",
@@ -183,16 +177,14 @@ def _bind_recode(
             variable=source.name,
         )
     if operation.target_mode == "create":
-        variables.append(
-            VariableDefinition(
-                operation.target,
-                "numeric" if output_type == "binary64" else "string",
-            )
+        variables[target_key] = VariableDefinition(
+            operation.target,
+            "numeric" if output_type == "binary64" else "string",
         )
 
 
 def _operand_type(
-    operand: Operand, variables: list[VariableDefinition]
+    operand: Operand, variables: dict[str, VariableDefinition]
 ) -> ValueType:
     if operand.kind == "literal":
         assert operand.value is not None
@@ -204,7 +196,7 @@ def _operand_type(
 
 def _validate_predicate(
     predicate: ComparisonExpression | BooleanExpression,
-    variables: list[VariableDefinition],
+    variables: dict[str, VariableDefinition],
 ) -> None:
     if isinstance(predicate, BooleanExpression):
         for item in predicate.operands:
@@ -236,7 +228,7 @@ def _validate_predicate(
 
 
 def _bind_assign(
-    operation: AssignOperation, variables: list[VariableDefinition]
+    operation: AssignOperation, variables: dict[str, VariableDefinition]
 ) -> None:
     output_type = _operand_type(operation.value, variables)
     if output_type == "string":
@@ -253,19 +245,17 @@ def _bind_assign(
                 f"Target name {operation.target!r} is reserved.",
                 target=operation.target,
             )
-        if any(
-            variable.name.casefold() == operation.target.casefold()
-            for variable in variables
-        ):
+        target_key = operation.target.casefold()
+        if target_key in variables:
             raise frontend_error(
                 "target_already_exists",
                 f"Target name {operation.target!r} already exists.",
                 target=operation.target,
             )
-        variables.append(VariableDefinition(
+        variables[target_key] = VariableDefinition(
             operation.target,
             "numeric" if output_type == "binary64" else "string",
-        ))
+        )
         return
     _, target = _resolve(variables, operation.target)
     if target.storage_kind == "string":
@@ -284,7 +274,7 @@ def _bind_assign(
 
 def _bind_conditional_assign(
     operation: ConditionalAssignOperation,
-    variables: list[VariableDefinition],
+    variables: dict[str, VariableDefinition],
 ) -> None:
     _validate_predicate(operation.condition, variables)
     _, target = _resolve(variables, operation.target)
@@ -328,17 +318,17 @@ def bind_transformation_plan(
         raise TypeError("plan must be a TransformationPlan.")
     if not isinstance(schema, VariableSchema):
         raise TypeError("schema must be a VariableSchema.")
-    variables = list(schema.variables)
+    variables = {variable.name.casefold(): variable for variable in schema.variables}
+    last_create = max(
+        (index for index, operation in enumerate(plan.operations) if _creates_variable(operation)),
+        default=-1,
+    )
     for operation_index, operation in enumerate(plan.operations):
-        later_create = any(
-            _creates_variable(later_operation)
-            for later_operation in plan.operations[operation_index + 1:]
-        )
         if isinstance(operation, CreateVariableOperation):
             _bind_create(operation, variables)
             continue
         if isinstance(operation, DeleteVariableOperation):
-            _bind_delete(operation, variables, allow_empty=later_create)
+            _bind_delete(operation, variables, allow_empty=operation_index < last_create)
             continue
         if isinstance(operation, RecodeOperation):
             _bind_recode(operation, variables)
@@ -397,27 +387,28 @@ def bind_transformation_plan(
         if isinstance(operation, ExecuteOperation):
             continue
         raise AssertionError(f"Unknown plan operation: {type(operation)!r}")
-    return BoundTransformation(plan, VariableSchema(tuple(variables)))
+    return BoundTransformation(plan, VariableSchema(tuple(variables.values())))
 def _bind_create(
     operation: CreateVariableOperation,
-    variables: list[VariableDefinition],
+    variables: dict[str, VariableDefinition],
 ) -> None:
-    if any(variable.name.casefold() == operation.variable.casefold() for variable in variables):
+    key = operation.variable.casefold()
+    if key in variables:
         raise frontend_error(
             "target_already_exists",
             f"Target name {operation.variable!r} already exists.",
             target=operation.variable,
         )
-    variables.append(VariableDefinition(
+    variables[key] = VariableDefinition(
         operation.variable,
         operation.storage_kind,
         declared_string_width=operation.declared_string_width,
-    ))
+    )
 
 
 def _bind_delete(
     operation: DeleteVariableOperation,
-    variables: list[VariableDefinition],
+    variables: dict[str, VariableDefinition],
     *,
     allow_empty: bool,
 ) -> None:
