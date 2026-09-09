@@ -1104,10 +1104,9 @@ def _read_wide_dataset(
         for row, variable in zip(source_variables, variables, strict=True)
     }
     variable_ids = tuple(variables_by_id)
-    rows = [dict(row) for row in connection.execute(
+    rows = _canonicalize_database_numeric_rows(connection.execute(
         select(data_table).order_by(data_table.c.__case_ordinal)
-    ).mappings()]
-    rows = _canonicalize_database_numeric_rows(rows, variables)
+    ).mappings(), variables)
     documents = connection.execute(
         select(normative.document)
         .where(normative.document.c.dataset_id == core_id)
