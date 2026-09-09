@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import Dialect, Engine
 from sqlalchemy.exc import IntegrityError
 
 import openstatspec
@@ -87,6 +89,228 @@ def catalog(tmp_path):
         "SELECT dataset_id, physical_table_name FROM dataset"
     ).fetchone()
     return url, path, dataset_id, table_name
+
+
+@pytest.fixture
+def label_catalog(catalog):
+    url, path, dataset_id, _table_name = catalog
+    openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id, actor="test-setup",
+        source_text=(
+            "COMPUTE other = score. STRING note (A4). "
+            "FORMATS other (F8.0). VARIABLE LEVEL other (SCALE). "
+            "VALUE LABELS score 2 'Two' 1 'One'. VALUE LABELS note 'x' 'Text'."
+        ),
+    )
+    create_wide_dataset(
+        database_url=url, dataset_id="sibling", source_name="sibling.sav",
+        source_format="SAV", source_sha256="e" * 64,
+        rows=[{"score": n, "bulk": n} for n in (1.0, 2.0, 3.0)],
+        variables=[_variables()[0], {
+            **_variables()[0], "ordinal": 2, "source_name": "bulk", "physical_name": "bulk",
+            "value_labels": '{"9": "Unrelated"}',
+        }],
+    )
+    with sqlite3.connect(path) as connection:
+        shared_set = connection.execute(
+            "SELECT value_label_set_id FROM variable_value_label_set "
+            "JOIN variable USING (variable_id) WHERE dataset_id = ? "
+            "AND source_name = 'score'", (dataset_id,),
+        ).fetchone()[0]
+        sibling_id, _bulk_variable, bulk_set = connection.execute(
+            "SELECT dataset_id, variable_id, value_label_set_id FROM variable "
+            "JOIN variable_value_label_set USING (variable_id) WHERE dataset_id != ?",
+            (dataset_id,),
+        ).fetchone()
+        sibling_variable = connection.execute(
+            "SELECT variable_id FROM variable WHERE dataset_id = ? AND source_name = 'score'",
+            (sibling_id,),
+        ).fetchone()[0]
+        other_id = connection.execute(
+            "SELECT variable_id FROM variable WHERE dataset_id = ? AND source_name = 'other'",
+            (dataset_id,),
+        ).fetchone()[0]
+        connection.execute(
+            "UPDATE value_label_set SET dataset_id = ? WHERE value_label_set_id = ?",
+            (sibling_id, shared_set),
+        )
+        connection.executemany(
+            "INSERT INTO variable_value_label_set VALUES (?, ?)",
+            [(other_id, shared_set), (sibling_variable, shared_set)],
+        )
+    return catalog, shared_set, bulk_set
+
+
+@contextmanager
+def _count_sqlite_reads():
+    # Count only rows actually fetched by the consumer, not SELECT rowcount or
+    # an event-side drain. Connection-setup reads without a SQL event are excluded.
+    counts = {"statements": 0, "rows": 0, "labels": 0}
+
+    class Cursor(sqlite3.Cursor):
+        counted = False
+
+        def record(self, rows):
+            if self.counted:
+                counts["rows"] += len(rows)
+                columns = {column[0] for column in self.description or ()}
+                if {"variable_id", "code_kind", "numeric_code", "string_code", "label"} <= columns:
+                    counts["labels"] += len(rows)
+            return rows
+
+        def fetchone(self):
+            row = super().fetchone()
+            self.record([] if row is None else [row])
+            return row
+
+        def fetchmany(self, size=None):
+            return self.record(super().fetchmany() if size is None else super().fetchmany(size))
+
+        def fetchall(self):
+            return self.record(super().fetchall())
+
+    class Connection(sqlite3.Connection):
+        def cursor(self, *args, **kwargs):
+            return super().cursor(*args, **{**kwargs, "factory": Cursor})
+
+    def connect(dialect, _record, _args, kwargs):
+        if dialect.name == "sqlite":
+            kwargs["factory"] = Connection
+
+    def before(_connection, cursor, _statement, _parameters, _context, _many):
+        counts["statements"] += 1
+        cursor.counted = True
+
+    event.listen(Dialect, "do_connect", connect)
+    event.listen(Engine, "before_cursor_execute", before)
+    try:
+        yield counts
+    finally:
+        event.remove(Engine, "before_cursor_execute", before)
+        event.remove(Dialect, "do_connect", connect)
+
+
+def _label_surface(catalog, surface, *, unknown=False):
+    url, _path, dataset_id, _table_name = catalog
+    if surface == "loader":
+        engine = create_engine(url)
+        try:
+            with engine.connect() as connection:
+                return inplace_transform.load_transformation_schema(connection, dataset_id)
+        finally:
+            engine.dispose()
+    syntax = (
+        "VARIABLE LABELS missing 'Must fail'." if unknown else
+        "RECODE score (1 = 7). VARIABLE LABELS score 'Changed'."
+    )
+    if surface == "spss":
+        return openstatspec.apply_spss_in_place(
+            database_url=url, dataset_id=dataset_id, actor="test-agent", source_text=syntax,
+        )
+    plan = (openstatspec.TransformationPlan((
+        openstatspec.SetVariableLabelOperation("missing", "Must fail"),
+    )) if unknown else _plan(syntax))
+    return openstatspec.apply_transformation_plan_in_place(
+        database_url=url, dataset_id=dataset_id, actor="test-agent", plan=plan,
+    )
+
+
+@pytest.mark.parametrize("surface", ["loader", "canonical", "spss"])
+def test_transformation_label_reads_are_dataset_scoped(label_catalog, surface):
+    catalog, _shared_set, bulk_set = label_catalog
+    url, path, dataset_id, table_name = catalog
+    numeric_labels = tuple(
+        openstatspec.ValueLabel(openstatspec.TypedValue.binary64(code), label)
+        for code, label in [(2, "Two"), (1, "One")]
+    )
+    expected = openstatspec.VariableSchema((
+        openstatspec.VariableDefinition(
+            "score", "numeric", variable_label="Score", value_labels=numeric_labels,
+            format_family="F", format_width=8, format_decimals=0, measurement_level="scale",
+        ),
+        openstatspec.VariableDefinition(
+            "other", "numeric", value_labels=numeric_labels,
+            format_family="F", format_width=8, format_decimals=0, measurement_level="scale",
+        ),
+        openstatspec.VariableDefinition(
+            "note", "string", declared_string_width=4,
+            value_labels=(openstatspec.ValueLabel(openstatspec.TypedValue.string("x"), "Text"),),
+        ),
+    ))
+    measurements = []
+    validations = []
+    for size in (0, 3, 40):
+        with sqlite3.connect(path) as connection:
+            connection.execute("DELETE FROM value_label WHERE value_label_set_id = ?", (bulk_set,))
+            connection.executemany(
+                "INSERT INTO value_label (value_label_id, value_label_set_id, ordinal, code_kind, numeric_code, label) "
+                "VALUES (?, ?, ?, 'numeric', ?, ?)",
+                [(f"bulk-{n}", bulk_set, n + 1, n, f"Unrelated {n}") for n in range(size)],
+            )
+        with _count_sqlite_reads() as counts:
+            result = _label_surface(catalog, surface)
+        measurements.append(dict(counts))
+        if surface == "loader":
+            assert result == expected
+        else:
+            assert (result["dataset_id"], result["physical_table_name"]) == (dataset_id, table_name)
+            assert _label_surface(catalog, "loader") == replace(
+                expected, variables=(replace(expected.variables[0], variable_label="Changed"), *expected.variables[1:]),
+            )
+            with sqlite3.connect(path) as connection:
+                assert connection.execute(
+                    f'SELECT __case_ordinal, score, other, note FROM "{table_name}" ORDER BY __case_ordinal'
+                ).fetchall() == [(1, 7.0, 1.0, ""), (2, 2.0, 2.0, ""), (3, 3.0, 3.0, "")]
+                assert connection.execute(
+                    "SELECT status, actor, source_kind, plan_hash, source_hash FROM transformation_apply "
+                    "WHERE apply_id = ?", (result["apply_id"],),
+                ).fetchone() == (
+                    "succeeded", "test-agent", result["source_kind"], result["plan_hash"], result["source_hash"],
+                )
+        validations.append(openstatspec.validate(database_url=url, dataset_id=dataset_id))
+    assert validations[0]["valid"] is True
+    assert validations == [validations[0]] * 3
+    print(surface, measurements)
+    assert [m["labels"] for m in measurements] == [10 if surface == "spss" else 5] * 3
+    assert measurements == [measurements[0]] * 3
+    if surface == "loader":
+        assert measurements[0] == {"statements": 3, "rows": 9, "labels": 5}
+
+
+@pytest.mark.parametrize("surface", ["loader", "canonical", "spss"])
+@pytest.mark.parametrize("target_linked", [False, True], ids=["unrelated", "target-linked"])
+def test_transformation_malformed_label_isolation(label_catalog, surface, target_linked):
+    catalog, shared_set, bulk_set = label_catalog
+    _url, path, _dataset_id, _table_name = catalog
+    # Capture the ordinary binding diagnostic before introducing the numeric NULL.
+    baseline = None
+    if surface == "loader":
+        baseline = _label_surface(catalog, surface)
+    else:
+        with pytest.raises(openstatspec.TransformationFrontendError) as caught:
+            _label_surface(catalog, surface, unknown=True)
+        baseline = caught.value
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE value_label SET numeric_code = NULL WHERE value_label_set_id = ? AND ordinal = 1",
+            (shared_set if target_linked else bulk_set,),
+        )
+        before = tuple(connection.iterdump())
+    try:
+        if target_linked:
+            with pytest.raises(TypeError) as caught:
+                _label_surface(catalog, surface, unknown=True)
+            assert str(caught.value) == "float() argument must be a string or a real number, not 'NoneType'"
+        elif surface == "loader":
+            assert _label_surface(catalog, surface) == baseline
+        else:
+            with pytest.raises(openstatspec.TransformationFrontendError) as caught:
+                _label_surface(catalog, surface, unknown=True)
+            assert str(caught.value) == str(baseline)
+            assert vars(caught.value) == vars(baseline)
+    finally:
+        with sqlite3.connect(path) as connection:
+            assert tuple(connection.iterdump()) == before
 
 
 def _publish_score(catalog):
