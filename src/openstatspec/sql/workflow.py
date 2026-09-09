@@ -1218,7 +1218,7 @@ def _relation_snapshot_hash(
         encoded = [typed(row[0], "integer")]
         encoded.extend(
             typed(value, variable["storage_kind"])
-            for value, variable in zip(tuple(row)[1:], variables)
+            for value, variable in zip(row[1:], variables)
         )
         if not first:
             digest.update(b",")
