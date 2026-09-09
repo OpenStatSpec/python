@@ -179,8 +179,12 @@ def _input_schema(
                 core.value_label,
                 core.variable_value_label_set.c.value_label_set_id
                 == core.value_label.c.value_label_set_id,
+            ).join(
+                core.variable,
+                core.variable_value_label_set.c.variable_id
+                == core.variable.c.variable_id,
             )
-        ).order_by(
+        ).where(core.variable.c.dataset_id == dataset_id).order_by(
             core.variable_value_label_set.c.variable_id,
             core.value_label.c.ordinal,
         )
