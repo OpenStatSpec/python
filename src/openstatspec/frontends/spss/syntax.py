@@ -31,6 +31,7 @@ class VariableRangeSyntax:
     first: Token
     last: Token
     span: SourceSpan
+    continuations: tuple[Token, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -273,9 +274,7 @@ def tokenize_spss(source: str, *, official_v03: bool = False) -> tuple[Token, ..
             offset = end + 2
             continue
         boundary = not tokens or tokens[-1].kind == "period"
-        if official_v03 and boundary and (
-            character == "*" or re.match(r"COMMENT\b", source[offset:], re.IGNORECASE | re.ASCII)
-        ):
+        if official_v03 and boundary and character == "*":
             end = source.find(".", offset)
             if end < 0:
                 raise frontend_error("spss_syntax_error", "Expected '.' after comment.", span=_span(source, offset, len(source)))
@@ -346,6 +345,12 @@ def tokenize_spss(source: str, *, official_v03: bool = False) -> tuple[Token, ..
                     continue
                 break
             text = source[start:offset]
+            if official_v03 and boundary and text.isascii() and text.casefold() == "comment":
+                end = source.find(".", offset)
+                if end < 0:
+                    raise frontend_error("spss_syntax_error", "Expected '.' after comment.", span=_span(source, start, len(source)))
+                offset = end + 1
+                continue
             if text.casefold() in {"nan", "infinity"}:
                 raise frontend_error(
                     "spss_syntax_error",
@@ -432,12 +437,16 @@ class _Parser:
     def variable_list(self, *, stop_kinds: frozenset[str]) -> tuple[Token | VariableRangeSyntax, ...]:
         variables: list[Token | VariableRangeSyntax] = []
         while self.current.kind not in stop_kinds:
-            if self.accepts("comma") is not None:
+            if not self.official_v03 and self.accepts("comma") is not None:
                 continue
             first = self.expects("identifier", "Expected a variable name.")
             if self.official_v03 and self.accepts_keyword("TO") is not None:
                 last = self.expects("identifier", "Expected a TO endpoint.")
-                variables.append(VariableRangeSyntax(first, last, _joined_span(first.span, last.span)))
+                continuations = []
+                while self.accepts_keyword("TO") is not None:
+                    continuations.append(self.expects("identifier", "Expected a TO endpoint."))
+                end = continuations[-1] if continuations else last
+                variables.append(VariableRangeSyntax(first, last, _joined_span(first.span, end.span), tuple(continuations)))
             else:
                 variables.append(first)
         if not variables:
@@ -553,7 +562,8 @@ class _Parser:
     def formats(self, start: Token) -> FormatsCommandSyntax:
         assignments: list[FormatAssignmentSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
+            if assignments or not self.official_v03:
+                self.accepts("slash")
             variables = (
                 self.variable_list(stop_kinds=frozenset({"left_paren", "period", "eof", "slash"}))
                 if self.official_v03 else
@@ -580,7 +590,8 @@ class _Parser:
         self.expects_keyword("LEVEL")
         assignments: list[VariableLevelAssignmentSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
+            if assignments or not self.official_v03:
+                self.accepts("slash")
             variables = self.variable_list(
                 stop_kinds=frozenset({"left_paren", "period", "eof", "slash"}),
             )
@@ -702,9 +713,12 @@ class _Parser:
                     raise frontend_error("spss_syntax_error", "LOWEST requires THRU.", span=first.span)
                 values = [first]
                 while self.current.kind != "equals":
-                    self.accepts("comma")
-                    if self.current.kind == "equals":
-                        break
+                    if self.official_v03:
+                        self.expects("comma", "Expected ',' between RECODE selectors.")
+                    else:
+                        self.accepts("comma")
+                        if self.current.kind == "equals":
+                            break
                     values.append(self.literal())
                 match = RecodeMatchSyntax(
                     "values", _joined_span(values[0].span, values[-1].span),
@@ -751,7 +765,7 @@ class _Parser:
                     "RECODE INTO requires one target for every source variable.",
                     span=_joined_span(targets[0].span, targets[-1].span),
                 )
-        end = self.current if self.official_v03 and self.current.kind == "slash" else self.expects("period", "Expected '.' after RECODE.")
+        end = self.current if self.official_v03 and self.current.kind in {"slash", "period"} else self.expects("period", "Expected '.' after RECODE.")
         return RecodeCommandSyntax(
             sources, tuple(clauses), targets, _joined_span(start.span, end.span),
         )
@@ -760,7 +774,8 @@ class _Parser:
         self.expects_keyword("LABELS")
         assignments: list[VariableLabelSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
+            if assignments or not self.official_v03:
+                self.accepts("slash")
             variables = (
                 self.variable_list(stop_kinds=frozenset({"string", "period", "eof", "slash"}))
                 if self.official_v03 else
@@ -784,7 +799,8 @@ class _Parser:
         self.expects_keyword("LABELS")
         groups: list[ValueLabelsGroupSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
+            if groups or not self.official_v03:
+                self.accepts("slash")
             group_start = self.current
             variables = self.variable_list(
                 stop_kinds=frozenset({"number", "string", "period", "slash", "eof"})
@@ -823,6 +839,8 @@ class _Parser:
                 commands.append(self.recode(start))
                 while self.official_v03 and self.accepts("slash") is not None:
                     commands.append(self.recode(self.current))
+                if self.official_v03:
+                    self.expects("period", "Expected '.' after RECODE.")
             elif command == "compute":
                 commands.append(self.compute(start))
             elif command == "if":

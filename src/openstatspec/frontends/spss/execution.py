@@ -27,7 +27,7 @@ def apply_spss_in_place(
     """Compile SPSS syntax and apply its canonical plan in one transaction."""
 
     def prepare(connection: Any, live_dataset_id: str) -> InPlacePlanSubmission:
-        schema = load_transformation_schema(connection, live_dataset_id)
+        schema = load_transformation_schema(connection, live_dataset_id, lock_dataset=True)
         compilation = compile_spss_syntax(
             source_text,
             schema,

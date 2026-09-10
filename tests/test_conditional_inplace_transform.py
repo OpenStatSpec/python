@@ -119,6 +119,51 @@ def test_official_v03_apply_preserves_unknown_metadata_identity_and_provenance(c
             assert tuple(connection.iterdump()) == before_failure
 
 
+def test_live_add_labels_locks_before_schema_read(conditional_catalog, monkeypatch):
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    url, path, dataset_id, _ = conditional_catalog
+    order = []
+    locked_connection = None
+    original_apply = inplace_transform._apply_plan_on_connection
+
+    def observe_lock(connection, clause, *args):
+        nonlocal locked_connection
+        if getattr(clause, "_for_update_arg", None) is not None:
+            assert connection.in_transaction()
+            locked_connection = connection
+            order.append("lock")
+        if getattr(clause, "is_select", False) and any(
+            getattr(table, "name", None) == "variable" for table in clause.get_final_froms()
+        ):
+            assert locked_connection is connection, "schema read before dataset lock"
+            order.append("read")
+
+    def apply(connection, **kwargs):
+        assert locked_connection is connection
+        assert connection.in_transaction()
+        order.append("execute")
+        return original_apply(connection, **kwargs)
+
+    monkeypatch.setattr(inplace_transform, "_apply_plan_on_connection", apply)
+    event.listen(Engine, "before_execute", observe_lock)
+    try:
+        for code, label in ((1, "One"), (2, "Two")):
+            order.clear()
+            locked_connection = None
+            openstatspec.apply_spss_in_place(
+                database_url=url, dataset_id=dataset_id,
+                source_text=f"ADD VALUE LABELS source_a {code} '{label}'.",
+                actor="lock-test", frontend_contract="openstatspec-spss-syntax-frontend-v0.3",
+            )
+            assert order.index("lock") < order.index("read") < order.index("execute")
+    finally:
+        event.remove(Engine, "before_execute", observe_lock)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT numeric_code, label FROM value_label ORDER BY ordinal").fetchall() == [(1, "One"), (2, "Two")]
+
+
 def test_exact_bounded_program_compiles_to_stable_v02_plan() -> None:
     schema = openstatspec.VariableSchema((
         openstatspec.VariableDefinition("source_a", "numeric"),

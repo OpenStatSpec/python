@@ -908,9 +908,11 @@ def install_in_place_transformation_schema(
         engine.dispose()
 
 
-def load_transformation_schema(connection: Any, dataset_id: str) -> VariableSchema:
-    """Read the live canonical variable schema within the caller's transaction."""
-    return _input_schema(connection, dataset_id)[2]
+def load_transformation_schema(
+    connection: Any, dataset_id: str, *, lock_dataset: bool = False,
+) -> VariableSchema:
+    """Read the live schema, optionally locking its dataset until transaction end."""
+    return _input_schema(connection, dataset_id, lock_dataset=lock_dataset)[2]
 
 
 def _compensate_failed_apply(

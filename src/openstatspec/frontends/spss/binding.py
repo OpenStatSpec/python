@@ -352,9 +352,12 @@ def _expand_variables(
     for token in tokens:
         if isinstance(token, VariableRangeSyntax):
             first, _ = _resolve(variables, token.first.text, token.first.span)
-            last, _ = _resolve(variables, token.last.text, token.last.span)
-            if first > last:
-                raise frontend_error("invalid_variable_range", "TO endpoints are reversed in dictionary order.", span=token.span)
+            last = first
+            for endpoint in (token.last, *token.continuations):
+                next_index, _ = _resolve(variables, endpoint.text, endpoint.span)
+                if last > next_index:
+                    raise frontend_error("invalid_variable_range", "TO endpoints are reversed in dictionary order.", span=token.span)
+                last = next_index
             expanded.extend(Token("identifier", v.name, v.name, token.span) for v in variables[first:last + 1])
         else:
             _resolve(variables, token.text, token.span)

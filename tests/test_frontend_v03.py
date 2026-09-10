@@ -159,6 +159,21 @@ def test_official_expansion_does_not_change_default_rejections(source):
 
 
 @pytest.mark.parametrize("source,code", [
+    ("RECODE a (01=9).", "spss_syntax_error"),
+    ("RECODE a (1-2=9).", "spss_syntax_error"),
+    ("RECODE a (1 2=9).", "spss_syntax_error"),
+    ("RECODE a (1,=9).", "spss_syntax_error"),
+    ("RECODE a (1=2). / b (1=3).", "spss_syntax_error"),
+    ("COMMENT$bogus. EXECUTE.", "unsupported_spss_command"),
+    ("COMMENTé. EXECUTE.", "unsupported_spss_command"),
+    ("COMMENT.foo. EXECUTE.", "unsupported_spss_command"),
+    ("FORMATS ,a,,b, (F8.0).", "spss_syntax_error"),
+    ("ADD VALUE LABELS / a 1 'One'.", "spss_syntax_error"),
+    ("VALUE LABELS / a 1 'One'.", "spss_syntax_error"),
+    ("FORMATS / a (F8.0).", "spss_syntax_error"),
+    ("VARIABLE LABELS / a 'One'.", "spss_syntax_error"),
+    ("VARIABLE LEVEL / a (NOMINAL).", "spss_syntax_error"),
+    ("FORMATS a TO c TO b (F8.0).", "invalid_variable_range"),
     ("/* outer /* inner */ */ EXECUTE.", "spss_syntax_error"),
     ("COMPUTE a = 1 * not a comment.", "spss_syntax_error"),
     ("COMMENT unterminated", "spss_syntax_error"),
@@ -178,6 +193,14 @@ def test_official_source_boundary(source, code):
         openstatspec.compile_spss_request(_request(source))
     assert caught.value.code == code
     assert caught.value.span is not None
+
+
+@pytest.mark.parametrize("source,explicit", [
+    ("FORMATS a TO b TO c (F8.0).", "FORMATS a b c (F8.0)."),
+    ("RECODE a (1,-2=9).", "RECODE a (1, -2 = 9)."),
+])
+def test_official_selector_and_range_continuations(source, explicit):
+    assert compiler.compile_spss_request(_request(source)).plan == compiler.compile_spss_request(_request(explicit)).plan
 
 
 def test_request_metadata_uses_schema_fields_without_coercion_or_loss():
