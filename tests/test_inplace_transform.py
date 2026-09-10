@@ -1431,6 +1431,36 @@ def test_schema_install_forwards_explicit_dolt_conformance_source(
     assert captured == [sentinel]
 
 
+@pytest.mark.parametrize("profile_name", ["mysql", "mariadb", "dolt", "sqlite", "postgresql"])
+def test_in_place_isolation_uses_real_profile(monkeypatch, profile_name) -> None:
+    database_url = (
+        "sqlite://" if profile_name == "sqlite"
+        else "postgresql+psycopg://user@host/database" if profile_name == "postgresql"
+        else "mysql+pymysql://user@host/database"
+    )
+    monkeypatch.setattr(
+        inplace_transform, "effective_profile",
+        lambda _url, **_kwargs: (
+            SimpleNamespace(name=profile_name), {"server_version": "3.35.0"},
+        ),
+    )
+    captured = []
+
+    def capture_engine(url, **kwargs):
+        captured.append((url, kwargs.get("isolation_level")))
+        raise RuntimeError("stop at engine creation")
+
+    monkeypatch.setattr(inplace_transform, "create_engine", capture_engine)
+    with pytest.raises(RuntimeError, match="stop at engine creation"):
+        openstatspec.apply_transformation_plan_in_place(
+            database_url=database_url, dataset_id="synthetic",
+            plan=_plan("RECODE score (1 = 2)."), actor="test-agent",
+        )
+    assert captured == [(database_url, (
+        "READ COMMITTED" if profile_name in {"mysql", "mariadb"} else None
+    ))]
+
+
 def test_plan_apply_forwards_explicit_dolt_conformance_source(monkeypatch) -> None:
     sentinel = object()
     captured = []
