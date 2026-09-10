@@ -42,7 +42,7 @@ def test_cli_import_inspect_validate_and_export_emit_json(tmp_path, capsys) -> N
 
 def test_capability_matrix_is_public_and_cli_matches_engine_boundary(capsys) -> None:
     matrix = openstatspec.capability_matrix()
-    assert matrix["adapter_version"] == "0.8.1"
+    assert matrix["adapter_version"] == "0.9.0"
     assert matrix["database_io_policy"] == "openstatspec-database-io-v1"
     assert matrix["specification_status"] == "released"
     assert matrix["specification_release"] == "v0.5.0"

@@ -4,10 +4,11 @@ The reference Python implementation of the OpenStatSpec specification.
 
 This package implements the specification; it does not define or extend it.
 The normative model lives in the `OpenStatSpec/specification` repository.
-Python 0.8.1 pins released specification `v0.5.0` at
+Python 0.9.0 pins released specification `v0.5.0` at
 `864e84479f554b8ee250ffed44c4dfb963750d4a` and selects SAV/ZSAV 1.0 with
-`database_io_policy=openstatspec-database-io-v1`. This does not claim
-implementation of the optional Transformation Workflow 0.3 profile.
+`database_io_policy=openstatspec-database-io-v1`. It implements the explicitly
+selected optional official SPSS Frontend 0.3 over unchanged Plan 0.1/0.2, not
+the separate optional Transformation Workflow 0.3 profile.
 
 ## Boundaries
 
@@ -85,6 +86,15 @@ atomically on SQLite and PostgreSQL. MySQL, MariaDB, and Dolt fail closed on
 target before assignment. Dolt requires the caller's exact clean branch/HEAD,
 leaves success as an inspectable working-set diff, and never calls
 `DOLT_COMMIT`.
+
+Explicitly select official Frontend 0.3 with `compile_spss_request`, or pass
+`frontend_contract="openstatspec-spss-syntax-frontend-v0.3"` to the typed compiler
+or in-place API. Default APIs and the CLI retain their compatibility behavior;
+`STRING` and `DELETE VARIABLES` remain Python extensions, not official 0.3.
+New schema-changing output uses Python-owned IDs that older readers cannot load.
+Upgrade consumers first; legacy plans retain their canonical JSON and hashes,
+and stored audits are not migrated. Recompiling schema-changing syntax changes
+its plan hash. See [compatibility and migration](docs/transformations.md#contract-ownership-and-legacy-compatibility).
 
 See the [dataset transformations manual](docs/transformations.md) for schema
 installation, Python and CLI surfaces, database invariants, audit provenance,
