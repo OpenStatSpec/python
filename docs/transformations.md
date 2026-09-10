@@ -34,7 +34,7 @@ they are never treated as arbitrary SQL.
 
 Published OpenStatSpec `v0.5.0` defines Transformation Plan 0.1/0.2, not
 Plan 0.3. Its optional SPSS Frontend 0.3 is a syntax-only expansion emitting
-Plan 0.1/0.2; this adapter does **not** implement that frontend yet.
+Plan 0.1/0.2, implemented through the explicit official request boundary below.
 
 Explicit `create_variable` / `delete_variable` operations (including SPSS
 `STRING` / `DELETE VARIABLES`) belong to a **Python extension**, not official
@@ -46,7 +46,7 @@ OpenStatSpec conformance. New schema-changing compilations emit:
 The exported names `TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT` and
 `SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT` remain unchanged; their values now use
 these Python-owned identifiers. Plans without these explicit schema operations
-retain their existing Plan 0.1/0.2 selection and frontend identifier. Official
+retain their existing Plan 0.1/0.2 selection and default frontend identifier. Official
 Plan 0.1/0.2 still reject explicit create/delete operations.
 
 The loader and executor continue to accept the old Python plan identifier
@@ -63,6 +63,78 @@ recompiling schema-changing syntax now produces a new plan identity/hash even
 when its operations are identical. An intentional change of a saved plan's
 contract likewise creates a new artifact with a new hash, not an audit migration.
 Older adapter versions cannot load the new IDs.
+
+## Official Frontend 0.3
+
+Use `openstatspec.compile_spss_request(request)` for the official JSON request
+boundary. It accepts **only** `openstatspec-spss-syntax-frontend-v0.3`, with
+exact required fields `contract`, `input_alias`, `input_schema`, and
+`source_text`. Unknown fields, missing fields, wrong types, noncanonical or
+nonfinite typed codes, ambiguous variable names, and mismatched label types
+fail closed. Request-shape failures report `invalid_spss_request`; source
+failures retain the normative diagnostics. It returns no partial compilation.
+
+```python
+compilation = openstatspec.compile_spss_request({
+    "contract": "openstatspec-spss-syntax-frontend-v0.3",
+    "input_alias": "parent",
+    "input_schema": {"variables": [
+        {"name": "age", "storage_kind": "numeric"},
+    ]},
+    "source_text": "COMMENT finite ages. RECODE age (LOWEST THRU 17 = 0).",
+})
+```
+
+The ordered request dictionary accepts only `name`, `storage_kind`,
+`variable_label`, ordered typed `value_labels`, `format_family`, `width`,
+`decimals`, and `measurement_level`. In particular, `width`/`decimals` are
+request field names, not `format_width`/`format_decimals`. Descriptive input
+format metadata is preserved, including partial metadata and string formats;
+`FORMATS` operations still accept only bounded numeric F formats. Physical
+identifiers and Python `declared_string_width` are not request fields.
+
+The same parser/binder implements command-boundary star and `COMMENT`
+comments, non-nested block comments, dictionary-order inclusive `TO` ranges,
+grouped recodes/labels/formats/levels, finite `LOWEST`/`HIGHEST` RECODE bounds,
+`NE`/`<>`/`~=`, `NOT`, and `ADD VALUE LABELS`. `TO` cannot generate `INTO`
+targets. Additive labels update an existing typed code at its ordinal and
+append new codes in source order, using the preceding label state. Numeric
+zero has positive-zero identity; string codes retain exact contents.
+Comments remain in the LF-normalized source hash but emit no operation;
+comment-only input is invalid. Python `STRING` and `DELETE VARIABLES` are
+rejected under the official selector.
+
+**Explicit implementation decision:** precedence is standard SPSS order,
+comparisons → `NOT` → `AND` → `OR` (tightest first). Thus `NOT a = 1 AND
+b = 1` means `(NOT (a = 1)) AND b = 1`, not negation of the conjunction.
+Parentheses override precedence. Comparison complements and De Morgan lowering
+preserve SQL UNKNOWN, and maximal same-operator nodes flatten in source order.
+This decision has adapter regression tests; normative fixtures are unchanged.
+
+Programs using only Plan 0.1 operations retain their exact Plan 0.1 object;
+any Plan 0.2-only operation selects Plan 0.2. Both source and complete canonical
+plan hashes remain independent. Official compilations record the 0.3 frontend
+identifier regardless of output-plan version.
+
+For typed-schema or live-database callers, explicitly pass
+`frontend_contract="openstatspec-spss-syntax-frontend-v0.3"` to
+`compile_spss_syntax` or `apply_spss_in_place`. The latter compiles against the
+live schema within the existing transaction and records official frontend and
+source/plan provenance. JSON callers should use `compile_spss_request` rather
+than building a typed schema from untrusted fields. Omitting the selector
+retains all old support, rejection behavior, and Python extension selection;
+the existing CLI remains on that compatibility path.
+
+Evidence: `tests/test_frontend_v03.py` runs the 35 declared and all 90 effective
+cases from specification commit
+`864e84479f554b8ee250ffed44c4dfb963750d4a`, applying only the published inherited
+contract overrides and two comment supersessions. It checks exact Plan 0.1/0.2
+objects/hashes, source hashes, diagnostics, and declared output metadata.
+Local SQLite integration checks UNKNOWN, sequential data and metadata,
+identity, audit provenance, and absence of copy/history artifacts. Existing
+frontend, plan, and in-place suites remain in the gate. This is not new service
+execution evidence: MySQL/MariaDB/Dolt provisioning restrictions and caller-owned
+Dolt commits are unchanged.
 
 ## Install the audit schema
 

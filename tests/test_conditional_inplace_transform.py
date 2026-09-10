@@ -69,6 +69,56 @@ def conditional_catalog(tmp_path):
     return url, path, dataset_id, table_name
 
 
+def test_official_v03_apply_preserves_unknown_metadata_identity_and_provenance(conditional_catalog):
+    from sqlalchemy import create_engine
+
+    url, path, dataset_id, table_name = conditional_catalog
+    contract = "openstatspec-spss-syntax-frontend-v0.3"
+    source = ("COMMENT official frontend.\r\nCOMPUTE target = 0. "
+              "IF (NOT source_a = 1 AND source_b >= 1 OR source_b NE 2) target = 1. "
+              "IF (NOT (source_a = 1 OR source_b = 1)) target = 2. "
+              "RECODE source_a (LOWEST THRU HIGHEST = COPY). "
+              "VARIABLE LABELS target 'Official'. VALUE LABELS target 0 'No' 1 'Yes'. "
+              "ADD VALUE LABELS target 2 'Other' 1 'Updated'. "
+              "FORMATS source_a TO target (F8.0). VARIABLE LEVEL target (NOMINAL). EXECUTE.")
+    with sqlite3.connect(path) as connection:
+        connection.execute(f'UPDATE "{table_name}" SET source_a = NULL, source_b = NULL WHERE __case_ordinal = 2')
+        tables = connection.execute("SELECT name FROM sqlite_master ORDER BY name").fetchall()
+        identity = connection.execute("SELECT * FROM dataset").fetchall()
+        original_variables = connection.execute("SELECT variable_id, source_ordinal, physical_name FROM variable ORDER BY source_ordinal").fetchall()
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            schema = inplace_transform.load_transformation_schema(connection, dataset_id)
+    finally:
+        engine.dispose()
+    expected = openstatspec.compile_spss_syntax(source, schema, frontend_contract=contract)
+    result = openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id, source_text=source,
+        actor="official-test", frontend_contract=contract,
+    )
+    assert (result["dataset_id"], result["physical_table_name"], result["frontend_contract"]) == (dataset_id, table_name, contract)
+    assert result["dolt_commit_performed"] is False
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(f'SELECT source_a, source_b, target FROM "{table_name}" ORDER BY __case_ordinal').fetchall() == [
+            (1, 1, 1), (None, None, 0), (0, 1, 1), (2, 2, 2),
+        ]
+        assert connection.execute("SELECT * FROM dataset").fetchall() == identity
+        assert connection.execute("SELECT name FROM sqlite_master ORDER BY name").fetchall() == tables
+        assert connection.execute("SELECT variable_id, source_ordinal, physical_name FROM variable ORDER BY source_ordinal").fetchall()[:2] == original_variables
+        assert connection.execute("SELECT variable_label, print_format_family, print_format_width, print_format_decimals, measurement_level FROM variable WHERE source_name = 'target'").fetchone() == ("Official", "F", 8, 0, "nominal")
+        assert connection.execute("SELECT numeric_code, label FROM value_label ORDER BY ordinal").fetchall() == [(0, "No"), (1, "Updated"), (2, "Other")]
+        assert connection.execute("SELECT source_kind, frontend_contract, source_hash, plan_hash, canonical_plan_json, actor FROM transformation_apply").fetchone() == (
+            "spss_syntax", contract, expected.source_hash, expected.plan_hash, expected.plan.canonical_json(), "official-test",
+        )
+        before_failure = tuple(connection.iterdump())
+    for invalid in ("COMPUTE target = 99. STRING note (A4).", "COMPUTE target = 99. DELETE VARIABLES source_a."):
+        with pytest.raises(openstatspec.TransformationFrontendError, match="unsupported_spss_command"):
+            openstatspec.apply_spss_in_place(database_url=url, dataset_id=dataset_id, source_text=invalid, actor="official-test", frontend_contract=contract)
+        with sqlite3.connect(path) as connection:
+            assert tuple(connection.iterdump()) == before_failure
+
+
 def test_exact_bounded_program_compiles_to_stable_v02_plan() -> None:
     schema = openstatspec.VariableSchema((
         openstatspec.VariableDefinition("source_a", "numeric"),

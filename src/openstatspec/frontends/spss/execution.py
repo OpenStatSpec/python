@@ -19,6 +19,7 @@ def apply_spss_in_place(
     dataset_id: str,
     source_text: str,
     actor: str,
+    frontend_contract: str | None = None,
     expected_branch: str | None = None,
     expected_head: str | None = None,
     dolt_conformance_source: DoltConformanceSource | None = None,
@@ -31,6 +32,7 @@ def apply_spss_in_place(
             source_text,
             schema,
             input_alias="parent",
+            frontend_contract=frontend_contract,
         )
         return InPlacePlanSubmission(
             plan=compilation.plan,

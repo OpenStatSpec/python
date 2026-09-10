@@ -4,6 +4,18 @@ All notable changes to this reference implementation are documented here.
 
 ## Unreleased
 
+### Added
+
+- Implement explicitly selected official SPSS Frontend 0.3 over unchanged
+  Plan 0.1/0.2 through the shared parser/binder, with a strict
+  `compile_spss_request` boundary and opt-in live apply provenance. Support
+  comments, dictionary-order `TO`, grouped commands, finite open RECODE ranges,
+  additive ordered typed labels, inequality aliases, and canonical NOT lowering.
+  Precedence is comparisons → NOT → AND → OR; parentheses override it.
+  Tests cover all 90 effective normative cases plus request boundaries and
+  in-place SQLite identity/metadata/audit/no-artifact checks. Default APIs and
+  Python extension support/rejections remain unchanged.
+
 ### Fixed
 
 - Namespace new Python schema-change plans and SPSS output as
@@ -12,9 +24,9 @@ All notable changes to this reference implementation are documented here.
   The former `openstatspec-transformation-plan-v0.3` remains accepted as a
   legacy Python extension with unchanged semantics, canonical JSON, and hashes;
   stored audits are not migrated. New compilation changes schema-plan hashes.
-- Clarify that specification `v0.5.0` has no official Plan 0.3 and that its
-  syntax-only Frontend 0.3 over Plan 0.1/0.2 is not implemented here. Legacy
-  acceptance and Python extension tests do not claim official conformance.
+- Clarify that specification `v0.5.0` has no official Plan 0.3. Its syntax-only
+  Frontend 0.3 over Plan 0.1/0.2 is separate from Python schema extensions.
+  Legacy acceptance and Python extension tests do not claim official conformance.
   See [compatibility and migration](docs/transformations.md#contract-ownership-and-legacy-compatibility).
 
 ## 0.8.1 - 2026-09-10

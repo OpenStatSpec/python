@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from .plan import TransformationPlan, ValueLabel
@@ -22,6 +22,8 @@ class VariableDefinition:
     format_decimals: int | None = None
     measurement_level: Literal["nominal", "ordinal", "scale"] | None = None
     declared_string_width: int | None = None
+    # Official requests carry descriptive format metadata, not only writable F formats.
+    _validate_format: bool = field(default=True, repr=False, compare=False, kw_only=True)
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -46,7 +48,7 @@ class VariableDefinition:
             )
 
         format_parts = (self.format_family, self.format_width, self.format_decimals)
-        if any(part is not None for part in format_parts):
+        if self._validate_format and any(part is not None for part in format_parts):
             if any(part is None for part in format_parts):
                 raise ValueError("Format family, width, and decimals must be set together.")
             if self.storage_kind != "numeric" or self.format_family != "F":
