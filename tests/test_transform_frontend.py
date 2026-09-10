@@ -375,14 +375,16 @@ def test_source_normalization_hash_and_positions_are_stable() -> None:
     assert compilation.frontend_contract == "openstatspec-spss-syntax-frontend-v0.2"
 
 
-def test_schema_commands_use_the_v03_frontend_contract() -> None:
+def test_schema_commands_use_python_extension_contracts() -> None:
     compilation = compile_spss_syntax(
         "STRING note (A4).",
         _schema(VariableDefinition("q1", "numeric")),
     )
 
-    assert compilation.plan.contract == "openstatspec-transformation-plan-v0.3"
-    assert compilation.frontend_contract == "openstatspec-spss-syntax-frontend-v0.3"
+    assert compilation.plan.contract == "openstatspec-python-schema-change-plan-v0.1"
+    assert compilation.frontend_contract == "openstatspec-python-schema-change-spss-v0.1"
+    assert transform_module.TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT == compilation.plan.contract
+    assert transform_module.SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT == compilation.frontend_contract
 
 def test_string_comparison_fails_closed_until_exact_collation_is_supported() -> None:
     error = _error(
@@ -584,26 +586,49 @@ def test_v02_plan_and_schema_reject_decimal_format_that_cannot_fit() -> None:
         )
 
 
-def test_schema_operations_require_v03_contract() -> None:
-    operation = CreateVariableOperation("note", "string", 8)
+@pytest.mark.parametrize("contract", [
+    "openstatspec-transformation-plan-v0.1",
+    "openstatspec-transformation-plan-v0.2",
+])
+@pytest.mark.parametrize("operation", [
+    CreateVariableOperation("note", "string", 8), DeleteVariableOperation("note"),
+])
+def test_official_plan_contracts_reject_schema_operations(contract, operation) -> None:
     with pytest.raises(TransformationFrontendError) as caught:
-        TransformationPlan((operation,))
+        transformation_plan_from_dict({
+            "contract": contract, "input_alias": "parent",
+            "operations": [operation.as_dict()],
+        })
     assert caught.value.code == "invalid_transformation_plan"
 
-    plan = TransformationPlan(
-        (operation,), contract="openstatspec-transformation-plan-v0.3",
+
+def test_legacy_schema_plan_roundtrip_preserves_exact_hash() -> None:
+    serialized = (
+        '{"contract":"openstatspec-transformation-plan-v0.3","input_alias":"parent",'
+        '"operations":[{"declared_string_width":4,"op":"create_variable",'
+        '"storage_kind":"string","variable":"note"}]}'
     )
-    assert plan.contract == "openstatspec-transformation-plan-v0.3"
+    raw = json.loads(serialized)
+    legacy = transformation_plan_from_dict(raw)
+    assert canonical_plan_json(raw) == legacy.canonical_json() == serialized
+    assert canonical_plan_hash(raw) == legacy.sha256() == (
+        "3c1933c6df1ea664d506d3b7879af5141f912181884129d2861bf19e44f4e131"
+    )
+    new = transformation_plan_from_dict({
+        **raw, "contract": "openstatspec-python-schema-change-plan-v0.1",
+    })
+    assert new.operations == legacy.operations
+    assert new.sha256() != legacy.sha256()
 
 
-def test_spss_schema_commands_emit_v03_contract() -> None:
+def test_spss_schema_commands_emit_python_extension_contract() -> None:
     schema = _schema(VariableDefinition("q1", "numeric"))
     assert bind_spss_syntax(
         parse_spss_syntax("STRING note (A8)."), schema,
-    ).plan.contract == "openstatspec-transformation-plan-v0.3"
+    ).plan.contract == "openstatspec-python-schema-change-plan-v0.1"
     assert bind_spss_syntax(
         parse_spss_syntax("COMPUTE other = q1. DELETE VARIABLES q1."), schema,
-    ).plan.contract == "openstatspec-transformation-plan-v0.3"
+    ).plan.contract == "openstatspec-python-schema-change-plan-v0.1"
 
 
 def test_custom_nonempty_input_alias_is_canonical() -> None:

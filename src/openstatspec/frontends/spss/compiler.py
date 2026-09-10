@@ -18,7 +18,8 @@ from .syntax import (
 
 
 SPSS_FRONTEND_CONTRACT = "openstatspec-spss-syntax-frontend-v0.2"
-SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT = "openstatspec-spss-syntax-frontend-v0.3"
+# Python-owned schema extension, not the official syntax-only Frontend 0.3.
+SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT = "openstatspec-python-schema-change-spss-v0.1"
 
 
 @dataclass(frozen=True)

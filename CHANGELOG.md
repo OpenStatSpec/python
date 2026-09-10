@@ -2,6 +2,21 @@
 
 All notable changes to this reference implementation are documented here.
 
+## Unreleased
+
+### Fixed
+
+- Namespace new Python schema-change plans and SPSS output as
+  `openstatspec-python-schema-change-plan-v0.1` and
+  `openstatspec-python-schema-change-spss-v0.1`, retaining exported constant names.
+  The former `openstatspec-transformation-plan-v0.3` remains accepted as a
+  legacy Python extension with unchanged semantics, canonical JSON, and hashes;
+  stored audits are not migrated. New compilation changes schema-plan hashes.
+- Clarify that specification `v0.5.0` has no official Plan 0.3 and that its
+  syntax-only Frontend 0.3 over Plan 0.1/0.2 is not implemented here. Legacy
+  acceptance and Python extension tests do not claim official conformance.
+  See [compatibility and migration](docs/transformations.md#contract-ownership-and-legacy-compatibility).
+
 ## 0.8.1 - 2026-09-10
 
 ### Fixed
