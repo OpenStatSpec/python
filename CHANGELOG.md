@@ -2,7 +2,11 @@
 
 All notable changes to this reference implementation are documented here.
 
-## Unreleased
+## 0.9.0 - 2026-09-10
+
+This minor release adds the explicitly selected optional official SPSS Frontend
+0.3 and changes emitted Python schema-extension identifiers. Older readers cannot
+load the new IDs; upgrade consumers before using new compiler output.
 
 ### Added
 
@@ -28,6 +32,12 @@ All notable changes to this reference implementation are documented here.
   Frontend 0.3 over Plan 0.1/0.2 is separate from Python schema extensions.
   Legacy acceptance and Python extension tests do not claim official conformance.
   See [compatibility and migration](docs/transformations.md#contract-ownership-and-legacy-compatibility).
+
+The specification remains pinned to released `v0.5.0` at exact commit
+`864e84479f554b8ee250ffed44c4dfb963750d4a`; the required SPSS codec remains
+`openstatspec-pyspssio==0.5.1.post2`. No catalog migration, dependency change,
+new database support, or optional Transformation Workflow 0.3 implementation
+is included.
 
 ## 0.8.1 - 2026-09-10
 

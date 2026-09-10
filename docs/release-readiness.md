@@ -1,16 +1,22 @@
-# 0.8.1 release readiness
+# 0.9.0 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
 
-## Patch scope
+## Minor release scope
 
-Version 0.8.1 includes the merged metadata-integrity, consistent-read-snapshot,
-row-copy, transformation-planning and SQLite workflow fixes described in the
-[release notes](../CHANGELOG.md). It introduces no catalog
-migration, dependency change, new database support or specification pin update.
-The local 0.8.0 evidence below is historical, not verification of this patch.
-Re-run the gates below on the exact selected 0.8.1 release commit.
+Version 0.9.0, dated 2026-09-10, adds explicitly selected official SPSS Frontend
+0.3 over unchanged Plan 0.1/0.2 and namespaces new Python schema-extension
+output, as described in the [release notes](../CHANGELOG.md). The minor bump
+reflects the optional frontend and old-reader incompatibility: upgrade consumers
+before emitting the new Python IDs. Legacy plans retain their canonical JSON,
+hashes and semantics; stored audits are not migrated. Recompiling schema-changing
+syntax changes its plan hash. See [compatibility and migration](transformations.md#contract-ownership-and-legacy-compatibility).
+There is no catalog migration, dependency change, new database support or
+specification pin update. The required codec remains
+`openstatspec-pyspssio==0.5.1.post2`.
+The local 0.8.0/0.8.1 evidence below is historical, not verification of 0.9.0.
+Re-run the gates below on the exact selected 0.9.0 release commit.
 
 The release selects SAV/ZSAV 1.0 with the optional Database I/O Execution
 Policy `openstatspec-database-io-v1`. Reads and exports, including failures,
@@ -78,11 +84,24 @@ machine-readable loss report with the export result.
 
 The canonical transformation core and SPSS syntax frontend are separate public
 surfaces. A release must run the specification-owned canonical-plan and SPSS
-frontend conformance fixtures, then exercise both the generic plan apply API
-and the SPSS compatibility apply path.
+frontend conformance fixtures, including `tests/test_frontend_v03.py` with all
+90 effective official Frontend 0.3 cases (35 declared plus inherited cases with
+published overrides/supersessions) from exact specification commit
+`864e84479f554b8ee250ffed44c4dfb963750d4a`. Then exercise the generic plan apply
+API, SPSS compatibility apply path, and explicitly selected official 0.3 apply.
+Python schema-extension and legacy acceptance tests are separate compatibility
+evidence, not official Plan 0.3 conformance; no official Plan 0.3 exists.
 
 The gate must prove that:
 
+- official Frontend 0.3 requests preserve exact Plan 0.1/0.2 objects and hashes,
+  source hashes, diagnostics and declared metadata across all 90 effective cases;
+- strict request boundaries reject invalid input, default API/CLI support and
+  rejections remain unchanged, and official 0.3 rejects Python schema extensions;
+- explicit official 0.3 SQLite apply preserves data/metadata semantics, dataset
+  and table identity, audit provenance and the no-copy/no-history boundary;
+- new Python schema-extension IDs are emitted while legacy plans preserve their
+  canonical JSON, hashes and supplied identifiers without rewriting audits;
 - a TransformationPlan object and its strict JSON mapping produce the same
   plan hash and in-place result;
 - the exact bounded `COMPUTE`/`IF` program compiles to all seven ordered
@@ -182,12 +201,43 @@ checkout, without configured database services:
 This is local candidate evidence, not final release-commit service CI or
 publication evidence. No v0.8.1 tag or registry upload was made by these checks.
 
+## 0.9.0 local preparation verification
+
+Using `../python-release-081/.venv/bin/python` (Python 3.13.2), with
+`PYTHONPATH=src` and
+`OPENSTATSPEC_SPECIFICATION_DIR=/tmp/openstatspec-alignment-spec` at exact
+`864e84479f554b8ee250ffed44c4dfb963750d4a`:
+
+- The updated capability version assertion failed first on 0.8.1, then passed
+  on 0.9.0. Focused capability, release-ref and `test_frontend_v03.py` checks:
+  **169 passed**, including all **90 effective** official cases.
+- `python -m pytest -p no:cacheprovider -m 'not services' -ra`:
+  **590 passed, 9 skipped, 55 deselected**. The skips require a live Dolt admin;
+  no database services were configured for this run.
+- `python -m compileall -q src tests .github/verify_release_ref.py` and
+  `git diff --check` passed.
+- `python -m build --outdir /tmp/openstatspec-v090-yhklqZ/dist .` and
+  `python -m twine check /tmp/openstatspec-v090-yhklqZ/dist/*` passed for the
+  0.9.0 wheel and sdist.
+- A fresh `/tmp/openstatspec-v090-yhklqZ/venv` installed that wheel with
+  dependencies from PyPI, including unchanged `openstatspec-pyspssio==0.5.1.post2`.
+  From `/tmp` with `PYTHONPATH` unset, CLI/API capabilities agreed on 0.9.0,
+  released v0.5.0 at the exact pin, and the database I/O policy. Core, frontend,
+  legacy compiler re-exports and codec imports came from `site-packages`.
+  An explicit official 0.3 comment/open-range RECODE request compiled to Plan
+  0.1 without a database connection.
+
+This is local preparation evidence, not final release-commit service CI or
+publication evidence. No push, PR, tag or publication was performed.
+
 ## Maintainer release checklist
 
 1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
    first and confirm that a clean environment can download it from PyPI. The
    main package has no fallback SPSS engine.
-2. Run `python -m pytest -m "not services"`.
+2. Run `python -m pytest -m "not services"`, including the 90 effective official
+   Frontend 0.3 cases in `tests/test_frontend_v03.py` and existing canonical-plan,
+   frontend, legacy compatibility and in-place suites.
 3. Confirm the GitHub Actions matrix is green for exact PostgreSQL 17.10/18.4,
    MySQL 8.4.11/9.7.2, MariaDB 11.4.12/11.8.8/12.3.2, and exact Dolt
    2.2.2/2.2.3 service evidence from the immutable image pins in CI. The Dolt
@@ -205,7 +255,9 @@ publication evidence. No v0.8.1 tag or registry upload was made by these checks.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment, resolving `openstatspec-pyspssio==0.5.1.post2` from PyPI.
    Run the installed CLI outside the source checkout with `PYTHONPATH` unset;
-   verify adapter version `0.8.1` and the selected database I/O policy.
+   verify adapter version `0.9.0`, the selected database I/O policy, public and
+   legacy imports, and a simple explicitly selected official 0.3 compilation
+   without a database connection.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
 6. Confirm CI, release fixtures, and capabilities use the published OpenStatSpec
    specification `v0.5.0` at exact commit
@@ -213,16 +265,16 @@ publication evidence. No v0.8.1 tag or registry upload was made by these checks.
    `specification_status=released`, and set `specification_release` to `v0.5.0`.
    Use an exact checkout via `OPENSTATSPEC_SPECIFICATION_DIR` for local tests.
 7. Review this document, the README, and CHANGELOG for accurate scope. Finalize
-   the 0.8.1 changelog date before selecting the final release commit.
+   the 0.9.0 changelog date as 2026-09-10 before selecting the final release commit.
 8. Confirm the exact release commit's CI matrix and package smoke passed, and
    verify the protected `pypi` environment and Trusted Publishing setup before
-   pushing a new annotated/protected `v0.8.1` tag. A `v*` tag push starts the
+   pushing a new annotated/protected `v0.9.0` tag. A `v*` tag push starts the
    publishing workflow; it is not a preparation-only check. Do not move an
    existing tag. The workflow also rebuilds the unchanged specification companion
    package 0.1.0 at its existing pin and uses `skip-existing`; it does not release
    the newer specification validator changes.
 9. After publication, verify the tag resolves to the intended commit, the
-   tag-triggered workflow succeeded, and PyPI installs `openstatspec==0.8.1` in a
+   tag-triggered workflow succeeded, and PyPI installs `openstatspec==0.9.0` in a
    clean environment. Record the tag, CI and registry evidence before claiming
    the release is published.
 
