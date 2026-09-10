@@ -1,7 +1,16 @@
-# 0.8.0 release readiness
+# 0.8.1 release readiness
 
 This page records the expected release contract, not a publication event.
 Creating a version tag remains a separate maintainer action.
+
+## Patch scope
+
+Version 0.8.1 includes the merged metadata-integrity, consistent-read-snapshot,
+row-copy, transformation-planning and SQLite workflow fixes described in the
+[release notes](../CHANGELOG.md). It introduces no catalog
+migration, dependency change, new database support or specification pin update.
+The local 0.8.0 evidence below is historical, not verification of this patch.
+Re-run the gates below on the exact selected 0.8.1 release commit.
 
 The release selects SAV/ZSAV 1.0 with the optional Database I/O Execution
 Policy `openstatspec-database-io-v1`. Reads and exports, including failures,
@@ -104,7 +113,7 @@ The gate must prove that:
   neither HEAD nor branch and never commits or resets; state is rechecked after
   the dataset lock and success must leave an inspectable working-set diff;
   other supported SQL connections remain allowed; and
-- string comparisons and v0.2 string assignments fail closed until exact
+- string comparisons and v0.2 string assignments remain fail-closed.
 
 The built wheel must contain the generic openstatspec.transform modules and the
 implemented openstatspec.frontends.spss package. Stata and SAS remain empty
@@ -156,7 +165,24 @@ of exact `864e84479f554b8ee250ffed44c4dfb963750d4a`):
 Other database services were not configured locally. This is local evidence,
 not a claim that the updated remote CI or release publication has completed.
 
-## Maintainer checks before tagging
+## 0.8.1 local preparation verification
+
+On Python 3.13.2 with SQLAlchemy 2.0.52 and the exact v0.5.0 specification
+checkout, without configured database services:
+
+- `python -m pytest -p no:cacheprovider -m 'not services'`: **414 passed,
+  9 skipped, 53 deselected**. The release-ref guard tests also passed (**5**).
+- `compileall`, `git diff --check`, wheel/sdist build and `twine check` passed.
+- A clean wheel install outside the checkout resolved the required engine
+  `openstatspec-pyspssio==0.5.1.post2` from PyPI. Installed capabilities reported
+  0.8.1, released specification v0.5.0 at the expected commit, and the selected
+  database I/O policy. Core, SPSS frontend and legacy compiler re-exports loaded
+  from `site-packages` without a source-path override.
+
+This is local candidate evidence, not final release-commit service CI or
+publication evidence. No v0.8.1 tag or registry upload was made by these checks.
+
+## Maintainer release checklist
 
 1. Publish the pinned `openstatspec-pyspssio==0.5.1.post2` engine distribution
    first and confirm that a clean environment can download it from PyPI. The
@@ -179,14 +205,26 @@ not a claim that the updated remote CI or release publication has completed.
 4. Build with `python -m build` and install the generated wheel in a clean
    environment, resolving `openstatspec-pyspssio==0.5.1.post2` from PyPI.
    Run the installed CLI outside the source checkout with `PYTHONPATH` unset;
-   verify adapter version `0.8.0` and the selected database I/O policy.
+   verify adapter version `0.8.1` and the selected database I/O policy.
 5. Confirm `openstatspec capabilities` reflects the intended support boundary.
 6. Confirm CI, release fixtures, and capabilities use the published OpenStatSpec
    specification `v0.5.0` at exact commit
    `864e84479f554b8ee250ffed44c4dfb963750d4a`, publish
    `specification_status=released`, and set `specification_release` to `v0.5.0`.
    Use an exact checkout via `OPENSTATSPEC_SPECIFICATION_DIR` for local tests.
-7. Review this document, the README, and CHANGELOG for accurate scope.
+7. Review this document, the README, and CHANGELOG for accurate scope. Finalize
+   the 0.8.1 changelog date before selecting the final release commit.
+8. Confirm the exact release commit's CI matrix and package smoke passed, and
+   verify the protected `pypi` environment and Trusted Publishing setup before
+   pushing a new annotated/protected `v0.8.1` tag. A `v*` tag push starts the
+   publishing workflow; it is not a preparation-only check. Do not move an
+   existing tag. The workflow also rebuilds the unchanged specification companion
+   package 0.1.0 at its existing pin and uses `skip-existing`; it does not release
+   the newer specification validator changes.
+9. After publication, verify the tag resolves to the intended commit, the
+   tag-triggered workflow succeeded, and PyPI installs `openstatspec==0.8.1` in a
+   clean environment. Record the tag, CI and registry evidence before claiming
+   the release is published.
 
 The tag-triggered release workflow repeats the non-service test suite, builds
 the distributions, and installs the wheel with the exact required SPSS engine

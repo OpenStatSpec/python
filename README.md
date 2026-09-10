@@ -4,7 +4,7 @@ The reference Python implementation of the OpenStatSpec specification.
 
 This package implements the specification; it does not define or extend it.
 The normative model lives in the `OpenStatSpec/specification` repository.
-Python 0.8.0 pins released specification `v0.5.0` at
+Python 0.8.1 pins released specification `v0.5.0` at
 `864e84479f554b8ee250ffed44c4dfb963750d4a` and selects SAV/ZSAV 1.0 with
 `database_io_policy=openstatspec-database-io-v1`. This does not claim
 implementation of the optional Transformation Workflow 0.3 profile.

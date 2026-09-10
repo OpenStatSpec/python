@@ -2,9 +2,39 @@
 
 All notable changes to this reference implementation are documented here.
 
-## Unreleased
+## 0.8.1 - Unreleased
 
-_No unreleased changes._
+### Fixed
+
+- Preserve other variables' shared value labels when replacing one variable's
+  labels. Reject deletion of variables referenced by published derived lineage
+  before any plan mutation, with `variable_has_dependents`.
+- Enable and verify SQLite foreign keys on in-place apply connections.
+- Read export values, dictionary metadata, import fidelity events and validation
+  reflection from one native database snapshot; close it before writing SAV/ZSAV.
+- Scope transformation label reads to the target variable's dataset. Unrelated
+  malformed labels no longer fail the operation; malformed target-linked labels
+  still fail, and shared/foreign-owned linked label sets remain supported.
+
+### Performance
+
+- Remove quadratic suffix/name scans from canonical-plan binding and reuse one
+  canonical plan encoding/hash per public canonical or SPSS apply.
+- Remove redundant full case-row dictionary collections from database reads and
+  imports. Results remain buffered; this is not a streaming API.
+- Avoid the discarded core relation hash during SQLite workflow registration,
+  retaining physical projection validation and derived-parent integrity checks.
+  Execution-time hashes remain required; their loop avoids a redundant tuple copy.
+
+### Documentation and cleanup
+
+- Document numeric create/replace, RECODE and separately provisioned target
+  recipes, with bounded local SQLite measurements in the transformations manual.
+- Remove an unreachable view-creation branch; workflow output remains
+  materialized-only.
+
+The specification pin, engine dependency, database/profile claims, catalog schema,
+public call signatures and Dolt-owned versioning policy remain unchanged.
 
 ## 0.8.0 - 2026-09-07
 
