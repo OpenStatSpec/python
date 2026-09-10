@@ -2,7 +2,7 @@
 
 All notable changes to this reference implementation are documented here.
 
-## 0.8.1 - Unreleased
+## 0.8.1 - 2026-09-10
 
 ### Fixed
 
