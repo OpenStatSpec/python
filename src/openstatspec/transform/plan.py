@@ -16,8 +16,15 @@ from .errors import frontend_error
 
 TRANSFORMATION_PLAN_V1_CONTRACT = "openstatspec-transformation-plan-v0.1"
 TRANSFORMATION_PLAN_CONTRACT = "openstatspec-transformation-plan-v0.2"
-TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT = "openstatspec-transformation-plan-v0.3"
-_TRANSFORMATION_PLAN_CONTRACTS = {TRANSFORMATION_PLAN_V1_CONTRACT, TRANSFORMATION_PLAN_CONTRACT, TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT}
+TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT = "openstatspec-python-schema-change-plan-v0.1"
+# Python extension compatibility only: never normalize legacy IDs or audit hashes.
+_SCHEMA_CHANGE_CONTRACTS = {
+    TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT,
+    "openstatspec-transformation-plan-v0.3",
+}
+_TRANSFORMATION_PLAN_CONTRACTS = {
+    TRANSFORMATION_PLAN_V1_CONTRACT, TRANSFORMATION_PLAN_CONTRACT,
+} | _SCHEMA_CHANGE_CONTRACTS
 _BINARY64 = re.compile(r"[0-9a-f]{16}")
 
 
@@ -589,7 +596,7 @@ class TransformationPlan:
         if not isinstance(self.contract, str) or self.contract not in _TRANSFORMATION_PLAN_CONTRACTS:
             _invalid("Plan contract is not a supported transformation-plan contract.")
         if (
-            self.contract != TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT
+            self.contract not in _SCHEMA_CHANGE_CONTRACTS
             and any(
                 isinstance(operation, (
                     CreateVariableOperation, DeleteVariableOperation,
@@ -598,8 +605,9 @@ class TransformationPlan:
             )
         ):
             _invalid(
-                "Create/delete schema operations require "
-                "openstatspec-transformation-plan-v0.3."
+                "Create/delete schema operations require the Python extension "
+                f"{TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT} "
+                "(legacy Python v0.3 plans are also accepted, not official conformance)."
             )
         if self.contract == TRANSFORMATION_PLAN_V1_CONTRACT and any(
             isinstance(operation, (
@@ -723,7 +731,7 @@ def _match(raw: Any) -> RecodeMatch:
     _invalid("Unknown recode match kind.")
 
 def transformation_plan_from_dict(raw: Mapping[str, Any]) -> TransformationPlan:
-    """Strictly validate canonical v0.1, v0.2, or schema-change v0.3 plans."""
+    """Validate Plan 0.1/0.2 or Python schema-change plans, including legacy IDs."""
     if not isinstance(raw, Mapping):
         _invalid("Transformation plan must be an object.")
     _exact(raw, {"contract", "input_alias", "operations"}, "Transformation plan")

@@ -904,7 +904,7 @@ def test_public_apply_supports_non_dolt_without_building_undo(catalog) -> None:
     )) == (1, 1), "public SPSS apply must encode/hash the canonical plan once"
 
 
-def test_schema_commands_record_the_v03_frontend_contract(catalog) -> None:
+def test_schema_commands_record_python_extension_frontend_contract(catalog) -> None:
     url, path, dataset_id, _table_name = catalog
 
     openstatspec.apply_spss_in_place(
@@ -919,8 +919,50 @@ def test_schema_commands_record_the_v03_frontend_contract(catalog) -> None:
     ).fetchone()
     assert audit == (
         "spss_syntax",
-        "openstatspec-spss-syntax-frontend-v0.3",
+        "openstatspec-python-schema-change-spss-v0.1",
     )
+
+
+@pytest.mark.parametrize("contract", [
+    "openstatspec-transformation-plan-v0.3",  # Legacy acceptance, not conformance.
+    "openstatspec-python-schema-change-plan-v0.1",
+])
+def test_schema_plan_apply_preserves_identity_and_audit(catalog, contract) -> None:
+    url, path, dataset_id, table_name = catalog
+    plan = openstatspec.TransformationPlan(
+        (openstatspec.CreateVariableOperation("note", "string", 4),),
+        contract=contract,
+    )
+    with sqlite3.connect(path) as connection:
+        tables = connection.execute("SELECT name FROM sqlite_master ORDER BY name").fetchall()
+        identity = connection.execute("SELECT * FROM dataset").fetchall()
+    result = openstatspec.apply_transformation_plan_in_place(
+        database_url=url, dataset_id=dataset_id, plan=plan.as_dict(), actor="test-agent",
+    )
+    assert (result["dataset_id"], result["physical_table_name"]) == (dataset_id, table_name)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            f'SELECT score, note FROM "{table_name}" ORDER BY __case_ordinal'
+        ).fetchall() == [(1.0, ""), (2.0, ""), (3.0, "")]
+        audit = connection.execute("SELECT * FROM transformation_apply").fetchone()
+        assert connection.execute(
+            "SELECT canonical_plan_json, plan_hash, source_hash, frontend_contract "
+            "FROM transformation_apply"
+        ).fetchone() == (plan.canonical_json(), plan.sha256(), plan.sha256(), None)
+    # New compilation must not migrate an existing (including legacy) audit row.
+    openstatspec.apply_spss_in_place(
+        database_url=url, dataset_id=dataset_id,
+        source_text="DELETE VARIABLES note.", actor="test-agent",
+    )
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT name FROM sqlite_master ORDER BY name").fetchall() == tables
+        assert connection.execute("SELECT * FROM dataset").fetchall() == identity
+        assert connection.execute(
+            "SELECT * FROM transformation_apply WHERE apply_id = ?", (result["apply_id"],),
+        ).fetchone() == audit
+        assert [row[1] for row in connection.execute(
+            f'PRAGMA table_info("{table_name}")'
+        )] == ["__case_ordinal", "score"]
 
 
 @pytest.mark.parametrize("as_mapping", [False, True])

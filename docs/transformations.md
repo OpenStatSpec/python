@@ -30,6 +30,40 @@ This is a trust boundary. JSON plans must pass
 `transformation_plan_from_dict()` and live-schema validation before mutation;
 they are never treated as arbitrary SQL.
 
+## Contract ownership and legacy compatibility
+
+Published OpenStatSpec `v0.5.0` defines Transformation Plan 0.1/0.2, not
+Plan 0.3. Its optional SPSS Frontend 0.3 is a syntax-only expansion emitting
+Plan 0.1/0.2; this adapter does **not** implement that frontend yet.
+
+Explicit `create_variable` / `delete_variable` operations (including SPSS
+`STRING` / `DELETE VARIABLES`) belong to a **Python extension**, not official
+OpenStatSpec conformance. New schema-changing compilations emit:
+
+- Plan: `openstatspec-python-schema-change-plan-v0.1`
+- Frontend: `openstatspec-python-schema-change-spss-v0.1`
+
+The exported names `TRANSFORMATION_PLAN_SCHEMA_CHANGE_CONTRACT` and
+`SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT` remain unchanged; their values now use
+these Python-owned identifiers. Plans without these explicit schema operations
+retain their existing Plan 0.1/0.2 selection and frontend identifier. Official
+Plan 0.1/0.2 still reject explicit create/delete operations.
+
+The loader and executor continue to accept the old Python plan identifier
+`openstatspec-transformation-plan-v0.3` with its original operation semantics.
+This is legacy compatibility, **not** recognition of an official Plan 0.3.
+Loading, canonical serialization, hashing, and apply preserve the supplied
+identifier; existing canonical JSON, hashes, and stored audits are not rewritten.
+Historical `openstatspec-spss-syntax-frontend-v0.3` audit values described this
+Python extension and are not evidence of official Frontend 0.3 conformance.
+
+No database migration is needed. Consumers should accept the new extension IDs
+before using new compiler output. Keep stored legacy plans and audits intact;
+recompiling schema-changing syntax now produces a new plan identity/hash even
+when its operations are identical. An intentional change of a saved plan's
+contract likewise creates a new artifact with a new hash, not an audit migration.
+Older adapter versions cannot load the new IDs.
+
 ## Install the audit schema
 
 Install the compact audit relation once before the first apply:
