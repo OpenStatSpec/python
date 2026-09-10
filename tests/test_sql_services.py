@@ -297,6 +297,7 @@ def test_live_in_place_add_labels_sees_commit_after_catalog_validation(
                 database_url=database_url, dataset_id=imported["dataset_id"],
                 source_text="ADD VALUE LABELS age 35 'second writer'.",
                 actor="second-writer",
+                frontend_contract="openstatspec-spss-syntax-frontend-v0.3",
             )
             assert writer["status"] == "succeeded"
             assert connections[1] is not connection
@@ -314,6 +315,7 @@ def test_live_in_place_add_labels_sees_commit_after_catalog_validation(
                 database_url=database_url, dataset_id=imported["dataset_id"],
                 source_text="ADD VALUE LABELS age 36 'first writer'.",
                 actor="first-writer",
+                frontend_contract="openstatspec-spss-syntax-frontend-v0.3",
             )
         assert result["status"] == "succeeded"
         assert len(connections) == 2
