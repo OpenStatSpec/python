@@ -269,6 +269,79 @@ def test_live_export_uses_one_snapshot(environment_name, source_sav, tmp_path, m
         engine.dispose()
 
 
+@pytest.mark.parametrize("environment_name", [
+    "OPENSTATSPEC_MYSQL_URL", "OPENSTATSPEC_MARIADB_URL",
+])
+def test_live_in_place_add_labels_sees_commit_after_catalog_validation(
+    environment_name, source_sav, monkeypatch,
+):
+    database_url = os.environ.get(environment_name)
+    if not database_url:
+        pytest.skip(f"{environment_name} is not configured")
+    imported = openstatspec.import_sav(
+        source_sav, database_url=database_url, dataset_id="labels_" + uuid4().hex,
+    )
+    engine = create_engine(database_url)
+    tables = normative_catalog(MetaData())
+    verify = inplace_transform.require_verified_catalog
+    connections = []
+
+    def commit_second_apply_after_validation(connection, **kwargs):
+        result = verify(connection, **kwargs)
+        connections.append(connection)
+        if len(connections) == 1:
+            # The catalog SELECT has already established a snapshot under RR;
+            # the first apply has not yet acquired its prepare-time dataset lock.
+            assert connection.in_transaction()
+            writer = openstatspec.apply_spss_in_place(
+                database_url=database_url, dataset_id=imported["dataset_id"],
+                source_text="ADD VALUE LABELS age 35 'second writer'.",
+                actor="second-writer",
+                frontend_contract="openstatspec-spss-syntax-frontend-v0.3",
+            )
+            assert writer["status"] == "succeeded"
+            assert connections[1] is not connection
+            assert connections[1].closed
+        return result
+
+    try:
+        openstatspec.install_in_place_transformation_schema(database_url=database_url)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                inplace_transform, "require_verified_catalog",
+                commit_second_apply_after_validation,
+            )
+            result = openstatspec.apply_spss_in_place(
+                database_url=database_url, dataset_id=imported["dataset_id"],
+                source_text="ADD VALUE LABELS age 36 'first writer'.",
+                actor="first-writer",
+                frontend_contract="openstatspec-spss-syntax-frontend-v0.3",
+            )
+        assert result["status"] == "succeeded"
+        assert len(connections) == 2
+        _, variables, _ = wide.read_wide_dataset(
+            database_url=database_url, dataset_id=imported["dataset_id"],
+        )
+        age = next(variable for variable in variables if variable["source_name"] == "age")
+        assert json.loads(age["value_labels"]) == {
+            "34.0": "thirty-four", "35.0": "second writer", "36.0": "first writer",
+        }
+    finally:
+        with engine.begin() as connection:
+            audit = inplace_transform.apply_audit_catalog(MetaData())
+            if inspect_database(connection).has_table(audit.name):
+                connection.execute(audit.delete().where(
+                    audit.c.dataset_id == imported["dataset_id"],
+                ))
+            delete_dataset_representation(connection, tables, imported["dataset_id"])
+            quote = connection.dialect.identifier_preparer.quote
+            connection.exec_driver_sql(f"DROP TABLE {quote(imported['data_table'])}")
+            connection.execute(tables.operation.delete().where(
+                tables.operation.c.operation_id == imported["operation_id"],
+            ))
+        engine.dispose()
+
+
 def test_live_unknown_dolt_is_read_only_and_rejects_default_writes(
     tmp_path,
 ) -> None:

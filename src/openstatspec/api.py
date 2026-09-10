@@ -226,7 +226,8 @@ def derive_sql_dataset(*, database_url: Any, **options: Any) -> Mapping[str, Any
 
 def apply_spss_in_place(
     *, database_url: Any, dataset_id: str, source_text: str,
-    actor: str, expected_branch: str | None = None,
+    actor: str, frontend_contract: str | None = None,
+    expected_branch: str | None = None,
     expected_head: str | None = None,
     dolt_conformance_source: DoltConformanceSource | None = None,
 ) -> Mapping[str, Any]:
@@ -239,6 +240,7 @@ def apply_spss_in_place(
         dataset_id=dataset_id,
         source_text=source_text,
         actor=actor,
+        frontend_contract=frontend_contract,
         expected_branch=expected_branch,
         expected_head=expected_head,
         dolt_conformance_source=dolt_conformance_source,

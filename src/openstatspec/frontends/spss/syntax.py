@@ -14,7 +14,7 @@ from ...transform.errors import SourcePosition, SourceSpan, frontend_error
 TokenKind = Literal[
     "identifier", "number", "string", "left_paren", "right_paren",
     "equals", "less", "less_equal", "greater", "greater_equal",
-    "comma", "plus", "minus", "slash", "period", "eof",
+    "comma", "plus", "minus", "slash", "period", "eof", "not_equal",
 ]
 
 
@@ -24,6 +24,14 @@ class Token:
     text: str
     value: str | float | None
     span: SourceSpan
+
+
+@dataclass(frozen=True)
+class VariableRangeSyntax:
+    first: Token
+    last: Token
+    span: SourceSpan
+    continuations: tuple[Token, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -58,7 +66,7 @@ class RecodeClauseSyntax:
 
 @dataclass(frozen=True)
 class RecodeCommandSyntax:
-    sources: tuple[Token, ...]
+    sources: tuple[Token | VariableRangeSyntax, ...]
     clauses: tuple[RecodeClauseSyntax, ...]
     targets: tuple[Token, ...] | None
     span: SourceSpan
@@ -74,7 +82,7 @@ class OperandSyntax:
 @dataclass(frozen=True)
 class ComparisonSyntax:
     left: OperandSyntax
-    operator: Literal["=", "<", "<=", ">", ">="]
+    operator: Literal["=", "<", "<=", ">", ">=", "ne"]
     right: OperandSyntax
     span: SourceSpan
 
@@ -86,7 +94,13 @@ class BooleanSyntax:
     span: SourceSpan
 
 
-PredicateSyntax = ComparisonSyntax | BooleanSyntax
+@dataclass(frozen=True)
+class NotSyntax:
+    operand: "PredicateSyntax"
+    span: SourceSpan
+
+
+PredicateSyntax = ComparisonSyntax | BooleanSyntax | NotSyntax
 
 
 @dataclass(frozen=True)
@@ -106,7 +120,7 @@ class IfCommandSyntax:
 
 @dataclass(frozen=True)
 class FormatAssignmentSyntax:
-    variable: Token
+    variable: Token | VariableRangeSyntax
     family: str
     width: int
     decimals: int
@@ -121,7 +135,7 @@ class FormatsCommandSyntax:
 
 @dataclass(frozen=True)
 class VariableLevelAssignmentSyntax:
-    variable: Token
+    variable: Token | VariableRangeSyntax
     level: Literal["nominal", "ordinal", "scale"]
     span: SourceSpan
 
@@ -153,7 +167,7 @@ class DeleteVariablesCommandSyntax:
 
 @dataclass(frozen=True)
 class VariableLabelSyntax:
-    variable: Token
+    variable: Token | VariableRangeSyntax
     label: Token
     span: SourceSpan
 
@@ -173,7 +187,7 @@ class ValueLabelSyntax:
 
 @dataclass(frozen=True)
 class ValueLabelsGroupSyntax:
-    variables: tuple[Token, ...]
+    variables: tuple[Token | VariableRangeSyntax, ...]
     labels: tuple[ValueLabelSyntax, ...]
     span: SourceSpan
 
@@ -182,6 +196,7 @@ class ValueLabelsGroupSyntax:
 class ValueLabelsCommandSyntax:
     groups: tuple[ValueLabelsGroupSyntax, ...]
     span: SourceSpan
+    additive: bool = False
 
 
 SyntaxCommand = (
@@ -196,6 +211,7 @@ SyntaxCommand = (
 class SpssSyntaxProgram:
     commands: tuple[SyntaxCommand, ...]
     span: SourceSpan
+    official_v03: bool = False
 
 
 _NUMBER = re.compile(
@@ -234,7 +250,7 @@ def spss_source_hash(source: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def tokenize_spss(source: str) -> tuple[Token, ...]:
+def tokenize_spss(source: str, *, official_v03: bool = False) -> tuple[Token, ...]:
     """Tokenize supported SPSS text without consulting a dataset catalog."""
     if not isinstance(source, str):
         raise TypeError("source must be text")
@@ -249,6 +265,20 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
         character = source[offset]
         if character.isspace():
             offset += 1
+            continue
+        if official_v03 and source.startswith("/*", offset):
+            end = source.find("*/", offset + 2)
+            nested = source.find("/*", offset + 2)
+            if end < 0 or (nested >= 0 and nested < end):
+                raise frontend_error("spss_syntax_error", "Unterminated or nested block comment.", span=_span(source, offset, len(source)))
+            offset = end + 2
+            continue
+        boundary = not tokens or tokens[-1].kind == "period"
+        if official_v03 and boundary and character == "*":
+            end = source.find(".", offset)
+            if end < 0:
+                raise frontend_error("spss_syntax_error", "Expected '.' after comment.", span=_span(source, offset, len(source)))
+            offset = end + 1
             continue
         if character in {"'", '"'}:
             start = offset
@@ -315,6 +345,12 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
                     continue
                 break
             text = source[start:offset]
+            if official_v03 and boundary and text.isascii() and text.casefold() == "comment":
+                end = source.find(".", offset)
+                if end < 0:
+                    raise frontend_error("spss_syntax_error", "Expected '.' after comment.", span=_span(source, start, len(source)))
+                offset = end + 1
+                continue
             if text.casefold() in {"nan", "infinity"}:
                 raise frontend_error(
                     "spss_syntax_error",
@@ -324,6 +360,11 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
             tokens.append(Token(
                 "identifier", text, text, _span(source, start, offset),
             ))
+            continue
+        if official_v03 and source[offset:offset + 2] in {"<>", "~="}:
+            text = source[offset:offset + 2]
+            tokens.append(Token("not_equal", text, text, _span(source, offset, offset + 2)))
+            offset += 2
             continue
         if source.startswith("<=", offset) or source.startswith(">=", offset):
             text = source[offset:offset + 2]
@@ -350,9 +391,10 @@ def tokenize_spss(source: str) -> tuple[Token, ...]:
 
 
 class _Parser:
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, *, official_v03: bool = False) -> None:
         self.source = source
-        self.tokens = tokenize_spss(source)
+        self.official_v03 = official_v03
+        self.tokens = tokenize_spss(source, official_v03=official_v03)
         self.index = 0
 
     @property
@@ -372,7 +414,8 @@ class _Parser:
 
     def accepts_keyword(self, keyword: str) -> Token | None:
         token = self.current
-        if token.kind == "identifier" and token.text.casefold() == keyword.casefold():
+        if (token.kind == "identifier" and token.text.casefold() == keyword.casefold()
+                and (not self.official_v03 or token.text.isascii())):
             return self.advance()
         return None
 
@@ -391,12 +434,21 @@ class _Parser:
             )
         return token
 
-    def variable_list(self, *, stop_kinds: frozenset[str]) -> tuple[Token, ...]:
-        variables: list[Token] = []
+    def variable_list(self, *, stop_kinds: frozenset[str]) -> tuple[Token | VariableRangeSyntax, ...]:
+        variables: list[Token | VariableRangeSyntax] = []
         while self.current.kind not in stop_kinds:
-            if self.accepts("comma") is not None:
+            if not self.official_v03 and self.accepts("comma") is not None:
                 continue
-            variables.append(self.expects("identifier", "Expected a variable name."))
+            first = self.expects("identifier", "Expected a variable name.")
+            if self.official_v03 and self.accepts_keyword("TO") is not None:
+                last = self.expects("identifier", "Expected a TO endpoint.")
+                continuations = []
+                while self.accepts_keyword("TO") is not None:
+                    continuations.append(self.expects("identifier", "Expected a TO endpoint."))
+                end = continuations[-1] if continuations else last
+                variables.append(VariableRangeSyntax(first, last, _joined_span(first.span, end.span), tuple(continuations)))
+            else:
+                variables.append(first)
         if not variables:
             raise frontend_error(
                 "spss_syntax_error", "Expected at least one variable name.",
@@ -437,9 +489,13 @@ class _Parser:
             "greater": ">", "greater_equal": ">=",
         }
         token = self.current
+        if self.official_v03:
+            operators["not_equal"] = "ne"
+            if token.kind == "identifier" and token.text.isascii() and token.text.casefold() == "ne":
+                operators["identifier"] = "ne"
         if token.kind not in operators:
             raise frontend_error(
-                "spss_syntax_error", "Expected a comparison operator.",
+                "expression_type_unsupported" if self.official_v03 and token.kind == "right_paren" else "spss_syntax_error", "Expected a comparison operator.",
                 span=token.span,
             )
         self.advance()
@@ -448,10 +504,16 @@ class _Parser:
             left, operators[token.kind], right, _joined_span(left.span, right.span),
         )
 
+    def negation(self) -> PredicateSyntax:
+        if self.official_v03 and (token := self.accepts_keyword("NOT")) is not None:
+            operand = self.negation()
+            return NotSyntax(operand, _joined_span(token.span, operand.span))
+        return self.comparison()
+
     def conjunction(self) -> PredicateSyntax:
-        operands = [self.comparison()]
+        operands = [self.negation()]
         while self.accepts_keyword("AND") is not None:
-            operands.append(self.comparison())
+            operands.append(self.negation())
         if len(operands) == 1:
             return operands[0]
         return BooleanSyntax(
@@ -500,8 +562,13 @@ class _Parser:
     def formats(self, start: Token) -> FormatsCommandSyntax:
         assignments: list[FormatAssignmentSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
-            variable = self.expects("identifier", "FORMATS requires a variable name.")
+            if assignments or not self.official_v03:
+                self.accepts("slash")
+            variables = (
+                self.variable_list(stop_kinds=frozenset({"left_paren", "period", "eof", "slash"}))
+                if self.official_v03 else
+                (self.expects("identifier", "FORMATS requires a variable name."),)
+            )
             self.expects("left_paren", "Expected '(' before an SPSS format.")
             format_token = self.expects("identifier", "Expected an SPSS format such as F1.0.")
             match = re.fullmatch(r"([A-Za-z]+)([0-9]+)(?:[.]([0-9]+))?", format_token.text)
@@ -513,7 +580,7 @@ class _Parser:
             if (family != "F" or width < 1 or width > 40 or decimals > 16
                     or (decimals != 0 and width < decimals + 2)):
                 raise frontend_error("invalid_format", "Only valid numeric F formats are supported.", span=format_token.span, format=format_token.text)
-            assignments.append(FormatAssignmentSyntax(variable, family, width, decimals, _joined_span(variable.span, right.span)))
+            assignments.extend(FormatAssignmentSyntax(variable, family, width, decimals, _joined_span(variable.span, right.span)) for variable in variables)
         if not assignments:
             raise frontend_error("spss_syntax_error", "FORMATS requires an assignment.", span=self.current.span)
         end = self.expects("period", "Expected '.' after FORMATS.")
@@ -523,14 +590,15 @@ class _Parser:
         self.expects_keyword("LEVEL")
         assignments: list[VariableLevelAssignmentSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
+            if assignments or not self.official_v03:
+                self.accepts("slash")
             variables = self.variable_list(
                 stop_kinds=frozenset({"left_paren", "period", "eof", "slash"}),
             )
             self.expects("left_paren", "Expected '(' before a measurement level.")
             level = self.expects("identifier", "Expected NOMINAL, ORDINAL, or SCALE.")
             normalized = level.text.casefold()
-            if normalized not in {"nominal", "ordinal", "scale"}:
+            if normalized not in {"nominal", "ordinal", "scale"} or (self.official_v03 and not level.text.isascii()):
                 raise frontend_error(
                     "spss_syntax_error",
                     "Expected NOMINAL, ORDINAL, or SCALE.",
@@ -631,19 +699,26 @@ class _Parser:
         elif (token := self.accepts_keyword("SYSMIS")) is not None:
             match = RecodeMatchSyntax("system_missing", token.span)
         else:
-            first = self.literal()
+            lowest = self.accepts_keyword("LOWEST") if self.official_v03 else None
+            first = SyntaxLiteral("numeric", -float.fromhex("0x1.fffffffffffffp+1023"), lowest.span) if lowest else self.literal()
             if self.accepts_keyword("THRU") is not None:
-                upper = self.literal()
+                highest = self.accepts_keyword("HIGHEST") if self.official_v03 else None
+                upper = SyntaxLiteral("numeric", float.fromhex("0x1.fffffffffffffp+1023"), highest.span) if highest else self.literal()
                 match = RecodeMatchSyntax(
                     "range", _joined_span(first.span, upper.span),
                     lower=first, upper=upper,
                 )
             else:
+                if lowest:
+                    raise frontend_error("spss_syntax_error", "LOWEST requires THRU.", span=first.span)
                 values = [first]
                 while self.current.kind != "equals":
-                    self.accepts("comma")
-                    if self.current.kind == "equals":
-                        break
+                    if self.official_v03:
+                        self.expects("comma", "Expected ',' between RECODE selectors.")
+                    else:
+                        self.accepts("comma")
+                        if self.current.kind == "equals":
+                            break
                     values.append(self.literal())
                 match = RecodeMatchSyntax(
                     "values", _joined_span(values[0].span, values[-1].span),
@@ -681,14 +756,16 @@ class _Parser:
             )
         targets = None
         if self.accepts_keyword("INTO") is not None:
-            targets = self.variable_list(stop_kinds=frozenset({"period", "eof"}))
-            if len(targets) != len(sources):
+            targets = self.variable_list(stop_kinds=frozenset({"period", "eof", "slash"}) if self.official_v03 else frozenset({"period", "eof"}))
+            if self.official_v03 and any(isinstance(target, VariableRangeSyntax) or target.text.casefold() == "to" for target in targets):
+                raise frontend_error("spss_syntax_error", "INTO targets cannot use TO.", span=targets[0].span)
+            if not self.official_v03 and len(targets) != len(sources):
                 raise frontend_error(
                     "spss_syntax_error",
                     "RECODE INTO requires one target for every source variable.",
                     span=_joined_span(targets[0].span, targets[-1].span),
                 )
-        end = self.expects("period", "Expected '.' after RECODE.")
+        end = self.current if self.official_v03 and self.current.kind in {"slash", "period"} else self.expects("period", "Expected '.' after RECODE.")
         return RecodeCommandSyntax(
             sources, tuple(clauses), targets, _joined_span(start.span, end.span),
         )
@@ -697,12 +774,17 @@ class _Parser:
         self.expects_keyword("LABELS")
         assignments: list[VariableLabelSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
-            variable = self.expects("identifier", "Expected a variable name.")
+            if assignments or not self.official_v03:
+                self.accepts("slash")
+            variables = (
+                self.variable_list(stop_kinds=frozenset({"string", "period", "eof", "slash"}))
+                if self.official_v03 else
+                (self.expects("identifier", "Expected a variable name."),)
+            )
             label = self.expects("string", "Expected a quoted variable label.")
-            assignments.append(VariableLabelSyntax(
+            assignments.extend(VariableLabelSyntax(
                 variable, label, _joined_span(variable.span, label.span),
-            ))
+            ) for variable in variables)
         if not assignments:
             raise frontend_error(
                 "spss_syntax_error", "VARIABLE LABELS requires an assignment.",
@@ -713,11 +795,12 @@ class _Parser:
             tuple(assignments), _joined_span(start.span, end.span),
         )
 
-    def value_labels(self, start: Token) -> ValueLabelsCommandSyntax:
+    def value_labels(self, start: Token, *, additive: bool = False) -> ValueLabelsCommandSyntax:
         self.expects_keyword("LABELS")
         groups: list[ValueLabelsGroupSyntax] = []
         while self.current.kind not in {"period", "eof"}:
-            self.accepts("slash")
+            if groups or not self.official_v03:
+                self.accepts("slash")
             group_start = self.current
             variables = self.variable_list(
                 stop_kinds=frozenset({"number", "string", "period", "slash", "eof"})
@@ -738,18 +821,26 @@ class _Parser:
                 variables, tuple(labels),
                 _joined_span(group_start.span, labels[-1].span),
             ))
+        if self.official_v03 and not groups:
+            raise frontend_error("spss_syntax_error", "VALUE LABELS requires a group.", span=self.current.span)
         end = self.expects("period", "Expected '.' after VALUE LABELS.")
         return ValueLabelsCommandSyntax(
-            tuple(groups), _joined_span(start.span, end.span),
+            tuple(groups), _joined_span(start.span, end.span), additive,
         )
 
     def parse(self) -> SpssSyntaxProgram:
         commands: list[SyntaxCommand] = []
         while self.current.kind != "eof":
             start = self.expects("identifier", "Expected an SPSS command.")
-            command = start.text.casefold()
+            command = start.text.casefold() if not self.official_v03 or start.text.isascii() else start.text
+            if self.official_v03 and command in {"string", "delete"}:
+                raise frontend_error("unsupported_spss_command", "Python schema commands are outside official Frontend 0.3.", span=start.span, command=start.text)
             if command == "recode":
                 commands.append(self.recode(start))
+                while self.official_v03 and self.accepts("slash") is not None:
+                    commands.append(self.recode(self.current))
+                if self.official_v03:
+                    self.expects("period", "Expected '.' after RECODE.")
             elif command == "compute":
                 commands.append(self.compute(start))
             elif command == "if":
@@ -769,6 +860,9 @@ class _Parser:
                     commands.append(self.variable_labels(start))
             elif command == "value":
                 commands.append(self.value_labels(start))
+            elif self.official_v03 and command == "add":
+                self.expects_keyword("VALUE")
+                commands.append(self.value_labels(start, additive=True))
             else:
                 raise frontend_error(
                     "unsupported_spss_command",
@@ -779,18 +873,18 @@ class _Parser:
             program_span = _joined_span(commands[0].span, commands[-1].span)
         else:
             program_span = self.current.span
-        return SpssSyntaxProgram(tuple(commands), program_span)
+        return SpssSyntaxProgram(tuple(commands), program_span, self.official_v03)
 
 
-def parse_spss_syntax(source: str) -> SpssSyntaxProgram:
+def parse_spss_syntax(source: str, *, official_v03: bool = False) -> SpssSyntaxProgram:
     """Parse the supported command subset into a catalog-independent AST."""
     normalized = normalize_spss_source(source)
     comment = re.search(r"(?m)^[ \t]*\*", normalized)
-    if comment is not None:
+    if comment is not None and not official_v03:
         raise frontend_error(
             "unsupported_spss_command",
             "SPSS comment statements are outside the v0.1 subset.",
             span=_span(normalized, comment.start(), comment.start() + 1),
             command="*",
         )
-    return _Parser(normalized).parse()
+    return _Parser(normalized, official_v03=official_v03).parse()

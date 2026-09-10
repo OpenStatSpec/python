@@ -908,9 +908,11 @@ def install_in_place_transformation_schema(
         engine.dispose()
 
 
-def load_transformation_schema(connection: Any, dataset_id: str) -> VariableSchema:
-    """Read the live canonical variable schema within the caller's transaction."""
-    return _input_schema(connection, dataset_id)[2]
+def load_transformation_schema(
+    connection: Any, dataset_id: str, *, lock_dataset: bool = False,
+) -> VariableSchema:
+    """Read the live schema, optionally locking its dataset until transaction end."""
+    return _input_schema(connection, dataset_id, lock_dataset=lock_dataset)[2]
 
 
 def _compensate_failed_apply(
@@ -1009,7 +1011,12 @@ def _run_in_place_submission(
         )
         sqlite_version = (*sqlite_version_parts, 0, 0)[:3]
         allow_delete_variable = sqlite_version >= (3, 35, 0)
-    engine = create_engine(database_url)
+    # Catalog validation precedes the dataset lock: post-lock schema reads must
+    # see commits made while waiting, not MySQL/MariaDB's earlier RR snapshot.
+    engine = create_engine(
+        database_url,
+        isolation_level="READ COMMITTED" if profile.name in {"mysql", "mariadb"} else None,
+    )
     if profile.name == "sqlite":
         @sqlalchemy_event.listens_for(engine, "connect")
         def enable_sqlite_foreign_keys(dbapi_connection, _connection_record):

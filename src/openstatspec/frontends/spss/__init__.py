@@ -3,9 +3,11 @@
 from .binding import bind_spss_syntax
 from .compiler import (
     SPSS_FRONTEND_CONTRACT,
+    SPSS_FRONTEND_V03_CONTRACT,
     SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT,
     SpssFrontendCompilation,
     compile_spss_syntax,
+    compile_spss_request,
 )
 from .syntax import (
     SpssSyntaxProgram,
@@ -18,11 +20,13 @@ from .syntax import (
 
 __all__ = [
     "SPSS_FRONTEND_CONTRACT",
+    "SPSS_FRONTEND_V03_CONTRACT",
     "SPSS_FRONTEND_SCHEMA_CHANGE_CONTRACT",
     "SpssFrontendCompilation",
     "SpssSyntaxProgram",
     "bind_spss_syntax",
     "compile_spss_syntax",
+    "compile_spss_request",
     "normalize_spss_source",
     "parse_spss_syntax",
     "spss_source_hash",

@@ -24,7 +24,7 @@ from ...transform.validation import bind_transformation_plan
 from .syntax import (
     BooleanSyntax, ComparisonSyntax, ComputeCommandSyntax, ExecuteCommandSyntax,
     DeleteVariablesCommandSyntax, FormatsCommandSyntax, IfCommandSyntax,
-    OperandSyntax, PredicateSyntax,
+    NotSyntax, OperandSyntax, PredicateSyntax, Token, VariableRangeSyntax,
     RecodeCommandSyntax, RecodeMatchSyntax, RecodeResultSyntax,
     SpssSyntaxProgram, SyntaxLiteral, ValueLabelsCommandSyntax,
     StringCommandSyntax, VariableLabelsCommandSyntax, VariableLevelCommandSyntax,
@@ -74,9 +74,16 @@ def _bind_operand(
 
 
 def _bind_predicate(
-    syntax: PredicateSyntax, variables: list[VariableDefinition],
+    syntax: PredicateSyntax, variables: list[VariableDefinition], *, negated: bool = False,
 ) -> PredicateExpression:
+    if isinstance(syntax, NotSyntax):
+        return _bind_predicate(syntax.operand, variables, negated=not negated)
     if isinstance(syntax, ComparisonSyntax):
+        if syntax.operator == "ne" or (negated and syntax.operator == "="):
+            expanded = BooleanSyntax("or", tuple(
+                replace(syntax, operator=operator) for operator in ("<", ">")
+            ), syntax.span)
+            return _bind_predicate(expanded, variables, negated=negated and syntax.operator == "ne")
         left, left_type = _bind_operand(syntax.left, variables)
         right, right_type = _bind_operand(syntax.right, variables)
         if left_type != right_type:
@@ -91,19 +98,21 @@ def _bind_predicate(
                 "Ordered comparisons require numeric operands.",
                 span=syntax.span, operator=syntax.operator,
             )
-        return ComparisonExpression(left, syntax.operator, right)
+        operator = ({"=": "=", "<": ">=", "<=": ">", ">": "<=", ">=": "<"}[syntax.operator] if negated else syntax.operator)
+        return ComparisonExpression(left, operator, right)
     assert isinstance(syntax, BooleanSyntax)
+    operator = ("or" if syntax.operator == "and" else "and") if negated else syntax.operator
     operands: list[PredicateExpression] = []
     for operand in syntax.operands:
-        bound = _bind_predicate(operand, variables)
+        bound = _bind_predicate(operand, variables, negated=negated)
         if (
             isinstance(bound, BooleanExpression)
-            and bound.operator == syntax.operator
+            and bound.operator == operator
         ):
             operands.extend(bound.operands)
         else:
             operands.append(bound)
-    return BooleanExpression(syntax.operator, tuple(operands))
+    return BooleanExpression(operator, tuple(operands))
 
 
 def _assignment(
@@ -151,7 +160,7 @@ def _assignment(
 
 
 def _match(
-    syntax: RecodeMatchSyntax, source: VariableDefinition,
+    syntax: RecodeMatchSyntax, source: VariableDefinition, *, official_v03: bool = False,
 ) -> RecodeMatch:
     expected = _expected_type(source.storage_kind)
     if syntax.kind == "system_missing":
@@ -172,7 +181,7 @@ def _match(
             )
         if lower.number() > upper.number():
             raise frontend_error(
-                "invalid_numeric_range",
+                "invalid_variable_range" if official_v03 else "invalid_numeric_range",
                 "THRU lower endpoint exceeds its upper endpoint.",
                 span=syntax.span, variable=source.name,
             )
@@ -252,10 +261,12 @@ def _validate_recode_string_width(
 
 
 def _bind_recode(
-    command: RecodeCommandSyntax, variables: list[VariableDefinition],
+    command: RecodeCommandSyntax, variables: list[VariableDefinition], *, official_v03: bool = False,
 ) -> tuple[list[RecodeOperation], list[SourceSpan]]:
     sources = [_resolve(variables, token.text, token.span)[1] for token in command.sources]
     targets = command.targets
+    if targets is not None and len(targets) != len(sources):
+        raise frontend_error("spss_syntax_error", "RECODE INTO requires one target per source.", span=command.span)
     target_mode: Literal["create", "replace"] = "create" if targets is not None else "replace"
     target_names = (
         [token.text for token in targets] if targets is not None
@@ -292,7 +303,7 @@ def _bind_recode(
             if clause.match.kind == "else":
                 else_result = result
                 continue
-            rules.append(RecodeRule(_match(clause.match, source), result))
+            rules.append(RecodeRule(_match(clause.match, source, official_v03=official_v03), result))
         unmatched = else_result or RecodeResult(
             "system_missing" if target_mode == "create" else "copy"
         )
@@ -332,6 +343,28 @@ def _bind_recode(
         # replace intentionally preserves the existing variable metadata. A later
         # VALUE LABELS command replaces value labels explicitly.
     return operations, spans
+
+
+def _expand_variables(
+    tokens: tuple[Token | VariableRangeSyntax, ...], variables: list[VariableDefinition],
+) -> tuple[Token, ...]:
+    expanded: list[Token] = []
+    for token in tokens:
+        if isinstance(token, VariableRangeSyntax):
+            first, _ = _resolve(variables, token.first.text, token.first.span)
+            last = first
+            for endpoint in (token.last, *token.continuations):
+                next_index, _ = _resolve(variables, endpoint.text, endpoint.span)
+                if last > next_index:
+                    raise frontend_error("invalid_variable_range", "TO endpoints are reversed in dictionary order.", span=token.span)
+                last = next_index
+            expanded.extend(Token("identifier", v.name, v.name, token.span) for v in variables[first:last + 1])
+        else:
+            _resolve(variables, token.text, token.span)
+            expanded.append(token)
+    return tuple(expanded)
+
+
 def bind_spss_syntax(
     program: SpssSyntaxProgram, schema: VariableSchema, *, input_alias: str = "parent",
 ) -> BoundTransformation:
@@ -345,6 +378,22 @@ def bind_spss_syntax(
     operations: list[PlanOperation] = []
     spans: list[SourceSpan] = []
     for command in program.commands:
+        if program.official_v03:
+            if isinstance(command, (StringCommandSyntax, DeleteVariablesCommandSyntax)):
+                raise frontend_error("unsupported_spss_command", "Python schema commands are outside official Frontend 0.3.", span=command.span)
+            if isinstance(command, RecodeCommandSyntax):
+                command = replace(command, sources=_expand_variables(command.sources, variables))
+            elif isinstance(command, (FormatsCommandSyntax, VariableLevelCommandSyntax, VariableLabelsCommandSyntax)):
+                command = replace(command, assignments=tuple(
+                    replace(assignment, variable=token)
+                    for assignment in command.assignments
+                    for token in _expand_variables((assignment.variable,), variables)
+                ))
+            elif isinstance(command, ValueLabelsCommandSyntax):
+                command = replace(command, groups=tuple(
+                    replace(group, variables=_expand_variables(group.variables, variables))
+                    for group in command.groups
+                ))
         if isinstance(command, StringCommandSyntax):
             for variable_token in command.variables:
                 if variable_token.text.startswith("__"):
@@ -383,7 +432,7 @@ def bind_spss_syntax(
                 del variables[index]
             continue
         if isinstance(command, RecodeCommandSyntax):
-            recodes, recode_spans = _bind_recode(command, variables)
+            recodes, recode_spans = _bind_recode(command, variables, official_v03=program.official_v03)
             operations.extend(recodes)
             spans.extend(recode_spans)
             continue
@@ -515,6 +564,10 @@ def bind_spss_syntax(
                             "VALUE LABELS contains duplicate canonical codes.",
                             span=group.span, variable=variable.name,
                         )
+                    if command.additive:
+                        merged = {label.value.canonical_key(): label for label in variable.value_labels}
+                        merged.update((label.value.canonical_key(), label) for label in labels)
+                        labels = tuple(merged.values())
                     operation = ReplaceValueLabelsOperation(variable.name, labels)
                     operations.append(operation)
                     spans.append(group.span)
