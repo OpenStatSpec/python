@@ -871,7 +871,7 @@ def create_wide_dataset(
     fidelity_events = tuple(fidelity_events)
     source_rows = _canonicalize_database_numeric_rows(rows, variables)
     try:
-        preflight(profile, variables, rows=source_rows)
+        plain_rows = preflight(profile, variables, rows=source_rows)
         validate_spss_catalog(
             variables,
             case_weight_variable=case_weight_variable,
@@ -982,14 +982,17 @@ def create_wide_dataset(
                 ),
             )
             if source_rows:
-                # Preflight proved cells are binary64/None or str, so the only
-                # bind processor (SQLite to_float) is a no-op; skip the per-row
-                # SQLAlchemy parameter pass and hand rows to the driver.
+                # Plain rows hold only float/None and str, so the only bind
+                # processor (SQLite to_float) is a no-op: hand them straight to
+                # the driver. Anything else (e.g. exact ints) keeps SQLAlchemy.
                 compiled = insert(data_table).compile(dialect=connection.dialect)
                 keys = compiled.positiontup
                 for batch in _bounded_batches(
                     source_rows, variables, profile.max_statement_bytes,
                 ):
+                    if not plain_rows:
+                        connection.execute(insert(data_table), batch)
+                        continue
                     connection.exec_driver_sql(compiled.string, (
                         [tuple(map(row.__getitem__, keys)) for row in batch]
                         if keys else batch

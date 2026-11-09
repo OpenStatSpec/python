@@ -128,8 +128,12 @@ def preflight(
     *,
     rows: Iterable[Mapping[str, Any]] | None = None,
     require_canonical_mapping: bool = True,
-) -> None:
-    """Validate strict target capabilities before any source dataset is created."""
+) -> bool:
+    """Validate strict target capabilities before any source dataset is created.
+
+    Returns True only when every cell was proven to be float/None (numeric) or
+    str, so callers may bypass per-value bind processing.
+    """
     variables = None if isinstance(variables_or_count, int) else list(variables_or_count)
     variable_count = variables_or_count if isinstance(variables_or_count, int) else len(variables)
     if variable_count > profile.max_source_variables:
@@ -143,7 +147,7 @@ def preflight(
             max_physical=profile.max_source_variables + 1,
         )
     if variables is None:
-        return
+        return False
 
     used = {"__case_ordinal"}
     source_names: set[str] = set()
@@ -216,7 +220,7 @@ def preflight(
         )
     rows = list(rows or ())
     if not rows or _rows_within_limits(profile, variables, rows):
-        return
+        return True
     # Slow path only reports the first failing row in row-major order.
     for row_ordinal, row in enumerate(rows, start=1):
         row_bytes = 8
@@ -317,6 +321,7 @@ def preflight(
                 row_ordinal=row_ordinal, statement_bytes=statement_bytes,
                 maximum=profile.max_statement_bytes,
             )
+    return False
 
 
 def _rows_within_limits(
@@ -346,7 +351,10 @@ def _rows_within_limits(
             continue
         if set(map(type, column)) != {str}:
             return False
-        longest = max(map(len, map(str.encode, column)))
+        try:
+            longest = max(map(len, map(str.encode, column)))
+        except UnicodeEncodeError:
+            return False
         if longest > profile.max_text_value_bytes:
             return False
         row_bytes += 20 if profile.name in MYSQL_WIRE_PROFILES else longest

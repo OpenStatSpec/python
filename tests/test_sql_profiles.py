@@ -771,3 +771,27 @@ def test_column_preflight_fast_path_agrees_with_row_checks():
             preflight(MYSQL, variables, rows=[*plain, bad])
     too_long = [{"q": 1.0, "s": "x" * (MYSQL.max_text_value_bytes + 1)}]
     assert not _rows_within_limits(MYSQL, variables, too_long)
+    assert not _rows_within_limits(MYSQL, variables, [{"q": 1.0, "s": "\ud800"}])
+    # Exact ints are valid but not plain, so callers keep bind processing.
+    assert preflight(MYSQL, variables, rows=[*plain, {"q": 2**63, "s": ""}]) is False
+    with pytest.raises(UnsupportedOperationError, match="binary64"):
+        preflight(MYSQL, variables, rows=[*plain, {"q": 2**53 + 1, "s": ""}])
+
+
+def test_import_stores_exact_integer_cells_as_binary64(tmp_path):
+    from openstatspec.sql.wide import create_wide_dataset
+    import sqlite3
+
+    database = f"sqlite:///{tmp_path / 'ints.sqlite'}"
+    variables = [{
+        "source_name": "q", "physical_name": "q", "ordinal": 1,
+        "storage_kind": "numeric", "format": "F20.0",
+    }]
+    create_wide_dataset(
+        database_url=database, dataset_id="ints", source_name="ints.sav",
+        source_format="SAV", rows=[{"q": 2**63}, {"q": None}], variables=variables,
+    )
+    stored = sqlite3.connect(tmp_path / "ints.sqlite").execute(
+        "select q from data_ints order by __case_ordinal"
+    ).fetchall()
+    assert stored == [(float(2**63),), (None,)]
