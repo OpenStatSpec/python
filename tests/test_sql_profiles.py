@@ -752,3 +752,46 @@ def test_generated_data_table_identifier_uses_effective_limit() -> None:
     assert error.value.details["reason"] == "identifier_limit"
     assert error.value.details["role"] == "physical data-table identifier"
     assert error.value.details["maximum"] == 5
+
+
+def test_column_preflight_fast_path_agrees_with_row_checks():
+    from openstatspec.sql.profiles import _rows_within_limits
+
+    variables = [
+        {"source_name": "q", "physical_name": "q", "ordinal": 1, "storage_kind": "numeric"},
+        {"source_name": "s", "physical_name": "s", "ordinal": 2, "storage_kind": "string", "string_width": 8},
+    ]
+    plain = [{"q": 1.0, "s": "Pärnu"}, {"q": None, "s": ""}]
+    assert _rows_within_limits(MYSQL, variables, plain)
+    preflight(MYSQL, variables, rows=plain)
+    # Anything not provably safe falls back to the exact row-major checks.
+    for bad in ({"q": float("inf"), "s": ""}, {"q": True, "s": ""}, {"q": 1.0, "s": None}, {"s": ""}):
+        assert not _rows_within_limits(MYSQL, variables, [*plain, bad])
+        with pytest.raises(UnsupportedOperationError):
+            preflight(MYSQL, variables, rows=[*plain, bad])
+    too_long = [{"q": 1.0, "s": "x" * (MYSQL.max_text_value_bytes + 1)}]
+    assert not _rows_within_limits(MYSQL, variables, too_long)
+    assert not _rows_within_limits(MYSQL, variables, [{"q": 1.0, "s": "\ud800"}])
+    # Exact ints are valid but not plain, so callers keep bind processing.
+    assert preflight(MYSQL, variables, rows=[*plain, {"q": 2**63, "s": ""}]) is False
+    with pytest.raises(UnsupportedOperationError, match="binary64"):
+        preflight(MYSQL, variables, rows=[*plain, {"q": 2**53 + 1, "s": ""}])
+
+
+def test_import_stores_exact_integer_cells_as_binary64(tmp_path):
+    from openstatspec.sql.wide import create_wide_dataset
+    import sqlite3
+
+    database = f"sqlite:///{tmp_path / 'ints.sqlite'}"
+    variables = [{
+        "source_name": "q", "physical_name": "q", "ordinal": 1,
+        "storage_kind": "numeric", "format": "F20.0",
+    }]
+    create_wide_dataset(
+        database_url=database, dataset_id="ints", source_name="ints.sav",
+        source_format="SAV", rows=[{"q": 2**63}, {"q": None}], variables=variables,
+    )
+    stored = sqlite3.connect(tmp_path / "ints.sqlite").execute(
+        "select q from data_ints order by __case_ordinal"
+    ).fetchall()
+    assert stored == [(float(2**63),), (None,)]

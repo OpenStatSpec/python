@@ -8,8 +8,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import math
 from numbers import Real
+from operator import itemgetter
 from typing import Any
 from urllib.parse import urlparse
+
+import numpy as np
 
 from ..core import UnsupportedOperationError
 
@@ -125,8 +128,12 @@ def preflight(
     *,
     rows: Iterable[Mapping[str, Any]] | None = None,
     require_canonical_mapping: bool = True,
-) -> None:
-    """Validate strict target capabilities before any source dataset is created."""
+) -> bool:
+    """Validate strict target capabilities before any source dataset is created.
+
+    Returns True only when every cell was proven to be float/None (numeric) or
+    str, so callers may bypass per-value bind processing.
+    """
     variables = None if isinstance(variables_or_count, int) else list(variables_or_count)
     variable_count = variables_or_count if isinstance(variables_or_count, int) else len(variables)
     if variable_count > profile.max_source_variables:
@@ -140,7 +147,7 @@ def preflight(
             max_physical=profile.max_source_variables + 1,
         )
     if variables is None:
-        return
+        return False
 
     used = {"__case_ordinal"}
     source_names: set[str] = set()
@@ -211,7 +218,11 @@ def preflight(
             f"{profile.name} permits {profile.max_row_bytes}.",
             declared_row_bytes=declared_row_bytes, maximum=profile.max_row_bytes,
         )
-    for row_ordinal, row in enumerate(rows or (), start=1):
+    rows = list(rows or ())
+    if not rows or _rows_within_limits(profile, variables, rows):
+        return True
+    # Slow path only reports the first failing row in row-major order.
+    for row_ordinal, row in enumerate(rows, start=1):
         row_bytes = 8
         for variable in variables:
             if variable.get("storage_kind") == "numeric":
@@ -310,6 +321,54 @@ def preflight(
                 row_ordinal=row_ordinal, statement_bytes=statement_bytes,
                 maximum=profile.max_statement_bytes,
             )
+    return False
+
+
+def _rows_within_limits(
+    profile: SqlProfile, variables: list[Mapping[str, Any]],
+    rows: list[Mapping[str, Any]],
+) -> bool:
+    """Column-wise proof that the row-by-row checks in preflight cannot fail.
+
+    Per-column maxima bound every row's row and statement size from above, so
+    True means no row exceeds a limit; False defers to the exact slow path.
+    """
+    row_bytes, statement_bytes = 8, 32
+    for variable in variables:
+        name = str(variable["physical_name"])
+        try:
+            column = list(map(itemgetter(name), rows))
+        except KeyError:
+            return False
+        if variable.get("storage_kind") == "numeric":
+            if not set(map(type, column)) <= _PLAIN_NUMERIC_TYPES:
+                return False
+            values = np.array(column, dtype=float)  # None becomes NaN
+            if np.isinf(values).any() or np.isnan(values).sum() != column.count(None):
+                return False
+            row_bytes += 8
+            statement_bytes += 24
+            continue
+        if set(map(type, column)) != {str}:
+            return False
+        try:
+            longest = max(map(len, map(str.encode, column)))
+        except UnicodeEncodeError:
+            return False
+        if longest > profile.max_text_value_bytes:
+            return False
+        row_bytes += 20 if profile.name in MYSQL_WIRE_PROFILES else longest
+        statement_bytes += longest + 8
+    return (
+        (profile.max_row_bytes is None or row_bytes <= profile.max_row_bytes)
+        and (
+            profile.max_statement_bytes is None
+            or statement_bytes <= profile.max_statement_bytes
+        )
+    )
+
+
+_PLAIN_NUMERIC_TYPES = {float, type(None)}
 
 
 def _row_storage_bytes(profile: SqlProfile, variable: Mapping[str, Any]) -> int:
