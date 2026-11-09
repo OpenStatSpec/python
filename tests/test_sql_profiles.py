@@ -752,3 +752,22 @@ def test_generated_data_table_identifier_uses_effective_limit() -> None:
     assert error.value.details["reason"] == "identifier_limit"
     assert error.value.details["role"] == "physical data-table identifier"
     assert error.value.details["maximum"] == 5
+
+
+def test_column_preflight_fast_path_agrees_with_row_checks():
+    from openstatspec.sql.profiles import _rows_within_limits
+
+    variables = [
+        {"source_name": "q", "physical_name": "q", "ordinal": 1, "storage_kind": "numeric"},
+        {"source_name": "s", "physical_name": "s", "ordinal": 2, "storage_kind": "string", "string_width": 8},
+    ]
+    plain = [{"q": 1.0, "s": "Pärnu"}, {"q": None, "s": ""}]
+    assert _rows_within_limits(MYSQL, variables, plain)
+    preflight(MYSQL, variables, rows=plain)
+    # Anything not provably safe falls back to the exact row-major checks.
+    for bad in ({"q": float("inf"), "s": ""}, {"q": True, "s": ""}, {"q": 1.0, "s": None}, {"s": ""}):
+        assert not _rows_within_limits(MYSQL, variables, [*plain, bad])
+        with pytest.raises(UnsupportedOperationError):
+            preflight(MYSQL, variables, rows=[*plain, bad])
+    too_long = [{"q": 1.0, "s": "x" * (MYSQL.max_text_value_bytes + 1)}]
+    assert not _rows_within_limits(MYSQL, variables, too_long)

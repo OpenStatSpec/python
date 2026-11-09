@@ -10,11 +10,11 @@ import hashlib
 import os
 import json
 import errno
-import math
 import ctypes
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from functools import wraps
+from operator import itemgetter
 from pathlib import Path
 from tempfile import mkstemp, TemporaryDirectory
 from typing import Any, Callable
@@ -24,6 +24,7 @@ try:  # POSIX locks let independent export processes share one publication gate.
 except ImportError:  # pragma: no cover - the supported CI/runtime is POSIX.
     fcntl = None
 
+import numpy as np
 import pandas as pd
 import pyspssio
 
@@ -206,18 +207,16 @@ def _pyspssio_missing_rules(encoded: str) -> dict[str, Any] | None:
 
 
 def _rows(frame: pd.DataFrame, variables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for input_row in frame.to_dict(orient="records"):
-        output: dict[str, Any] = {}
-        for item in variables:
-            value = input_row[item["source_name"]]
-            if item["storage_kind"] == "numeric" and pd.isna(value):
-                value = None
-            elif item["storage_kind"] == "string" and (value is None or pd.isna(value)):
-                value = ""
-            output[item["physical_name"]] = value
-        records.append(output)
-    return records
+    columns = []
+    for item in variables:
+        series = frame[item["source_name"]]
+        empty = None if item["storage_kind"] == "numeric" else ""
+        columns.append([
+            empty if missing else value
+            for value, missing in zip(series.tolist(), series.isna().tolist())
+        ])
+    names = [item["physical_name"] for item in variables]
+    return [dict(zip(names, values)) for values in zip(*columns)]
 
 
 def inspect_sav(source: str | Path) -> dict[str, Any]:
@@ -586,15 +585,14 @@ def export_sav_dataset(
         raise UnsupportedOperationError("Export requires explicit allow_loss for: " + ", ".join(rejected))
 
     frame = pd.DataFrame(
-        [
-            {
-                variable["source_name"]: (
-                    math.nan if row[variable["physical_name"]] is None else float(row[variable["physical_name"]])
-                ) if variable["storage_kind"] == "numeric" else row[variable["physical_name"]]
-                for variable in variables
-            }
-            for row in rows
-        ],
+        {
+            variable["source_name"]: (
+                # Preflight already proved numeric cells are binary64 or None.
+                np.array(column, dtype=float) if variable["storage_kind"] == "numeric" else column
+            )
+            for variable in variables
+            for column in [list(map(itemgetter(variable["physical_name"]), rows))]
+        },
         columns=[variable["source_name"] for variable in variables],
     )
     publication_state: dict[str, Any] = {"published": False}

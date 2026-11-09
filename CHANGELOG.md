@@ -2,6 +2,24 @@
 
 All notable changes to this reference implementation are documented here.
 
+## 0.9.1 - 2026-11-09
+
+This patch release speeds up SAV import and export. Behavior, error codes and
+the catalog contract are unchanged.
+
+### Changed
+
+- Prove strict row limits column by column before falling back to the exact
+  row-by-row checks, which still run (and report the same first failing row)
+  whenever a column is not provably within limits.
+- Convert imported frames and exported rows column-wise instead of cell by cell.
+- Insert imported rows through the driver after preflight instead of
+  SQLAlchemy's per-row parameter pass.
+- Declare the direct `numpy>=1.26` dependency (already required by pandas).
+
+Local SQLite timings on a 50k x 200 SAV: import 29.2 s to 8.6 s, export
+22.4 s to 17.4 s.
+
 ## 0.9.0 - 2026-09-10
 
 This minor release adds the explicitly selected optional official SPSS Frontend

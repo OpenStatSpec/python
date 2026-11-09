@@ -760,10 +760,24 @@ def _bounded_batches(
     maximum_statement_bytes: int | None,
 ) -> Iterable[list[Mapping[str, Any]]]:
     """Partition rows without exceeding the profile's statement payload budget."""
+    if maximum_statement_bytes is None:
+        rows = list(rows)
+        if rows:
+            yield rows
+        return
+    variables = list(variables)
+    strings = [
+        str(variable["physical_name"]) for variable in variables
+        if variable.get("storage_kind") != "numeric"
+    ]
+    # Same arithmetic as statement_payload_bytes, with numeric widths hoisted.
+    fixed_size = 32 + 24 * (len(variables) - len(strings)) + 8 * len(strings)
     batch: list[Mapping[str, Any]] = []
     size = 0
     for row in rows:
-        row_size = statement_payload_bytes(row, variables)
+        row_size = fixed_size + sum(
+            len(str(row.get(name, "")).encode("utf-8")) for name in strings
+        )
         if (
             batch and maximum_statement_bytes is not None
             and size + row_size > maximum_statement_bytes
@@ -789,11 +803,17 @@ def _canonicalize_database_numeric_rows(
     normalized = []
     for source in rows:
         row = dict(source)
+        if set(map(type, row.values())) <= _PLAIN_ROW_VALUE_TYPES:
+            normalized.append(row)
+            continue
         for name in numeric_names:
             if isinstance(row.get(name), Decimal) and row[name].is_finite():
                 row[name] = float(row[name])
         normalized.append(row)
     return normalized
+
+
+_PLAIN_ROW_VALUE_TYPES = {float, int, str, bool, bytes, type(None)}
 
 
 def data_table_name(dataset_id: str) -> str:
@@ -962,10 +982,18 @@ def create_wide_dataset(
                 ),
             )
             if source_rows:
+                # Preflight proved cells are binary64/None or str, so the only
+                # bind processor (SQLite to_float) is a no-op; skip the per-row
+                # SQLAlchemy parameter pass and hand rows to the driver.
+                compiled = insert(data_table).compile(dialect=connection.dialect)
+                keys = compiled.positiontup
                 for batch in _bounded_batches(
                     source_rows, variables, profile.max_statement_bytes,
                 ):
-                    connection.execute(insert(data_table), batch)
+                    connection.exec_driver_sql(compiled.string, (
+                        [tuple(map(row.__getitem__, keys)) for row in batch]
+                        if keys else batch
+                    ))
             finish_normative_operation(
                 connection, normative, operation_id=operation_id,
                 status="succeeded",
